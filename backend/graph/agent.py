@@ -430,6 +430,15 @@ class AgentManager:
         tools.extend(get_status_tools(agent_id, session_id))
 
         tools = self._filter_tools_by_policy(agent_id, tools)
+
+        from tools.persistence_wrapper import wrap_tools_for_persistence
+        tools = wrap_tools_for_persistence(
+            tools,
+            data_dir=self.data_dir,
+            agent_id=agent_id,
+            session_id=session_id,
+        )
+
         return tools
 
     def _filter_tools_by_policy(self, agent_id: str, tools: list) -> list:

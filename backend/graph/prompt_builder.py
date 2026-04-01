@@ -192,6 +192,7 @@ class PromptBuilder:
             _add("silent_replies", self._build_silent_replies())
             _add("heartbeats", self._build_heartbeats(_resolve_heartbeat_prompt(params)))
             _add("runtime", self._build_runtime(agent_id))
+            _add("persisted_output", self._build_persisted_output_hint(locale))
         elif mode == "minimal":
             _add("tooling", self._build_tooling(params.available_tools))
             _add("tool_call_style", self._build_tool_call_style())
@@ -200,6 +201,7 @@ class PromptBuilder:
             _add("heartbeats", self._build_heartbeats(_resolve_heartbeat_prompt(params)))
             _add("workspace", self._build_workspace(agent_id))
             _add("runtime", self._build_runtime(agent_id))
+            _add("persisted_output", self._build_persisted_output_hint(locale))
 
         if params.extra_system_prompt:
             header = "## 子 Agent 上下文" if mode == "minimal" else "## 额外上下文"
@@ -560,6 +562,26 @@ class PromptBuilder:
             "## 运行时信息\n\n"
             f"Runtime: agent={agent_id} | 系统={os_info} | "
             f"模型={model} | 通道=webchat | thinking={thinking}"
+        )
+
+    @staticmethod
+    def _build_persisted_output_hint(locale: str = "zh-CN") -> str:
+        if locale == "zh-CN":
+            return (
+                "## 大型工具输出处理\n\n"
+                "当工具返回内容过大时，完整输出会自动保存到磁盘，"
+                "你会看到一个 `<persisted-output>` 块，其中包含文件路径和前几行预览。\n"
+                "- 需要查看特定部分时，使用 `read`（配合 offset/limit 参数）按需读取。\n"
+                "- 需要搜索内容时，使用 `grep` 直接在该文件上操作。\n"
+                "- 不要试图一次性读入整个文件，除非你确认文件很小。"
+            )
+        return (
+            "## Large tool output handling\n\n"
+            "When a tool returns too much content, the full output is saved to disk "
+            "and you receive a `<persisted-output>` block with the file path and a short preview.\n"
+            "- To read a specific section use `read` with offset/limit parameters.\n"
+            "- To search the content use `grep` on that file path.\n"
+            "- Do not attempt to read the entire file at once unless you know it is small."
         )
 
     # ------------------------------------------------------------------

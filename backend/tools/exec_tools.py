@@ -28,18 +28,7 @@ class ExecTool(BaseTool):
     description: str = "在沙箱环境下执行 Shell 命令。CWD 限制在工作区内，危险命令会被拦截。"
     args_schema: type[BaseModel] = ExecInput
     root_dir: str = ""
-    max_output: int = 5000
     agent_id: str = "main"
-
-    def __init__(self, **data):
-        super().__init__(**data)
-        # 从配置读取输出限制
-        try:
-            from config import get_config
-            cfg = get_config()
-            self.max_output = cfg.get("tools", {}).get("exec", {}).get("maxOutputChars", 5000)
-        except Exception:
-            self.max_output = 5000
 
     def _do_exec(self, command: str, timeout: int) -> str:
         """Actually execute the command (after blacklist check)"""
@@ -66,12 +55,6 @@ class ExecTool(BaseTool):
         except Exception as e:
             output = f"Execution error: {e}"
 
-        from config import get_config
-        locale = get_config().get("app", {}).get("locale", "zh-CN")
-
-        if len(output) > self.max_output:
-            truncated_msg = f"\n... [输出截断，超过 {self.max_output} 字符]" if locale == "zh-CN" else f"\n... [Output truncated, exceeded {self.max_output} chars]"
-            output = output[: self.max_output] + truncated_msg
         return output
 
     def _run(self, command: str, timeout: int = 30) -> str:
@@ -142,17 +125,6 @@ class PythonReplTool(BaseTool):
     description: str = "执行 Python 代码。适合数据处理、计算和脚本任务。"
     args_schema: type[BaseModel] = PythonReplInput
     root_dir: str = ""
-    max_output: int = 5000
-
-    def __init__(self, **data):
-        super().__init__(**data)
-        # 从配置读取输出限制
-        try:
-            from config import get_config
-            cfg = get_config()
-            self.max_output = cfg.get("tools", {}).get("exec", {}).get("maxOutputChars", 5000)
-        except Exception:
-            self.max_output = 5000
 
     def _run(self, code: str) -> str:
         import sys
@@ -185,9 +157,6 @@ class PythonReplTool(BaseTool):
             sys.stderr = old_stderr
             os.chdir(old_cwd)
 
-        if len(output) > self.max_output:
-            truncated_msg = "\n... [输出截断]"
-            output = output[: self.max_output] + truncated_msg
         return output
 
 

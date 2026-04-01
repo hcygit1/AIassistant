@@ -22,9 +22,10 @@ class ContextBudget:
 
     # 二级切分 (active 内部)
     system_prompt_ratio: float = 0.05
-    session_summary_ratio: float = 0.03
-    recent_messages_ratio: float = 0.82
-    jit_tool_output_ratio: float = 0.10
+    session_summary_ratio: float = 0.05
+    recent_messages_ratio: float = 0.85
+    #历史工具截断阈值
+    jit_tool_output_ratio: float = 0.036
 
     # 压缩触发 (基于 active)
     sliding_ratio: float = 0.77
