@@ -232,7 +232,6 @@ class SessionsSpawnTool(BaseTool):
     current_agent_id: str = "main"
     current_session_id: str = ""
     _agent_manager: Any = None
-    _main_loop: Any = None
 
     _FAILURE_HINTS = (
         "failure",
@@ -249,7 +248,7 @@ class SessionsSpawnTool(BaseTool):
         "失败",
     )
 
-    def _run(
+    async def _arun(
         self,
         task: str,
         agent_id: str = "",
@@ -319,7 +318,7 @@ class SessionsSpawnTool(BaseTool):
             label=(label or task[:60] or "Sub-agent task"),
         )
 
-        if self._agent_manager and self._main_loop:
+        if self._agent_manager:
             try:
                 raw = subagent_cfg.get("run_timeout_seconds", 0)
                 run_timeout_seconds = int(raw) if raw is not None else 0
@@ -333,8 +332,8 @@ class SessionsSpawnTool(BaseTool):
                     requester_key,
                     run_timeout_seconds=run_timeout_seconds,
                 )
-                future = asyncio.run_coroutine_threadsafe(coro, self._main_loop)
-                registry.set_task(run_id, future)
+                t = asyncio.create_task(coro)
+                registry.set_task(run_id, t)
             except Exception as e:
                 return f"Failed to start sub-agent: {e}"
 
@@ -615,22 +614,21 @@ class SessionsSpawnTool(BaseTool):
             rec = registry.get_run(run_id)
             cnt = getattr(rec, "announce_retry_count", 0) if rec else 0
             delay_s = min(2 ** cnt, 8)
-            loop = self._main_loop if getattr(self, "_main_loop", None) else None
-            if loop:
-                async def _retry_later():
-                    await asyncio.sleep(delay_s)
-                    await self._deliver_announce_to_requester(
-                        requester_key=requester_key,
-                        child_session_key=child_session_key,
-                        run_id=run_id,
-                        task=task,
-                        result=result,
-                        outcome=outcome,
-                        label=label,
-                        started_at=started_at,
-                        ended_at=ended_at,
-                    )
-                asyncio.run_coroutine_threadsafe(_retry_later(), loop)
+
+            async def _retry_later():
+                await asyncio.sleep(delay_s)
+                await self._deliver_announce_to_requester(
+                    requester_key=requester_key,
+                    child_session_key=child_session_key,
+                    run_id=run_id,
+                    task=task,
+                    result=result,
+                    outcome=outcome,
+                    label=label,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+            asyncio.create_task(_retry_later())
             return
 
         parent_reply = ""
@@ -887,10 +885,9 @@ class SubagentsTool(BaseTool):
     current_agent_id: str = "main"
     current_session_id: str = ""
     _agent_manager: Any = None
-    _main_loop: Any = None
     _spawn_tool: Any = None
 
-    def _run(
+    async def _arun(
         self,
         action: str,
         target: str | None = None,
@@ -976,13 +973,13 @@ class SubagentsTool(BaseTool):
             )
             if not new_record:
                 return "Steer failed: unable to replace run."
-            if self._spawn_tool and self._agent_manager and self._main_loop:
+            if self._spawn_tool and self._agent_manager:
                 try:
                     coro = self._spawn_tool._run_subagent(
                         new_run_id, target_session_id, target_agent_id, message, requester_key
                     )
-                    future = asyncio.run_coroutine_threadsafe(coro, self._main_loop)
-                    registry.set_task(new_run_id, future)
+                    t = asyncio.create_task(coro)
+                    registry.set_task(new_run_id, t)
                 except Exception as e:
                     return f"New instruction saved, but failed to start new run: {e}"
             label = entry.label or entry.task[:50] or "No Label"
@@ -999,14 +996,12 @@ def get_agent_tools(
     agent_id: str,
     agent_manager: Any = None,
     session_id: str = "",
-    main_loop: Any = None,
 ) -> list[BaseTool]:
     spawn_tool = SessionsSpawnTool(
         current_agent_id=agent_id,
         current_session_id=session_id,
     )
     spawn_tool._agent_manager = agent_manager
-    spawn_tool._main_loop = main_loop
 
     # 注入 agentSessionKey/current_session_id，工具从上下文获取当前会话
     effective_session_id = session_id or ""
@@ -1015,7 +1010,6 @@ def get_agent_tools(
         effective_session_id = session_manager.resolve_main_session_id(agent_id)
     subagents_tool = SubagentsTool(current_agent_id=agent_id, current_session_id=effective_session_id)
     subagents_tool._agent_manager = agent_manager
-    subagents_tool._main_loop = main_loop
     subagents_tool._spawn_tool = spawn_tool
     return [
         AgentsListTool(current_agent_id=agent_id),

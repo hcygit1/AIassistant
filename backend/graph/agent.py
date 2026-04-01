@@ -209,7 +209,6 @@ class AgentManager:
         self.mem_recalls: dict[str, Any] = {}
         self._states: dict[str, AgentState] = {}
         self._initialized = False
-        self._main_loop: asyncio.AbstractEventLoop | None = None
         self.lifecycle_hooks: LifecycleHooks | None = None
         self._pending_tasks: set[asyncio.Task] = set()
         self._state_save_tasks: dict[str, asyncio.Task] = {}
@@ -307,7 +306,6 @@ class AgentManager:
 
     async def initialize(self, data_dir: str) -> None:
         self.data_dir = data_dir
-        self._main_loop = asyncio.get_running_loop()
 
         from graph.workspace import ensure_agent_workspace
 
@@ -427,7 +425,7 @@ class AgentManager:
         tools.extend(get_web_tools())
         tools.extend(get_memory_tools(agent_id=agent_id))
         tools.extend(get_knowledge_tools(agent_dir))
-        tools.extend(get_agent_tools(agent_id, self, session_id, main_loop=self._main_loop))
+        tools.extend(get_agent_tools(agent_id, self, session_id))
         tools.extend(get_cron_tools(agent_id))
         tools.extend(get_status_tools(agent_id, session_id))
 

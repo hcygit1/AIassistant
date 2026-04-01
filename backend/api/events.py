@@ -306,10 +306,6 @@ async def steer_subagent(agent_id: str, req: SubagentSteerRequest):
         current_session_id=requester_session_id,
     )
     spawn_tool._agent_manager = agent_manager
-    spawn_tool._main_loop = getattr(agent_manager, "_main_loop", None)
-
-    if not spawn_tool._main_loop:
-        return {"ok": False, "error": "agent event loop is unavailable"}
 
     coro = spawn_tool._run_subagent(
         new_run_id,
@@ -318,8 +314,8 @@ async def steer_subagent(agent_id: str, req: SubagentSteerRequest):
         message,
         entry.requester_session_key,
     )
-    future = asyncio.run_coroutine_threadsafe(coro, spawn_tool._main_loop)
-    registry.set_task(new_run_id, future)
+    t = asyncio.create_task(coro)
+    registry.set_task(new_run_id, t)
     return {"ok": True, "run_id": new_run_id, "replaced_run_id": run_id}
 
 

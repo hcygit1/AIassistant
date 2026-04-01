@@ -6,7 +6,6 @@ mem_get:    Read a specific chunk by ID from MemStore
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -36,7 +35,7 @@ class MemSearchTool(BaseTool):
     args_schema: type[BaseModel] = MemSearchInput
     agent_id: str = ""
 
-    def _run(self, query: str, max_results: int = 8) -> str:
+    async def _arun(self, query: str, max_results: int = 8) -> str:
         try:
             from graph.agent import agent_manager
             recall = agent_manager.mem_recalls.get(self.agent_id)
@@ -46,23 +45,7 @@ class MemSearchTool(BaseTool):
         if not recall:
             return "记忆系统未初始化。"
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(
-                    asyncio.run,
-                    recall.search(query, max_results=max_results),
-                )
-                result = future.result(timeout=30)
-        else:
-            result = asyncio.run(
-                recall.search(query, max_results=max_results)
-            )
+        result = await recall.search(query, max_results=max_results)
 
         if not result.hits:
             return f"未找到与 '{query}' 相关的记忆。"
