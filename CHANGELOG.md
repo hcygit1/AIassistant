@@ -24,5 +24,5 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- Frontend README was generic Next.js template, now ClawChain-specific
+- Frontend README was generic Next.js template, now project-specific
 - Missing `.gitkeep` files causing empty data directories not to be tracked

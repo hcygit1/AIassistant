@@ -1,6 +1,6 @@
-# ClawChain Frontend
+# Pipixia Frontend
 
-基于 Next.js + React + TypeScript 的 ClawChain Web 客户端。
+基于 Next.js + React + TypeScript 的 Pipixia Web 客户端。
 
 ## 技术栈
 

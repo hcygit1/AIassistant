@@ -20,4 +20,4 @@ _在第一次对话中填写。让它成为你的。_
 说明：
 
 - 将此文件保存在工作区根目录为 `IDENTITY.md`。
-- 头像可使用工作区相对路径，如 `avatars/clawchain.png`。
+- 头像可使用工作区相对路径，如 `avatars/pipixia.png`。

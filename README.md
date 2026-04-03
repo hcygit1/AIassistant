@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="images/clawchain_logo.png" alt="ClawChain" width="400">
-  <h1>ClawChain</h1>
+  <img src="images/clawchain_logo.png" alt="Pipixia" width="400">
+  <h1>Pipixia</h1>
   <p>
     <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
@@ -9,124 +9,133 @@
 
 ---
 
-**ClawChain** 是对 [OpenClaw](https://github.com/openclaw/openclaw) 的致敬项目 —— 一个基于 Python + LangChain/LangGraph 搭建的本地 Agent 工程实践。
+**Pipixia** 是一个本地优先的 AI Agent 系统，基于 Python + LangChain/LangGraph 构建，支持多 Agent 协作、持久化记忆、自动上下文管理和桌面端集成。
 
-**定位**：本地优先、工程实践导向、以 Web + Desktop 为主交互。
-
-[中文详细版](README.zh-CN.md) | [English](README.en.md)
+[English](README.en.md) | [中文简洁版](README.zh-CN.md)
 
 ---
 
-## 🏗️ 架构
+## 架构总览
 
 <p align="center">
-  <img src="images/clawchain_arch.png" alt="ClawChain 架构" width="800">
+  <img src="images/clawchain_arch.png" alt="Pipixia 架构" width="800">
 </p>
-
----
-
-## ✨ 界面展示
-
-<table align="center">
-  <tr align="center">
-    <th><p align="center">🤖 Agent 自我介绍</p></th>
-    <th><p align="center">🔀 子 Agent 并行协作</p></th>
-    <th><p align="center">📊 结构化报告输出</p></th>
-  </tr>
-  <tr>
-    <td align="center"><p align="center"><img src="images/screenshot-agent-intro.png" width="280" alt="Agent 自我介绍"></p></td>
-    <td align="center"><p align="center"><img src="images/screenshot-subagents.png" width="280" alt="子 Agent 协作"></p></td>
-    <td align="center"><p align="center"><img src="images/screenshot-report.png" width="280" alt="报告输出"></p></td>
-  </tr>
-  <tr>
-    <td align="center">读取文件、理解身份、工具调用</td>
-    <td align="center">多子 Agent 并行搜索与 Inspector 面板</td>
-    <td align="center">三大品牌新闻舆情对比报告</td>
-  </tr>
-</table>
-
----
-
-## 🔬 机制图
-
-### 1) 记忆机制（写入 + 检索）
-
-<p align="center">
-  <img src="images/clawchain_memory_mechanism.png" alt="记忆机制" width="700">
-</p>
-
-<p align="center">用户消息经 Agent 执行后，命中记忆触发条件则写入 MEMORY.md / memory/*.md，由 MemoryIndexer 建索引供后续检索召回；否则仅进入会话历史。</p>
-
-### 2) 子 Agent 机制（嵌套通信）
-
-<p align="center">
-  <img src="images/clawchain_subagent_mechanism.png" alt="子 Agent 机制" width="700">
-</p>
-
-<p align="center">主 Agent 下发子任务给子 Agent，子任务事件与中间结果实时回传 Inspector，最终汇总回复用户。</p>
-
-### 3) 中断与排队机制（stop/abort/followup）
-
-<p align="center">
-  <img src="images/clawchain_interrupt_queue_mechanism.png" alt="中断与排队机制" width="700">
-</p>
-
-<p align="center">会话 busy 时新消息进入 followup 队列；用户点击 stop 时调用 POST /api/chat/abort 取消当前 run，尽量保存 partial 并返回 aborted 终态。</p>
-
----
-
-## 技术栈
 
 | 层 | 技术 |
 |---|---|
 | 后端 | Python 3.11+ · FastAPI · LangChain / LangGraph |
 | 前端 | Next.js · React · TypeScript |
 | 桌面端 | Tauri 2.0 · Rust（托盘/窗口壳） |
-| 运行存储 | 本地文件系统（会话/记忆/配置） |
+| 存储 | SQLite（FTS5 全文 + sqlite-vec 向量）· 本地文件系统 |
+
+---
+
+## 界面展示
+
+<table align="center">
+  <tr align="center">
+    <th><p align="center">Agent 自我介绍</p></th>
+    <th><p align="center">子 Agent 并行协作</p></th>
+    <th><p align="center">结构化报告输出</p></th>
+  </tr>
+  <tr>
+    <td align="center"><p align="center"><img src="images/screenshot-agent-intro.png" width="280" alt="Agent 自我介绍"></p></td>
+    <td align="center"><p align="center"><img src="images/screenshot-subagents.png" width="280" alt="子 Agent 协作"></p></td>
+    <td align="center"><p align="center"><img src="images/screenshot-report.png" width="280" alt="报告输出"></p></td>
+  </tr>
+</table>
+
+---
+
+## 核心设计
+
+### 记忆系统
+
+Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现对话知识的持久化积累和精准检索。
+
+**写入阶段**：每轮对话结束后，`MemWorker` 异步处理消息入库。通过 LLM 对原始对话生成 120 字符以内的结构化摘要，同时进行 SHA-256 哈希去重，避免重复写入。摘要和去重判断使用小模型（如 qwen-plus）执行，保证高频低成本。
+
+**索引阶段**：入库的记忆 chunk 同时建立两套索引 —— SQLite FTS5 全文索引用于关键词精确匹配，sqlite-vec 向量索引用于语义相似度检索。双索引互补，覆盖"用户说过什么"和"用户意图是什么"两种检索场景。
+
+**召回阶段**：`MemRecall` 引擎采用瀑布式搜索策略，按 Tasks → Chunks 优先级逐层检索，设置总字符预算（40,000 字符），在预算内尽可能召回最相关的上下文。召回结果注入到当前对话的系统提示词中，使 Agent 具备跨会话的长期记忆能力。
+
+此外，系统支持 **技能演化**（Skill Evolution）：`MemSkillEvolver` 通过多阶段 LLM 流水线（评估 → 生成 → 质量评分）从历史对话中提炼可复用的操作技能，写入 SKILL.md 文件后自动注入 Agent 的系统提示词。
+
+<p align="center">
+  <img src="images/clawchain_memory_mechanism.png" alt="记忆机制" width="700">
+</p>
+
+### 上下文管理
+
+所有上下文控制参数统一由一个 `frozen=True` 的 `ContextBudget` dataclass 管理，系统内所有组件通过 `resolve_budget(agent_id)` 获取参数，零硬编码。
+
+**预算分配**：200K token 上下文窗口中，20% 预留给模型思考（thinking_reserve），80% 为活跃上下文（active_ratio）。活跃部分进一步细分为会话摘要（5%）和对话历史。单个文件限制 20,000 字符。
+
+**三级压缩机制**：
+- **JIT 裁剪**：每轮发送前，对旧的工具输出按阈值截断，防止单次大型 grep/read 占满上下文
+- **滑动摘要**：当上下文达到活跃窗口的 80% 时自动触发，LLM 将旧对话压缩为结构化摘要
+- **强制压缩**：达到 95% 时强制执行，确保永远不会超出模型上下文窗口
+
+**换模型零改动**：修改配置中的 `contextTokens` 一个值，所有比率自动等比缩放。dataclass 的 `frozen` 属性保证运行时不可变，避免组件间阈值不一致。
+
+### 子 Agent 协作
+
+主 Agent 通过 `sessions_spawn` 工具创建子 Agent，每个子 Agent 拥有独立会话和工具集。子 Agent 运行状态通过 **显式状态机** 管理（`running → succeeded/failed/timed_out/cancelled → archived`），非法状态转换直接报错，防止隐式状态污染。
+
+结果投递采用独立的投递状态机（`pending → queued → delivering → delivered`），支持超时重试和降级写入。所有事件通过 **标准化事件总线** 发送，23 种事件类型由 `Events` 工厂类统一构建，消除裸 dict 拼写风险。
+
+<p align="center">
+  <img src="images/clawchain_subagent_mechanism.png" alt="子 Agent 机制" width="700">
+</p>
+
+### 中断与排队
+
+<p align="center">
+  <img src="images/clawchain_interrupt_queue_mechanism.png" alt="中断与排队机制" width="700">
+</p>
+
+会话 busy 时新消息进入 followup 队列；用户点击 stop 时调用 abort 取消当前 run，保存 partial 结果并返回终态。
+
+---
+
+## 后端目录结构
+
+```
+backend/
+├── graph/          # Agent 运行时核心（会话、提示词、子 Agent、心跳）
+├── infra/          # 横切关注点（事件总线、状态机、审计、token 计数）
+├── llm/            # LLM 调用层（模型配置、选择、failover、重试）
+├── mem/            # 记忆系统（存储、索引、召回、技能演化）
+├── tools/          # 工具定义（文件、命令、网络、记忆、子 Agent）
+├── sandbox/        # 安全沙箱（路径策略、执行策略、审批）
+├── scheduler/      # 定时任务（Cron 调度、任务存储）
+├── tool_results/   # 工具结果落盘与预览
+├── api/            # FastAPI 路由
+├── config.py       # 配置管理
+└── app.py          # 应用入口
+```
 
 ---
 
 ## 快速开始
 
-### 1) 一键开发启动（推荐）
+### 一键启动（推荐）
 
 ```bash
 python scripts/dev.py
 ```
 
-首次使用：未配置时启动后通过 Web 配置中心完成，或先运行 `cd backend && python cli.py onboard` 再执行 dev。
+首次使用通过 Web 配置中心完成，或先运行 `cd backend && python cli.py onboard`。
 
-常用参数：
-
-```bash
-python scripts/dev.py --skip-install
-python scripts/dev.py --backend-only
-python scripts/dev.py --frontend-only
-```
-
-### 2) 单独启动后端
+### 单独启动
 
 ```bash
+# 后端
 cd backend
 pip install -r requirements.txt
 python cli.py start
-```
 
-可选：使用参数进行非交互快速启动
-
-```bash
-python cli.py start --provider deepseek --api-key "sk-xxx" --model deepseek-chat --doctor
-```
-
-一键清理运行产物（通用功能）：
-
-```bash
-python cli.py clean --clean
-```
-
-### 3) 启动前端
-
-```bash
+# 前端
 cd frontend
 npm install
 npm run dev
@@ -136,44 +145,7 @@ npm run dev
 
 ---
 
-## 核心功能
-
-### Agent 与会话
-
-- 多 Agent 工作区隔离（配置、会话、记忆、技能）
-- 会话管理与命令系统（如 `/new`、`/compact`、`/status`）
-- 子 Agent 协作（`sessions_spawn` / `subagents`）
-
-### 记忆与调度
-
-- 记忆文件写入与检索（`MEMORY.md` + `memory/*.md`）
-- Heartbeat 后台巡检与静默 ACK 机制（`HEARTBEAT_OK`）
-- Cron 定时任务与提醒投递
-
-### 工具与安全
-
-- 文件、命令、网络、记忆、会话类工具
-- 路径与执行策略约束（按配置控制能力边界）
-- 审批流 API（危险操作可接入前端确认）
-
-### 配置与可观测
-
-- 配置中心（模型、工具策略、运行参数）
-- 事件流与状态接口（SSE + API）
-- 运行维护文档（安装、排障、清理）
-
----
-
 ## Desktop（macOS Alpha）
-
-`desktop/` 已具备可运行 alpha 形态：
-
-- 托盘常驻（显示窗口 / 退出）
-- 关闭窗口隐藏到后台
-- sidecar 双路径启动（优先打包 sidecar，失败回退到 Python）
-- 后端健康检查（`/api/health`）与就绪等待
-
-快速运行：
 
 ```bash
 cd desktop
@@ -182,26 +154,9 @@ npm run doctor
 npm run dev
 ```
 
-构建验证：
-
-```bash
-cd desktop
-npm run build:frontend
-npm run build:tauri
-```
-
-说明：当前为工程可用 alpha。
+托盘常驻、关闭窗口隐藏到后台、sidecar 双路径启动、后端健康检查与就绪等待。
 
 ---
-
-## 文档入口
-
-- 文档总览：`docs/index.md`
-- 安装启动：`docs/start/getting-started.md`
-- 配置说明：`docs/configuration/index.md`
-- Agent 架构：`docs/agents/architecture.md`
-- Prompt / 记忆：`docs/agents/prompt-memory.md`
-- API 参考：`docs/api/reference.md`
 
 ## License
 

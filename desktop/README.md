@@ -1,4 +1,4 @@
-# ClawChain Desktop (Tauri)
+# Pipixia Desktop (Tauri)
 
 桌面端目标：提供 macOS 常驻后台体验（托盘、通知、后端伴随进程），让本地 Agent 在桌面场景稳定运行。
 
