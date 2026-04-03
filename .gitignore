@@ -30,6 +30,11 @@ backend/data/**/*.db
 
 # Project analysis docs (local development only)
 docs-analysis/
+docs/
+项目学习.md
+项目改进.md
+问题跟踪.md
+TOOL_RESULT_PERSISTENCE_IMPLEMENTATION.md
 
 # Env files with secrets
 backend/.env
