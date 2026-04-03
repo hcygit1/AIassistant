@@ -83,7 +83,7 @@ class ExecTool(BaseTool):
 
         if needs_approval:
             from graph.approval_store import approval_store
-            from graph.agent import event_bus
+            from graph.event_bus import Events, event_bus
 
             cfg = get_exec_approval_config()
             timeout_sec = cfg.get("ask_timeout_seconds", 60)
@@ -92,13 +92,7 @@ class ExecTool(BaseTool):
             approval_id = approval_store.create(
                 self.agent_id, "exec", input_preview
             )
-            event_bus.emit(self.agent_id, {
-                "type": "lifecycle",
-                "event": "approval_required",
-                "approval_id": approval_id,
-                "tool": "exec",
-                "input_preview": input_preview,
-            })
+            event_bus.emit(self.agent_id, Events.approval_required(approval_id=approval_id, tool="exec", input_preview=input_preview))
 
             decision = await approval_store.wait(approval_id, timeout_sec)
             if decision != "approved":
@@ -221,7 +215,7 @@ class ProcessKillTool(BaseTool):
 
         if needs_approval:
             from graph.approval_store import approval_store
-            from graph.agent import event_bus
+            from graph.event_bus import Events, event_bus
 
             cfg = get_exec_approval_config()
             timeout_sec = cfg.get("ask_timeout_seconds", 60)
@@ -229,13 +223,7 @@ class ProcessKillTool(BaseTool):
             approval_id = approval_store.create(
                 self.agent_id, "process_kill", input_preview
             )
-            event_bus.emit(self.agent_id, {
-                "type": "lifecycle",
-                "event": "approval_required",
-                "approval_id": approval_id,
-                "tool": "process_kill",
-                "input_preview": input_preview,
-            })
+            event_bus.emit(self.agent_id, Events.approval_required(approval_id=approval_id, tool="process_kill", input_preview=input_preview))
 
             decision = await approval_store.wait(approval_id, timeout_sec)
             if decision != "approved":

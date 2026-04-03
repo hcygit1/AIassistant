@@ -466,7 +466,7 @@ class SessionsSpawnTool(BaseTool):
     ) -> None:
         """向 requester 交付 announce；若 requester 是子会话则触发其新 run 并递归向上"""
         from graph.subagent_registry import registry
-        from graph.agent import event_bus
+        from graph.event_bus import Events, event_bus
         from graph.session_manager import session_manager
         from graph.message_queue import message_queue_manager
 
@@ -511,20 +511,12 @@ class SessionsSpawnTool(BaseTool):
 
             try:
                 registry.set_announce_state(run_id, "queued")
-                event_bus.emit(req_agent, {
-                    "type": "subagent_announce",
-                    "run_id": run_id,
-                    "announce_state": "queued",
-                })
+                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="queued"))
                 await asyncio.wait_for(queue.acquire(), timeout=ANNOUNCE_ACQUIRE_TIMEOUT_SEC)
                 lock_acquired = True
                 queue.set_active_task(asyncio.current_task())
                 registry.set_announce_state(run_id, "delivering")
-                event_bus.emit(req_agent, {
-                    "type": "subagent_announce",
-                    "run_id": run_id,
-                    "announce_state": "delivering",
-                })
+                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivering"))
                 # #region agent log
                 _debug_log(
                     "backend/tools/agent_tools.py:_deliver_announce_to_requester",
@@ -543,39 +535,29 @@ class SessionsSpawnTool(BaseTool):
                 )
                 # #endregion
                 registry.mark_announce_delivered(run_id)
-                event_bus.emit(req_agent, {
-                    "type": "subagent_announce",
-                    "run_id": run_id,
-                    "announce_state": "delivered",
-                })
+                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivered"))
             except asyncio.TimeoutError:
                 session_manager.save_message(main_session_id, req_agent, "system", announce_msg)
                 registry.mark_announce_dropped(run_id)
-                event_bus.emit(req_agent, {
-                    "type": "subagent_announce",
-                    "run_id": run_id,
-                    "announce_state": "dropped",
-                })
-                event_bus.emit(req_agent, {
-                    "type": "subagent_error",
-                    "run_id": run_id,
-                    "error": (
-                        f"announce queue timeout after {ANNOUNCE_ACQUIRE_TIMEOUT_SEC}s"
-                        if not lock_acquired
-                        else f"announce delivery timeout after {ANNOUNCE_RUN_TIMEOUT_SEC}s"
+                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
+                event_bus.emit(
+                    req_agent,
+                    Events.subagent_error(
+                        run_id=run_id,
+                        error=(
+                            f"announce queue timeout after {ANNOUNCE_ACQUIRE_TIMEOUT_SEC}s"
+                            if not lock_acquired
+                            else f"announce delivery timeout after {ANNOUNCE_RUN_TIMEOUT_SEC}s"
+                        ),
                     ),
-                })
+                )
                 return
             except Exception as e:
                 # 兜底：至少把系统消息写回主会话，避免结果丢失
                 session_manager.save_message(main_session_id, req_agent, "system", announce_msg)
                 registry.mark_announce_dropped(run_id)
-                event_bus.emit(req_agent, {
-                    "type": "subagent_announce",
-                    "run_id": run_id,
-                    "announce_state": "dropped",
-                })
-                event_bus.emit(req_agent, {"type": "subagent_error", "run_id": run_id, "error": str(e)[:200]})
+                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
+                event_bus.emit(req_agent, Events.subagent_error(run_id=run_id, error=str(e)[:200]))
                 return
             finally:
                 if lock_acquired:
@@ -594,11 +576,7 @@ class SessionsSpawnTool(BaseTool):
         if busy:
             if not registry.mark_announce_retry(run_id):
                 registry.mark_announce_dropped(run_id)
-                event_bus.emit(req_agent, {
-                    "type": "subagent_announce",
-                    "run_id": run_id,
-                    "announce_state": "dropped",
-                })
+                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
                 session_manager.save_message(
                     req_session,
                     req_agent,
@@ -606,11 +584,7 @@ class SessionsSpawnTool(BaseTool):
                     "[Announce Dropped] Sub-agent finished but requester session is busy, retry limit reached or expired.",
                 )
                 return
-            event_bus.emit(req_agent, {
-                "type": "subagent_announce",
-                "run_id": run_id,
-                "announce_state": "retrying",
-            })
+            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="retrying"))
             rec = registry.get_run(run_id)
             cnt = getattr(rec, "announce_retry_count", 0) if rec else 0
             delay_s = min(2 ** cnt, 8)
@@ -634,11 +608,7 @@ class SessionsSpawnTool(BaseTool):
         parent_reply = ""
         try:
             registry.set_announce_state(run_id, "delivering")
-            event_bus.emit(req_agent, {
-                "type": "subagent_announce",
-                "run_id": run_id,
-                "announce_state": "delivering",
-            })
+            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivering"))
             async for event in self._agent_manager.astream(
                 message=announce_msg,
                 session_id=req_session,
@@ -664,22 +634,14 @@ class SessionsSpawnTool(BaseTool):
                     label=label,
                 )
             registry.mark_announce_delivered(run_id)
-            event_bus.emit(req_agent, {
-                "type": "subagent_announce",
-                "run_id": run_id,
-                "announce_state": "delivered",
-            })
+            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivered"))
         except Exception as e:
             session_manager.save_message(
                 req_session, req_agent, "system",
                 f"[Announce processing failed] {str(e)[:200]}",
             )
             registry.mark_announce_dropped(run_id)
-            event_bus.emit(req_agent, {
-                "type": "subagent_announce",
-                "run_id": run_id,
-                "announce_state": "dropped",
-            })
+            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
             parent_child_key = f"agent:{req_agent}:subagent:{req_session}"
             grandparent = registry.resolve_requester_for_child_session(parent_child_key)
             if grandparent:
@@ -703,7 +665,7 @@ class SessionsSpawnTool(BaseTool):
         run_timeout_seconds: int = 0,
     ) -> None:
         from graph.subagent_registry import registry
-        from graph.agent import event_bus
+        from graph.event_bus import Events, event_bus
 
         started_at: float | None = None
         result_parts: list[str] = []
@@ -712,12 +674,10 @@ class SessionsSpawnTool(BaseTool):
         try:
             registry.mark_started(run_id)
             started_at = __import__("time").time()
-            event_bus.emit(self.current_agent_id, {
-                "type": "subagent_start",
-                "run_id": run_id,
-                "agent_id": agent_id,
-                "task": task[:200],
-            })
+            event_bus.emit(
+                self.current_agent_id,
+                Events.subagent_start(run_id=run_id, agent_id=agent_id, task=task[:200]),
+            )
 
             async def _stream_child() -> None:
                 import time as _time
@@ -734,30 +694,33 @@ class SessionsSpawnTool(BaseTool):
                         now_ts = _time.time()
                         if now_ts - last_progress_emit >= 1.0:
                             last_progress_emit = now_ts
-                            event_bus.emit(self.current_agent_id, {
-                                "type": "subagent_progress",
-                                "run_id": run_id,
-                                "chars": len("".join(result_parts)),
-                                "elapsed_s": int(now_ts - (started_at or now_ts)),
-                            })
+                            event_bus.emit(
+                                self.current_agent_id,
+                                Events.subagent_progress(
+                                    run_id=run_id,
+                                    chars=len("".join(result_parts)),
+                                    elapsed_s=int(now_ts - (started_at or now_ts)),
+                                ),
+                            )
                     elif event.get("type") == "tool_start":
-                        event_bus.emit(self.current_agent_id, {
-                            "type": "subagent_tool",
-                            "run_id": run_id,
-                            "tool": event.get("tool", ""),
-                        })
+                        event_bus.emit(
+                            self.current_agent_id,
+                            Events.subagent_tool(run_id=run_id, tool=event.get("tool", "")),
+                        )
                     elif event.get("type") == "tool_end":
                         output = event.get("output", "") or ""
                         tool_calls_log.append({
                             "tool": event.get("tool", ""),
                             "output": output,
                         })
-                        event_bus.emit(self.current_agent_id, {
-                            "type": "subagent_tool_end",
-                            "run_id": run_id,
-                            "tool": event.get("tool", ""),
-                            "output_preview": str(output)[:160],
-                        })
+                        event_bus.emit(
+                            self.current_agent_id,
+                            Events.subagent_tool_end(
+                                run_id=run_id,
+                                tool=event.get("tool", ""),
+                                output_preview=str(output)[:160],
+                            ),
+                        )
 
             if run_timeout_seconds > 0:
                 await asyncio.wait_for(_stream_child(), timeout=run_timeout_seconds)
@@ -787,11 +750,10 @@ class SessionsSpawnTool(BaseTool):
                 "H2B",
             )
             # #endregion
-            event_bus.emit(self.current_agent_id, {
-                "type": "subagent_done",
-                "run_id": run_id,
-                "result": result[:300],
-            })
+            event_bus.emit(
+                self.current_agent_id,
+                Events.subagent_done(run_id=run_id, result=result[:300]),
+            )
 
             record = registry.get_run(run_id)
             label = record.label if record else None
@@ -830,11 +792,10 @@ class SessionsSpawnTool(BaseTool):
             )
             fallback_result = result or f"Sub-agent execution timed out ({timeout_secs}s)"
             registry.mark_terminated(run_id, "timeout")
-            event_bus.emit(self.current_agent_id, {
-                "type": "subagent_error",
-                "run_id": run_id,
-                "error": f"timeout after {timeout_secs}s",
-            })
+            event_bus.emit(
+                self.current_agent_id,
+                Events.subagent_error(run_id=run_id, error=f"timeout after {timeout_secs}s"),
+            )
             record = registry.get_run(run_id)
             label = record.label if record else None
             await self._deliver_announce_to_requester(
@@ -850,14 +811,13 @@ class SessionsSpawnTool(BaseTool):
             )
         except asyncio.CancelledError:
             registry.mark_terminated(run_id, "killed")
-            event_bus.emit(self.current_agent_id, {
-                "type": "subagent_killed", "run_id": run_id,
-            })
+            event_bus.emit(self.current_agent_id, Events.subagent_killed(run_id=run_id))
         except Exception as e:
             registry.mark_terminated(run_id, f"error: {e}")
-            event_bus.emit(self.current_agent_id, {
-                "type": "subagent_error", "run_id": run_id, "error": str(e)[:200],
-            })
+            event_bus.emit(
+                self.current_agent_id,
+                Events.subagent_error(run_id=run_id, error=str(e)[:200]),
+            )
 
 
 # ---------------------------------------------------------------------------

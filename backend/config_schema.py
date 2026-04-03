@@ -137,15 +137,13 @@ class AgentStatePersistConfig(BaseModel):
 
 class ContextBudgetConfig(BaseModel):
     """上下文预算比率 — 从 contextTokens 派生所有分配值"""
-    thinking_reserve: float = 0.30
-    active_ratio: float = 0.70
-    system_prompt_ratio: float = 0.05
-    session_summary_ratio: float = 0.03
-    recent_messages_ratio: float = 0.82
-    jit_tool_output_ratio: float = 0.10
-    sliding_ratio: float = 0.77
-    forced_ratio: float = 1.0
-    max_file_chars: int = 8000
+    thinking_reserve: float = 0.20
+    active_ratio: float = 0.80
+    session_summary_ratio: float = 0.05
+    jit_tool_output_ratio: float = 0.036
+    sliding_ratio: float = 0.80
+    forced_ratio: float = 0.95
+    max_file_chars: int = 20000
 
 
 class AgentDefaultsConfig(BaseModel):

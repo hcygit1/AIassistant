@@ -62,7 +62,7 @@ class MemSearchTool(BaseTool):
             )
             lines.append(h.summary or "(无摘要)")
             if h.content_excerpt:
-                lines.append(h.content_excerpt[:500])
+                lines.append(h.content_excerpt)
             lines.append("")
         return "\n".join(lines)
 

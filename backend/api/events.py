@@ -25,7 +25,7 @@ class SubagentSteerRequest(BaseModel):
 @router.get("/agents/{agent_id}/events")
 async def agent_events(agent_id: str):
     """SSE 端点：订阅 Agent 的生命周期事件"""
-    from graph.agent import event_bus
+    from graph.event_bus import event_bus
 
     queue = event_bus.subscribe(agent_id)
 

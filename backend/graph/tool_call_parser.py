@@ -64,8 +64,8 @@ def parse_text_tool_calls(content: str) -> list[tuple[str, dict[str, Any]]]:
     """从模型输出的文本中解析工具调用。
 
     支持格式：
-    - functions.read:3{"path": "SOUL.md"}
-    - functions.read:8<|tool_call_argument_begin|>{"path": "SOUL.md"}
+    - functions.read:3{"path": "AGENTS.md"}
+    - functions.read:8<|tool_call_argument_begin|>{"path": "AGENTS.md"}
     - 前导文本 + 多个调用：好的。functions.read:0{...}functions.read:1{...}
     - 换行分隔
 

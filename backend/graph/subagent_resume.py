@@ -62,7 +62,7 @@ def _reconcile_orphaned(run_id: str, entry: SubagentRunRecord, reason: str) -> b
 async def _deliver_announce_for_run(run_id: str, entry: SubagentRunRecord) -> bool:
     """向 requester 交付 announce"""
     from graph.session_manager import session_manager
-    from graph.agent import event_bus
+    from graph.event_bus import Events, event_bus
 
     parsed = session_manager.session_id_from_session_key(entry.requester_session_key)
     if not parsed:
@@ -99,12 +99,12 @@ async def _deliver_announce_for_run(run_id: str, entry: SubagentRunRecord) -> bo
             ):
                 pass
             registry.mark_announce_delivered(run_id)
-            event_bus.emit(req_agent, {"type": "subagent_done", "run_id": run_id, "result": result[:300]})
+            event_bus.emit(req_agent, Events.subagent_done(run_id=run_id, result=result[:300]))
             return True
         except Exception:
             session_manager.save_message(main_sid, req_agent, "system", announce_msg)
             registry.mark_announce_dropped(run_id)
-            event_bus.emit(req_agent, {"type": "subagent_done", "run_id": run_id, "result": result[:300]})
+            event_bus.emit(req_agent, Events.subagent_done(run_id=run_id, result=result[:300]))
             return True
 
     try:

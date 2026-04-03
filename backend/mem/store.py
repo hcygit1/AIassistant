@@ -63,7 +63,7 @@ def _now_ms() -> int:
 # Data classes
 # ---------------------------------------------------------------------------
 
-DedupStatus = Literal["active", "duplicate", "merged"]
+DedupStatus = Literal["active", "duplicate", "merged", "orphaned"]
 TaskStatus = Literal["active", "completed", "skipped"]
 SkillStatus = Literal["active", "archived", "draft"]
 SkillVisibility = Literal["private", "public"]
@@ -372,7 +372,7 @@ class MemStore:
         """重建所有 FTS 索引（迁移或修复时使用）。"""
         self._conn.execute("DELETE FROM chunks_fts")
         for row in self._conn.execute(
-            "SELECT rowid, summary, content FROM chunks WHERE dedup_status='active'"
+            "SELECT rowid, summary, content FROM chunks WHERE dedup_status IN ('active', 'orphaned')"
         ):
             self._conn.execute(
                 "INSERT INTO chunks_fts(rowid, summary, content) VALUES (?, ?, ?)",
@@ -1080,7 +1080,7 @@ class MemStore:
                FROM vec_chunks v
                JOIN chunks c ON c.id = v.chunk_id
                WHERE v.embedding MATCH ? AND k = ?
-                 AND c.dedup_status = 'active'
+                 AND c.dedup_status IN ('active', 'orphaned')
                ORDER BY v.distance""",
             (blob, top_k * 3),
         ).fetchall()
@@ -1122,7 +1122,7 @@ class MemStore:
                      FROM chunks_fts f
                      JOIN chunks c ON c.rowid = f.rowid
                      WHERE chunks_fts MATCH ?
-                       AND c.dedup_status = 'active'
+                       AND c.dedup_status IN ('active', 'orphaned')
                        AND c.task_id IS NULL"""
             params: list[Any] = [sanitized]
             if exclude_session:

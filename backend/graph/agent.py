@@ -49,7 +49,7 @@ TRANSIENT_HTTP_RETRY_DELAY_MS = 2500
 # 裸 /new 或 /reset 后作为首条用户消息注入，触发 Session Startup + 问候
 BARE_SESSION_RESET_PROMPT = (
     "A new session was started via /new or /reset. "
-    "Greet the user in your configured persona (SOUL.md / IDENTITY.md are already in your system prompt). "
+    "Greet the user in your configured persona (IDENTITY.md is already in your system prompt). "
     "Be yourself - use your defined voice, mannerisms, and mood. "
     "Keep it to 1-3 sentences and ask what they want to do. "
     "If the runtime model differs from default_model in the system prompt, mention the default model. "
@@ -164,35 +164,7 @@ class LifecycleHooks:
 
 
 
-# ---------------------------------------------------------------------------
-# SSE 事件队列 — 用于前端实时更新
-# ---------------------------------------------------------------------------
-
-class EventBus:
-    """简易事件总线，支持 SSE 订阅"""
-
-    def __init__(self):
-        self._queues: dict[str, list[asyncio.Queue]] = {}
-
-    def subscribe(self, agent_id: str) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue()
-        self._queues.setdefault(agent_id, []).append(queue)
-        return queue
-
-    def unsubscribe(self, agent_id: str, queue: asyncio.Queue) -> None:
-        queues = self._queues.get(agent_id, [])
-        if queue in queues:
-            queues.remove(queue)
-
-    def emit(self, agent_id: str, event: dict[str, Any]) -> None:
-        for queue in self._queues.get(agent_id, []):
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
-
-
-event_bus = EventBus()
+from graph.event_bus import EventBus, Events, event_bus
 
 
 # ---------------------------------------------------------------------------
@@ -592,29 +564,11 @@ class AgentManager:
         history = prune_messages(history, agent_id=agent_id)
 
         from graph.context_budget import resolve_budget
-        from graph.token_counter import count_tokens, count_messages_tokens
+        from graph.token_counter import count_tokens
         _budget = resolve_budget(agent_id)
         _sp_tokens = count_tokens(system_prompt)
         _summary_tokens = count_tokens(history[0].get("content", "")) if history and history[0].get("role") == "system" else 0
         _history_tokens = count_messages_tokens(history)
-
-        # 输入预算硬检查：总输入不超过 active_tokens，超出时从 history 头部裁对话消息
-        _msg_tokens = count_tokens(message)
-        _total_input = _sp_tokens + _history_tokens + _msg_tokens
-        if _total_input > _budget.active_tokens:
-            while _total_input > _budget.active_tokens and len(history) > 1:
-                _trim_idx = 1 if history and history[0].get("role") == "system" else 0
-                if _trim_idx >= len(history):
-                    break
-                _removed = history.pop(_trim_idx)
-                _removed_tokens = count_tokens(_removed.get("content", "")) + 4
-                for _tc in _removed.get("tool_calls", []):
-                    _removed_tokens += count_tokens(str(_tc.get("input", "")))
-                    _removed_tokens += count_tokens(str(_tc.get("output", "")))
-                _total_input -= _removed_tokens
-            _history_tokens = count_messages_tokens(history)
-            logger.info("Input budget enforced: trimmed to %d history tokens (active_budget=%d)",
-                        _history_tokens, _budget.active_tokens)
 
         agent_cfg = resolve_agent_config(agent_id)
         recursion_limit = agent_cfg.get("recursion_limit", 50)
@@ -646,7 +600,7 @@ class AgentManager:
 
             turn = run_tracker.start_turn(agent_id, session_id)
             audit_logger.log_turn_start(agent_id, turn.run_id, session_id)
-            yield {"type": "lifecycle", "event": "turn_start", "run_id": turn.run_id, "model": str(ref)}
+            yield Events.turn_start(run_id=turn.run_id, model=str(ref))
 
             full_response = ""
             tool_calls_log: list[dict[str, Any]] = []
@@ -744,7 +698,7 @@ class AgentManager:
                         tool_calls_log.append({
                             "tool": tool_name,
                             "input": tool_input_for_log,
-                            "output": output_str[:2000],
+                            "output": output_str,
                         })
                         if self.lifecycle_hooks:
                             await self.lifecycle_hooks.on_after_tool_call(
@@ -755,12 +709,7 @@ class AgentManager:
                         # 危险工具执行后通知前端（用于审计/确认提示）
                         if tool_name in ("exec", "process_kill"):
                             safe_input = str(tool_input_for_log)[:200] if tool_input_for_log else ""
-                            event_bus.emit(agent_id, {
-                                "type": "lifecycle",
-                                "event": "tool_dangerous_executed",
-                                "tool": tool_name,
-                                "input_preview": safe_input,
-                            })
+                            event_bus.emit(agent_id, Events.tool_dangerous_executed(tool=tool_name, input_preview=safe_input))
 
             except Exception as e:
                 error_str = str(e)
@@ -768,16 +717,13 @@ class AgentManager:
                 run_tracker.error_turn(turn.run_id, error_str)
                 audit_logger.log_turn_error(agent_id, turn.run_id, error_str)
                 if is_recursion:
-                    yield {
-                        "type": "lifecycle", "event": "recursion_limit_reached",
-                        "step": step_count, "max_steps": recursion_limit,
-                    }
+                    yield Events.recursion_limit_reached(step=step_count, max_steps=recursion_limit)
                     yield {
                         "type": "error",
                         "error": f"Agent 达到最大迭代次数 ({recursion_limit})，已自动停止。已执行 {step_count} 步工具调用。",
                     }
                 else:
-                    yield {"type": "lifecycle", "event": "turn_error", "error": error_str}
+                    yield Events.turn_error(error=error_str)
                     yield {"type": "error", "error": error_str}
                 return
 
@@ -850,12 +796,7 @@ class AgentManager:
                     "model": str(ref),
                 }
 
-            yield {
-                "type": "lifecycle",
-                "event": "turn_end",
-                "run_id": turn.run_id,
-                "usage": usage_info,
-            }
+            yield Events.turn_end(run_id=turn.run_id, usage=usage_info)
             done_content = strip_tool_call_patterns(full_response) if parse_text_tool_calls(full_response) else full_response
 
             _turn_tokens = count_tokens(message) + count_tokens(full_response)
@@ -949,7 +890,7 @@ class AgentManager:
                     }
                     return
 
-                yield {"type": "lifecycle", "event": "turn_error", "error": msg}
+                yield Events.turn_error(error=msg)
                 yield {"type": "error", "error": msg}
                 return
 
@@ -1054,19 +995,10 @@ class AgentManager:
 
         logger.info("Auto-compaction triggered: level=%s agent=%s session=%s", level, agent_id, session_id)
         audit_logger.log(agent_id, "auto_compact_trigger", {"session_id": session_id, "level": level})
-        event_bus.emit(agent_id, {
-            "type": "lifecycle",
-            "event": "auto_compact_start",
-            "session_id": session_id,
-            "level": level,
-        })
+        event_bus.emit(agent_id, Events.auto_compact_start(session_id=session_id, level=level))
         try:
             await self.compress_session(session_id, agent_id, level=level)
-            event_bus.emit(agent_id, {
-                "type": "lifecycle",
-                "event": "auto_compact_done",
-                "session_id": session_id,
-            })
+            event_bus.emit(agent_id, Events.auto_compact_done(session_id=session_id))
         except Exception as e:
             logger.error(f"Auto-compaction failed: {e}")
             audit_logger.log(agent_id, "auto_compact_error", {"error": str(e)})
@@ -1161,11 +1093,7 @@ class AgentManager:
         self, session_id: str, agent_id: str
     ) -> AsyncGenerator[dict[str, Any], None]:
         yield {"type": "command_response", "response": "正在执行压缩..."}
-        event_bus.emit(agent_id, {
-            "type": "lifecycle",
-            "event": "manual_compact_start",
-            "session_id": session_id,
-        })
+        event_bus.emit(agent_id, Events.manual_compact_start(session_id=session_id))
 
         try:
             result = await self.compress_session(session_id, agent_id)
@@ -1221,12 +1149,7 @@ class AgentManager:
                     f"\n{suggestion}"
                 )
                 yield {"type": "command_response", "response": msg}
-                event_bus.emit(agent_id, {
-                    "type": "lifecycle",
-                    "event": "manual_compact_skipped",
-                    "session_id": session_id,
-                    "reason": result.get("error"),
-                })
+                event_bus.emit(agent_id, Events.manual_compact_skipped(session_id=session_id, reason=result.get("error", "")))
                 yield {"type": "done", "content": msg, "session_id": session_id}
                 return
 
@@ -1239,23 +1162,13 @@ class AgentManager:
             )
             yield {"type": "command_response", "response": msg}
             yield {"type": "session_compacted", "result": result}
-            event_bus.emit(agent_id, {
-                "type": "lifecycle",
-                "event": "manual_compact_done",
-                "session_id": session_id,
-                "data": {
-                    "archived_count": c.get("archived_count", 0),
-                    "remaining_count": c.get("remaining_count", 0),
-                },
-            })
+            event_bus.emit(agent_id, Events.manual_compact_done(
+                session_id=session_id,
+                data={"archived_count": c.get("archived_count", 0), "remaining_count": c.get("remaining_count", 0)},
+            ))
             yield {"type": "done", "content": msg, "session_id": session_id}
         except Exception as e:
-            event_bus.emit(agent_id, {
-                "type": "lifecycle",
-                "event": "manual_compact_error",
-                "session_id": session_id,
-                "error": str(e)[:200],
-            })
+            event_bus.emit(agent_id, Events.manual_compact_error(session_id=session_id, error=str(e)[:200]))
             yield {"type": "error", "error": f"压缩失败: {e}"}
 
     # ------------------------------------------------------------------

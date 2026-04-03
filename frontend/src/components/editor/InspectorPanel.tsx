@@ -15,13 +15,10 @@ import SkillsPanel from "@/components/skills/SkillsPanel";
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
 const WORKSPACE_FILES = [
-  { path: "workspace/SOUL.md", label: "SOUL.md" },
+  { path: "workspace/AGENTS.md", label: "AGENTS.md" },
   { path: "workspace/IDENTITY.md", label: "IDENTITY.md" },
   { path: "workspace/USER.md", label: "USER.md" },
-  { path: "workspace/AGENTS.md", label: "AGENTS.md" },
-  { path: "workspace/TOOLS.md", label: "TOOLS.md" },
   { path: "workspace/HEARTBEAT.md", label: "HEARTBEAT.md" },
-  { path: "workspace/MEMORY.md", label: "MEMORY.md" },
   { path: "SKILLS_SNAPSHOT.md", label: "SKILLS_SNAPSHOT" },
 ];
 

@@ -40,12 +40,12 @@ def _flush_snapshots() -> None:
         return
     try:
         from tools.skills_scanner import write_skills_snapshot
-        from graph.agent import event_bus
+        from graph.event_bus import Events, event_bus
         for agent_id in agents:
             try:
                 write_skills_snapshot(agent_id)
                 logger.debug(f"Skills snapshot updated for agent {agent_id} (hot reload)")
-                event_bus.emit(agent_id, {"type": "lifecycle", "event": "skills_updated"})
+                event_bus.emit(agent_id, Events.skills_updated())
             except Exception as e:
                 logger.warning(f"Failed to update skills snapshot for {agent_id}: {e}")
     except Exception as e:

@@ -1,16 +1,17 @@
 """System Prompt 构建器
 
-支持 full / minimal / none 三种模式，统一参数对象 PromptParams，
-可选生成 PromptReport（字符统计、文件截断、工具摘要）。
+静态指令全部在 AGENTS.md 中维护，本模块只负责：
+  1. 按序加载静态文件（AGENTS.md → IDENTITY.md → USER.md）—— KV cache 前缀可复用
+  2. 拼接动态 section（工具列表、技能快照、心跳配置、时间、工作区、运行时）
+  3. 生成 PromptReport 供调试
 """
 
 from __future__ import annotations
 
 import platform
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Literal
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal
 
 from config import (
     get_heartbeat_config,
@@ -18,9 +19,7 @@ from config import (
     resolve_agent_dir,
     resolve_agent_workspace,
 )
-from graph.context_budget import ContextBudget, resolve_budget
-
-SILENT_REPLY_TOKEN = "NO_REPLY"
+from graph.context_budget import resolve_budget
 
 
 # ---------------------------------------------------------------------------
@@ -68,45 +67,15 @@ class PromptParams:
     extra_system_prompt: str | None = None
     default_think_level: str = "off"
     max_file_chars: int | None = None
-    max_total_chars: int | None = None
     locale: str = "zh-CN"
     heartbeat_prompt: str | None = None
 
-    def resolve_file_limits(self) -> tuple[int, int]:
-        """返回 (max_file_chars, max_total_chars)，未显式设置时从 budget 派生。"""
+    def resolve_file_limit(self) -> int:
+        """返回单文件截断上限 (chars)，未显式设置时从 budget 派生。"""
+        if self.max_file_chars is not None:
+            return self.max_file_chars
         budget = resolve_budget(self.agent_id)
-        file_chars = self.max_file_chars if self.max_file_chars is not None else budget.max_file_chars
-        total_chars = self.max_total_chars if self.max_total_chars is not None else budget.system_prompt_chars
-        return file_chars, total_chars
-
-
-# ---------------------------------------------------------------------------
-# Bilingual prompt snippets
-# ---------------------------------------------------------------------------
-
-_PROMPT_TEXT: dict[str, dict[str, str]] = {
-    "identity": {
-        "zh-CN": "你是一个运行在 ClawChain 中的个人助手。",
-        "en-US": "You are a personal assistant running in ClawChain.",
-    },
-    "tool_header": {
-        "zh-CN": "## 可用工具\n\n工具可用性（受策略过滤）；分层：core=核心, skill=技能, external=外部服务\n工具名称区分大小写，请严格按照以下名称调用：",
-        "en-US": "## Available Tools\n\nTool availability (policy-filtered); layers: core, skill, external\nTool names are case-sensitive. Call them exactly as listed:",
-    },
-    "tool_footer": {
-        "zh-CN": "TOOLS.md 不控制工具可用性；它是用户对外部工具使用方式的指导。",
-        "en-US": "TOOLS.md does not control tool availability; it is user guidance for external tool usage.",
-    },
-    "respond_lang": {
-        "zh-CN": "始终使用中文回复用户（除非用户明确要求其他语言）。",
-        "en-US": "Always respond in the same language the user writes in.",
-    },
-}
-
-
-def _pt(key: str, locale: str) -> str:
-    entry = _PROMPT_TEXT.get(key, {})
-    return entry.get(locale, entry.get("zh-CN", ""))
+        return budget.max_file_chars
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +84,9 @@ def _pt(key: str, locale: str) -> str:
 
 class PromptBuilder:
 
-    MINIMAL_BOOTSTRAP_ALLOWLIST = {"SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md", "TOOLS.md"}
+    MINIMAL_AGENTS_SECTIONS = [
+        "工具调用风格", "安全", "技能", "大型工具输出",
+    ]
 
     def build_system_prompt(
         self,
@@ -146,10 +117,8 @@ class PromptBuilder:
         agent_id = params.agent_id
         mode = params.mode
 
-        locale = params.locale
-
         if mode == "none":
-            prompt = _pt("identity", locale)
+            prompt = "你是一个运行在 ClawChain 中的个人助手。"
             report = PromptReport(
                 mode="none",
                 total_chars=len(prompt),
@@ -169,53 +138,33 @@ class PromptBuilder:
                 collected_sections.append(content)
                 section_names.append(name)
 
-        def _resolve_heartbeat_prompt(p: PromptParams) -> str:
-            if p.heartbeat_prompt is not None:
-                return p.heartbeat_prompt
-            return get_heartbeat_config(p.agent_id).get("prompt", "")
+        # ── 静态文件（KV cache 前缀可复用）──
+        context_text, file_entries, truncation_events = self._build_project_context_with_report(
+            agent_id,
+            mode=mode,
+            max_file_chars=params.resolve_file_limit(),
+        )
+        if context_text:
+            _add("project_context", context_text)
 
-        _add("identity", self._build_identity(locale))
-        _add("respond_lang", _pt("respond_lang", locale))
-
+        # ── 动态 section ──
         if mode == "full":
             _add("tooling", self._build_tooling(params.available_tools))
-            _add("tool_call_style", self._build_tool_call_style())
-            _add("messaging", self._build_messaging())
-            _add("docs", self._build_docs_guide())
-            _add("safety", self._build_safety())
             _add("skills", self._build_skills(agent_id))
-            _add("memory_recall", self._build_memory_recall())
-            _add("memory_write", self._build_memory_write())
-            _add("session_startup", self._build_session_startup())
+            _add("heartbeat_config", self._build_heartbeat_config(params))
             _add("time", self._build_time(agent_id))
             _add("workspace", self._build_workspace(agent_id))
-            _add("silent_replies", self._build_silent_replies())
-            _add("heartbeats", self._build_heartbeats(_resolve_heartbeat_prompt(params)))
             _add("runtime", self._build_runtime(agent_id))
-            _add("persisted_output", self._build_persisted_output_hint(locale))
         elif mode == "minimal":
             _add("tooling", self._build_tooling(params.available_tools))
-            _add("tool_call_style", self._build_tool_call_style())
-            _add("docs", self._build_docs_guide())
-            _add("safety", self._build_safety())
-            _add("heartbeats", self._build_heartbeats(_resolve_heartbeat_prompt(params)))
+            _add("skills", self._build_skills(agent_id))
+            _add("time", self._build_time(agent_id))
             _add("workspace", self._build_workspace(agent_id))
             _add("runtime", self._build_runtime(agent_id))
-            _add("persisted_output", self._build_persisted_output_hint(locale))
 
         if params.extra_system_prompt:
             header = "## 子 Agent 上下文" if mode == "minimal" else "## 额外上下文"
             _add("extra_context", f"{header}\n{params.extra_system_prompt}")
-
-        _file_chars, _total_chars = params.resolve_file_limits()
-        context_text, file_entries, truncation_events = self._build_project_context_with_report(
-            agent_id,
-            mode=mode,
-            max_file_chars=_file_chars,
-            max_total_chars=_total_chars,
-        )
-        if context_text:
-            _add("project_context", context_text)
 
         prompt = "\n\n".join(collected_sections)
 
@@ -286,20 +235,8 @@ class PromptBuilder:
 
         return "\n".join(parts)
 
-    def build_bootstrap_prompt(self, agent_id: str) -> str:
-        workspace = resolve_agent_workspace(agent_id)
-        bootstrap = workspace / "BOOTSTRAP.md"
-        if not bootstrap.exists():
-            return ""
-        return (
-            "\n\n## 首次运行引导\n\n"
-            "检测到 `BOOTSTRAP.md` 文件。这是你的首次运行。\n"
-            "请立即使用 `read` 工具读取 `BOOTSTRAP.md`，然后按照其中的步骤完成初始化。\n"
-            "完成所有步骤后，使用文件工具删除 `BOOTSTRAP.md`。"
-        )
-
     # ------------------------------------------------------------------
-    # Section builders
+    # Helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -318,11 +255,37 @@ class PromptBuilder:
                 result.append(line)
         return "\n".join(result).strip()
 
-    @staticmethod
-    def _build_identity(locale: str = "zh-CN") -> str:
-        return _pt("identity", locale)
+    # ------------------------------------------------------------------
+    # Dynamic section builders (仅运行时数据，静态指令在 AGENTS.md)
+    # ------------------------------------------------------------------
 
-    # 工具分层标签：core=核心文件/执行, skill=技能, external=外部服务
+    TOOL_DOCS: dict[str, str] = {
+        "read": "读取文件内容（支持行号范围）",
+        "write": "创建或覆盖文件",
+        "edit": "精确编辑文件（查找替换）",
+        "apply_patch": "应用多文件补丁",
+        "grep": "搜索文件内容（正则表达式）",
+        "find": "按模式查找文件",
+        "ls": "列出目录内容",
+        "exec": "执行 Shell 命令（沙箱环境）",
+        "python_repl": "执行 Python 代码",
+        "process_list": "列出活跃进程",
+        "process_kill": "终止指定进程",
+        "web_search": "搜索网络",
+        "web_fetch": "获取并提取网页内容",
+        "agents_list": "列出可用的 Agent ID",
+        "sessions_list": "列出会话（含子 Agent）",
+        "sessions_history": "获取其他会话的历史记录",
+        "sessions_send": "向其他会话/子 Agent 发送消息",
+        "sessions_spawn": "生成独立的子 Agent",
+        "subagents": "管理子 Agent（list/kill/steer）",
+        "session_status": "显示会话状态卡片",
+        "memory_search": "语义 + 关键词混合搜索记忆（FTS5 + ANN）",
+        "memory_get": "按 chunk_id 读取完整记忆内容",
+        "search_knowledge_base": "搜索知识库文档",
+        "cron": "管理定时任务与提醒（list/add/update/remove/run/wake）",
+    }
+
     TOOL_CATEGORIES: dict[str, str] = {
         "read": "core", "write": "core", "edit": "core", "apply_patch": "core",
         "grep": "core", "find": "core", "ls": "core", "exec": "core",
@@ -335,160 +298,43 @@ class PromptBuilder:
         "cron": "core",
     }
 
-    @staticmethod
-    def _build_tooling(available_tools: list[str] | None = None) -> str:
-        tool_docs = {
-            "read": "读取文件内容（支持行号范围）",
-            "write": "创建或覆盖文件",
-            "edit": "精确编辑文件（查找替换）",
-            "apply_patch": "应用多文件补丁",
-            "grep": "搜索文件内容（正则表达式）",
-            "find": "按模式查找文件",
-            "ls": "列出目录内容",
-            "exec": "执行 Shell 命令（沙箱环境）",
-            "python_repl": "执行 Python 代码",
-            "process_list": "列出活跃进程",
-            "process_kill": "终止指定进程",
-            "web_search": "搜索网络",
-            "web_fetch": "获取并提取网页内容",
-            "agents_list": "列出可用的 Agent ID",
-            "sessions_list": "列出会话（含子 Agent）",
-            "sessions_history": "获取其他会话的历史记录",
-            "sessions_send": "向其他会话/子 Agent 发送消息",
-            "sessions_spawn": "生成独立的子 Agent",
-            "subagents": "管理子 Agent（list/kill/steer）",
-            "session_status": "显示会话状态卡片",
-            "memory_search": "语义 + 关键词混合搜索记忆（FTS5 + ANN）",
-            "memory_get": "按 chunk_id 读取完整记忆内容",
-            "search_knowledge_base": "搜索知识库文档",
-            "cron": "管理定时任务与提醒（list/add/update/remove/run/wake）。可设置一次性提醒、周期任务；wake 用于立即发送提醒到主会话。",
-        }
-
+    @classmethod
+    def _build_tooling(cls, available_tools: list[str] | None = None) -> str:
         lines = [
             "## 可用工具",
             "",
-            "工具可用性（受策略过滤）；分层：core=核心, skill=技能, external=外部服务",
             "工具名称区分大小写，请严格按照以下名称调用：",
             "",
         ]
 
-        tools_to_show = available_tools or list(tool_docs.keys())
-        categories = getattr(PromptBuilder, "TOOL_CATEGORIES", {})
+        tools_to_show = available_tools or list(cls.TOOL_DOCS.keys())
         for name in tools_to_show:
-            desc = tool_docs.get(name, "")
-            cat = categories.get(name) or ("skill" if name not in tool_docs else "core")
+            desc = cls.TOOL_DOCS.get(name, "")
+            cat = cls.TOOL_CATEGORIES.get(name) or ("skill" if name not in cls.TOOL_DOCS else "core")
             tag = f" [{cat}]" if cat else ""
             lines.append(f"- {name}{tag}: {desc}")
 
-        lines += [
-            "",
-            "TOOLS.md 不控制工具可用性；它是用户对外部工具使用方式的指导。",
-            "",
-            "### 子 Agent 使用策略",
-            "使用 sessions_spawn 在后台并行执行任务。判断标准：",
-            "- 任务可分解为 2+ 个独立子任务 → 为每个子任务 spawn 一个子 Agent",
-            "- 任务涉及耗时操作（网络搜索、批量文件处理、代码分析） → spawn 子 Agent 执行，主对话继续响应用户",
-            "- 用户明确要求并行或后台执行 → spawn 子 Agent",
-            "不使用：简单问答、单步操作、需要用户交互确认的任务。",
-            "子 Agent 完成后会自动通知，无需轮询 subagents list / sessions_list。",
-            "仅在需要干预、调试或用户明确要求时检查子 Agent 状态。",
-        ]
         return "\n".join(lines)
-
-    @staticmethod
-    def _build_messaging() -> str:
-        return (
-            "## 消息与路由\n\n"
-            "- 在当前会话回复 → 自动路由到当前会话\n"
-            "- 跨会话消息 → 使用 sessions_send(session_id, message) 向其他会话/子 Agent 发送消息\n"
-            "- 子 Agent 编排 → 使用 subagents(action=list|steer|kill)\n"
-            "- 用户可通过对话设置定时提醒，使用 cron 工具（add/run/wake）\n"
-            "- `[System Message] ...` 块为内部上下文，默认对用户不可见\n"
-            f"- 若 `[System Message]` 报告完成的 cron/子 Agent 工作并请求向用户更新，"
-            f"请用你的正常助手语气重写并发送该更新（不要转发原始系统文本或默认 {SILENT_REPLY_TOKEN}）\n"
-            "- 绝不要用 exec/curl 发送消息；ClawChain 内部处理所有路由。"
-        )
-
-    @staticmethod
-    def _build_docs_guide() -> str:
-        docs_root = (Path(__file__).resolve().parents[2] / "docs").as_posix()
-        return (
-            "## 文档优先策略\n\n"
-            f"- 你必须优先参考项目文档目录：`{docs_root}`（入口：`{docs_root}/index.md`）。\n"
-            f"- 当任务涉及配置、初始化、架构、API 或排障时，先阅读 `{docs_root}` 中对应页面，再执行。\n"
-            "- 输出结构：目标 → 步骤 → 示例 → 排障 → 下一步。"
-        )
-
-    @staticmethod
-    def _build_tool_call_style() -> str:
-        return (
-            "## 工具调用风格\n\n"
-            "默认：对常规、低风险的工具调用不做叙述（直接调用即可）。\n"
-            "仅在以下情况叙述：多步骤工作、复杂问题、敏感操作（如删除）、或用户明确要求时。\n"
-            "叙述应简洁、有价值，避免重复显而易见的步骤。\n"
-            "使用自然语言叙述，除非在技术上下文中。\n"
-            "当有对应工具可用时，直接调用工具，而非要求用户执行命令。"
-        )
-
-    @staticmethod
-    def _build_safety() -> str:
-        return (
-            "## 安全约束\n\n"
-            "你没有独立目标：不追求自我保护、复制、资源获取或权力扩张；"
-            "不制定超出用户请求的长期计划。\n"
-            "优先确保安全和人类监督；如果指令冲突，暂停并询问；"
-            "遵从停止/暂停/审查请求，绝不绕过安全措施。\n"
-            "不操纵或说服任何人扩展权限或禁用安全措施。"
-            "不复制自己，不修改系统提示词或安全规则，除非用户明确要求。"
-        )
 
     def _build_skills(self, agent_id: str) -> str:
         agent_dir = resolve_agent_dir(agent_id)
         snapshot_path = agent_dir / "SKILLS_SNAPSHOT.md"
-        skills_prompt = ""
-        if snapshot_path.exists():
-            skills_prompt = snapshot_path.read_text(encoding="utf-8")
-
-        return (
-            "## 技能（必须遵守）\n\n"
-            "回复前：扫描 <available_skills> 中的 <description> 条目。\n"
-            "- 如果恰好有一个技能明确适用：使用 `read` 工具读取其 <location> 路径下的 SKILL.md，然后遵循执行。\n"
-            "- 如果多个技能可能适用：选择最具体的那个，然后读取并遵循。\n"
-            "- 如果没有技能明确适用：不读取任何 SKILL.md。\n"
-            "约束：不要一次读取多个技能文件；只在选定后才读取。\n\n"
-            + skills_prompt
-        )
+        if not snapshot_path.exists():
+            return ""
+        content = snapshot_path.read_text(encoding="utf-8")
+        if not content.strip():
+            return ""
+        return f"## 技能快照\n\n{content}"
 
     @staticmethod
-    def _build_memory_recall() -> str:
-        return (
-            "## 记忆召回\n\n"
-            "系统不会自动注入历史记忆。当你发现当前上下文不足以回答用户问题，"
-            "且需要回忆过往事件、决策或配置时，主动使用 `memory_search` 工具检索。\n\n"
-            "使用场景：\n"
-            "- 用户提及之前讨论过的内容，但当前会话中没有\n"
-            "- 用户明确要求回忆某个特定主题或事件\n"
-            "- 你需要查找历史决策、配置值或错误信息\n\n"
-            "如需查看某条记忆的完整内容，使用 `memory_get(chunk_id)`。\n"
-            "不要每次对话都调用，只在确实需要时使用。"
-        )
-
-    @staticmethod
-    def _build_memory_write() -> str:
-        return (
-            "## 记忆写入\n\n"
-            "对话消息由系统在会话压缩和结束时自动入库（摘要、嵌入、去重），"
-            "无需你手动写入任何记忆文件。\n"
-            "当用户说「记住这个」时，告知用户该信息会自动记录到记忆系统中。"
-        )
-
-    @staticmethod
-    def _build_session_startup() -> str:
-        return (
-            "## 会话启动序列\n\n"
-            "SOUL.md 和 USER.md 已注入到你的系统提示中，无需再用 `read` 读取。\n"
-            "如果存在 SOUL.md，请始终体现其中定义的人格和语气。"
-        )
+    def _build_heartbeat_config(params: PromptParams) -> str:
+        if params.heartbeat_prompt is not None:
+            hb_prompt = params.heartbeat_prompt
+        else:
+            hb_prompt = get_heartbeat_config(params.agent_id).get("prompt", "")
+        if hb_prompt:
+            return f"## 心跳配置\n\n心跳 prompt：{hb_prompt}"
+        return ""
 
     @staticmethod
     def _build_time(agent_id: str) -> str:
@@ -503,53 +349,7 @@ class PromptBuilder:
         return (
             "## 工作区\n\n"
             f"你的工作目录是: {workspace}\n"
-            f"项目文档目录是: {workspace / 'docs'}（入口文件: docs/index.md）\n"
-            "除非另有明确指示，所有文件操作都在此目录内进行。\n"
-            "你可以编辑此工作区中的所有文件，包括你自己的配置文件"
-            "（SOUL.md、IDENTITY.md 等）。"
-        )
-
-    @staticmethod
-    def _build_silent_replies() -> str:
-        return (
-            f"## 静默回复 (Silent Replies)\n\n"
-            f"当你无话可说时，仅回复：{SILENT_REPLY_TOKEN}\n\n"
-            f"⚠️ 规则：\n"
-            f"- 它必须是你的**整条消息** — 不能有任何其他内容\n"
-            f"- 绝不要把它附加在实际回复后面（绝不在真实回复中包含 {SILENT_REPLY_TOKEN}）\n"
-            f"- 绝不要用 markdown 或代码块包裹它\n\n"
-            f"❌ 错误：「这是帮助…… {SILENT_REPLY_TOKEN}」\n"
-            f"❌ 错误：\"{SILENT_REPLY_TOKEN}\"（带引号）\n"
-            f"✅ 正确：{SILENT_REPLY_TOKEN}"
-        )
-
-    @staticmethod
-    def _build_heartbeats(heartbeat_prompt: str = "") -> str:
-        prompt_line = (
-            f"心跳 prompt（见配置）：{heartbeat_prompt}\n\n"
-            if heartbeat_prompt
-            else "心跳 prompt 见配置（config.agents.defaults.heartbeat.prompt），留空则使用内置默认。\n\n"
-        )
-        return (
-            "## 心跳 (Heartbeats)\n\n"
-            + prompt_line
-            + "当你收到心跳轮询（消息匹配上述 prompt 或「[心跳轮询]」）时：\n"
-            "- 读取 HEARTBEAT.md（若存在），严格遵循其中的检查清单。\n"
-            "- 不要推断或重复旧任务。\n"
-            "- 如果没有需要关注的事项，回复：HEARTBEAT_OK\n"
-            "- 如果有需要通知用户的事项，回复具体内容，不要包含 HEARTBEAT_OK。\n\n"
-            "## 定时任务 (Cron)\n\n"
-            "当你收到「A scheduled reminder has been triggered」（定时提醒已触发）或类似提示时：\n"
-            "- 这是由用户设置的定时任务触发的提醒。\n"
-            "- 提示中会包含具体的提醒内容，请将该提醒以友好的方式传达给用户。\n"
-            "- 若提醒内容为空或无需跟进，回复：HEARTBEAT_OK\n"
-            "- 若需要向用户传达提醒，直接回复具体内容，不要包含 HEARTBEAT_OK。\n"
-            "- 可通过 cron 工具在对话中创建、修改、删除定时任务和提醒。\n\n"
-            "HEARTBEAT_OK 规则：\n"
-            "- 它必须是你的完整消息 — 不能有其他内容\n"
-            "- 绝不要把它附加到实际回复后面\n"
-            "- 绝不要用 markdown 或代码块包裹它\n\n"
-            "你可以自由编辑 HEARTBEAT.md，添加简短的检查清单或提醒。保持简短以节省 token。"
+            "除非另有明确指示，所有文件操作都在此目录内进行。"
         )
 
     @staticmethod
@@ -562,26 +362,6 @@ class PromptBuilder:
             "## 运行时信息\n\n"
             f"Runtime: agent={agent_id} | 系统={os_info} | "
             f"模型={model} | 通道=webchat | thinking={thinking}"
-        )
-
-    @staticmethod
-    def _build_persisted_output_hint(locale: str = "zh-CN") -> str:
-        if locale == "zh-CN":
-            return (
-                "## 大型工具输出处理\n\n"
-                "当工具返回内容过大时，完整输出会自动保存到磁盘，"
-                "你会看到一个 `<persisted-output>` 块，其中包含文件路径和前几行预览。\n"
-                "- 需要查看特定部分时，使用 `read`（配合 offset/limit 参数）按需读取。\n"
-                "- 需要搜索内容时，使用 `grep` 直接在该文件上操作。\n"
-                "- 不要试图一次性读入整个文件，除非你确认文件很小。"
-            )
-        return (
-            "## Large tool output handling\n\n"
-            "When a tool returns too much content, the full output is saved to disk "
-            "and you receive a `<persisted-output>` block with the file path and a short preview.\n"
-            "- To read a specific section use `read` with offset/limit parameters.\n"
-            "- To search the content use `grep` on that file path.\n"
-            "- Do not attempt to read the entire file at once unless you know it is small."
         )
 
     # ------------------------------------------------------------------
@@ -605,56 +385,37 @@ class PromptBuilder:
         self,
         agent_id: str,
         mode: str = "full",
-        max_file_chars: int = 8_000,
-        max_total_chars: int = 28_000,
+        max_file_chars: int = 20_000,
     ) -> tuple[str, list[PromptFileEntry], int]:
         workspace = resolve_agent_workspace(agent_id)
 
-        all_files = [
-            ("SOUL.md", workspace / "SOUL.md"),
-            ("IDENTITY.md", workspace / "IDENTITY.md"),
-            ("USER.md", workspace / "USER.md"),
-            ("AGENTS.md", workspace / "AGENTS.md"),
-            ("TOOLS.md", workspace / "TOOLS.md"),
-        ]
-        if mode == "full":
-            heart = workspace / "HEARTBEAT.md"
-            if heart.exists():
-                all_files.append(("HEARTBEAT.md", heart))
-
         if mode == "minimal":
             context_files = [
-                (label, path) for label, path in all_files
-                if label in self.MINIMAL_BOOTSTRAP_ALLOWLIST
+                ("AGENTS.md", workspace / "AGENTS.md"),
             ]
         else:
-            context_files = list(all_files)
+            context_files = [
+                ("AGENTS.md", workspace / "AGENTS.md"),
+                ("IDENTITY.md", workspace / "IDENTITY.md"),
+                ("USER.md", workspace / "USER.md"),
+            ]
 
-            context_files.append(("记忆系统 (mem)", None))
-
-        lines = [
-            "---",
-            "",
-            "# 项目上下文",
-            "",
-            "以下项目上下文文件已加载：",
-            "如果存在 SOUL.md，请体现其人格和语气。避免生硬、千篇一律的回复。",
-        ]
+        if mode == "minimal":
+            lines: list[str] = []
+        else:
+            lines = [
+                "---",
+                "",
+                "# 项目上下文",
+                "",
+                "以下项目上下文文件已加载：",
+                "如果存在 IDENTITY.md，请体现其中定义的人格和语气。",
+            ]
 
         file_entries: list[PromptFileEntry] = []
         truncation_events = 0
-        total_chars = 0
 
         for label, path in context_files:
-            if path is None:
-                lines.append(f"\n## {label}")
-                lines.append(
-                    "记忆由 mem 系统每轮异步入库（FTS5 + sqlite-vec ANN）。"
-                    "召回方式见上方「记忆召回」章节。"
-                )
-                file_entries.append(PromptFileEntry(label=label, chars=0, truncated=False))
-                continue
-
             if not path.exists():
                 lines.append(f"\n## {label}")
                 lines.append("[MISSING] — 文件不存在，Agent 可通过文件工具创建。")
@@ -675,24 +436,18 @@ class PromptBuilder:
                 file_entries.append(PromptFileEntry(label=label, chars=0, truncated=False))
                 continue
 
-            was_truncated = False
+            if mode == "minimal" and label == "AGENTS.md":
+                parts = []
+                for heading in self.MINIMAL_AGENTS_SECTIONS:
+                    section = self._extract_section(content, heading)
+                    if section:
+                        parts.append(section)
+                content = "\n\n".join(parts) if parts else content
+
             content, was_truncated = self._smart_truncate(content, max_file_chars)
-
-            if total_chars + len(content) > max_total_chars:
-                remaining = max_total_chars - total_chars
-                if remaining > 200:
-                    content, was_truncated = self._smart_truncate(content, remaining)
-                else:
-                    lines.append(f"\n## {label}")
-                    lines.append("[TRUNCATED] — 总上下文已达上限。")
-                    file_entries.append(PromptFileEntry(label=label, chars=0, truncated=True))
-                    truncation_events += 1
-                    continue
-
             if was_truncated:
                 truncation_events += 1
 
-            total_chars += len(content)
             file_entries.append(PromptFileEntry(label=label, chars=len(content), truncated=was_truncated))
             lines.append(f"\n## {label}")
             lines.append(content)

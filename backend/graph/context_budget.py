@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 
 CHARS_PER_TOKEN = 4
 
@@ -17,36 +16,26 @@ class ContextBudget:
     context_tokens: int = 200_000
 
     # 一级切分
-    thinking_reserve: float = 0.30
-    active_ratio: float = 0.70
+    thinking_reserve: float = 0.20
+    active_ratio: float = 0.80
 
     # 二级切分 (active 内部)
-    system_prompt_ratio: float = 0.05
     session_summary_ratio: float = 0.05
-    recent_messages_ratio: float = 0.85
-    #历史工具截断阈值
+    # 历史工具截断阈值
     jit_tool_output_ratio: float = 0.036
 
     # 压缩触发 (基于 active)
-    sliding_ratio: float = 0.77
-    forced_ratio: float = 1.0
+    sliding_ratio: float = 0.80
+    forced_ratio: float = 0.95
 
     # 单文件截断上限 (chars)
-    max_file_chars: int = 8_000
+    max_file_chars: int = 20_000
 
     # --- 派生属性 ---
 
     @property
     def active_tokens(self) -> int:
         return int(self.context_tokens * self.active_ratio)
-
-    @property
-    def system_prompt_tokens(self) -> int:
-        return int(self.active_tokens * self.system_prompt_ratio)
-
-    @property
-    def system_prompt_chars(self) -> int:
-        return self.system_prompt_tokens * CHARS_PER_TOKEN
 
     @property
     def session_summary_tokens(self) -> int:

@@ -232,6 +232,8 @@ class MemTaskProcessor:
         if skip_reason:
             logger.info("Task %s skipped: %s", task.id, skip_reason)
             self.store.finalize_task(task.id, fallback_title, skip_reason, "skipped")
+            for c in chunks:
+                self.store.mark_dedup_status(c.id, "orphaned", reason="task_skipped")
             return
 
         conversation_text = self._build_conversation_text(chunks)

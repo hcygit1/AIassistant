@@ -407,6 +407,8 @@ class MemRecall:
     async def _search_skills(
         self, query: str, sub_queries: list[str],
     ) -> list[RecallHit]:
+        if self.max_skill_results <= 0:
+            return []
         pool_size = self.max_skill_results * 5
 
         fts_hits = self.store.fts_search_skills(query, limit=pool_size)

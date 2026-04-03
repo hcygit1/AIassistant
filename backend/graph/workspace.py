@@ -19,12 +19,9 @@ WORKSPACE_SUBDIRS = [
 ]
 
 TEMPLATE_FILES = {
-    "workspace/SOUL.md": "SOUL.md",
     "workspace/IDENTITY.md": "IDENTITY.md",
     "workspace/USER.md": "USER.md",
     "workspace/AGENTS.md": "AGENTS.md",
-    "workspace/TOOLS.md": "TOOLS.md",
-    "workspace/HEARTBEAT.md": "HEARTBEAT.md",
     "workspace/BOOTSTRAP.md": "BOOTSTRAP.md",
 }
 

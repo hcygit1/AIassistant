@@ -359,15 +359,8 @@ class HeartbeatRunner:
                             agent_id=agent_id,
                         ),
                     )
-                    from graph.agent import event_bus
-                    event_bus.emit(
-                        agent_id,
-                        {
-                            "type": "heartbeat_message",
-                            "session_id": session_id,
-                            "agent_id": agent_id,
-                        },
-                    )
+                    from graph.event_bus import Events, event_bus
+                    event_bus.emit(agent_id, Events.heartbeat_message(session_id=session_id, agent_id=agent_id))
                 audit_logger.log(agent_id, "heartbeat_response", {"response": response[:500]})
         except Exception as e:
             logger.error(f"Heartbeat execution failed for {agent_id}: {e}")

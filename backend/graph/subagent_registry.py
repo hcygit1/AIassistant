@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
+
+from graph.state_machine import (
+    SUBAGENT_ANNOUNCE_TRANSITIONS,
+    SUBAGENT_RUN_TRANSITIONS,
+    InvalidTransitionError,
+    transition,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -103,9 +113,10 @@ class SubagentRegistry:
             self._runs[run_id].asyncio_task = task
 
     def mark_started(self, run_id: str) -> None:
-        if run_id in self._runs:
-            self._runs[run_id].started_at = time.time()
-            self._runs[run_id].state = "running"
+        r = self._runs.get(run_id)
+        if r:
+            r.started_at = time.time()
+            transition(r, "state", "running", table=SUBAGENT_RUN_TRANSITIONS)
             self._persist_to_disk()
 
     def mark_completed(
@@ -115,31 +126,34 @@ class SubagentRegistry:
         outcome: str = "completed",
         terminal_reason: str | None = None,
     ) -> None:
-        if run_id in self._runs:
-            self._runs[run_id].ended_at = time.time()
-            self._runs[run_id].outcome = outcome
-            self._runs[run_id].result_summary = result_summary[:1000]
-            self._runs[run_id].state = "succeeded"
-            self._runs[run_id].terminal_reason = terminal_reason
-            self._runs[run_id].announce_state = "pending"
+        r = self._runs.get(run_id)
+        if r:
+            r.ended_at = time.time()
+            r.outcome = outcome
+            r.result_summary = result_summary[:1000]
+            transition(r, "state", "succeeded", table=SUBAGENT_RUN_TRANSITIONS)
+            r.terminal_reason = terminal_reason
+            transition(r, "announce_state", "pending", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
             self._persist_to_disk()
 
     def mark_terminated(self, run_id: str, reason: str = "killed") -> None:
-        if run_id in self._runs:
-            self._runs[run_id].ended_at = time.time()
-            self._runs[run_id].outcome = reason
+        r = self._runs.get(run_id)
+        if r:
+            r.ended_at = time.time()
+            r.outcome = reason
             lowered = (reason or "").lower()
             if "timeout" in lowered:
-                self._runs[run_id].state = "timed_out"
+                new_state = "timed_out"
             elif "killed" in lowered or "cancel" in lowered:
-                self._runs[run_id].state = "cancelled"
+                new_state = "cancelled"
             elif "orphaned" in lowered:
-                self._runs[run_id].state = "orphaned"
+                new_state = "orphaned"
             elif "restart-interrupted" in lowered:
-                self._runs[run_id].state = "interrupted"
+                new_state = "interrupted"
             else:
-                self._runs[run_id].state = "failed"
-            self._runs[run_id].terminal_reason = reason
+                new_state = "failed"
+            transition(r, "state", new_state, table=SUBAGENT_RUN_TRANSITIONS)
+            r.terminal_reason = reason
             self._persist_to_disk()
 
     def kill(self, run_id: str, cascade: bool = True) -> bool:
@@ -200,7 +214,7 @@ class SubagentRegistry:
             return False
         r.announce_retry_count = getattr(r, "announce_retry_count", 0) + 1
         r.last_announce_retry_at = time.time()
-        r.announce_state = "retrying"
+        transition(r, "announce_state", "retrying", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
         self._persist_to_disk()
         return True
 
@@ -208,21 +222,21 @@ class SubagentRegistry:
         r = self._runs.get(run_id)
         if not r:
             return
-        r.announce_state = "delivered"
+        transition(r, "announce_state", "delivered", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
         self._persist_to_disk()
 
     def mark_announce_dropped(self, run_id: str) -> None:
         r = self._runs.get(run_id)
         if not r:
             return
-        r.announce_state = "dropped"
+        transition(r, "announce_state", "dropped", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
         self._persist_to_disk()
 
-    def set_announce_state(self, run_id: str, state: str) -> None:
+    def set_announce_state(self, run_id: str, new_state: str) -> None:
         r = self._runs.get(run_id)
         if not r:
             return
-        r.announce_state = state
+        transition(r, "announce_state", new_state, table=SUBAGENT_ANNOUNCE_TRANSITIONS)
         self._persist_to_disk()
 
     def get_requester_depth(self, requester_session_key: str) -> int:
@@ -385,18 +399,12 @@ class SubagentRegistry:
             to_remove.append((rid, r))
 
         for rid, r in to_remove:
-            # 更新状态为 archived
-            r.state = "archived"
+            transition(r, "state", "archived", table=SUBAGENT_RUN_TRANSITIONS)
             r.ended_at = time.time()
             # 发送事件通知前端
             try:
-                from graph.agent import event_bus
-                event_bus.emit(r.requester_agent_id, {
-                    "type": "lifecycle",
-                    "event": "subagent_archived",
-                    "run_id": rid,
-                    "child_session_key": r.child_session_key,
-                })
+                from graph.event_bus import Events, event_bus
+                event_bus.emit(r.requester_agent_id, Events.subagent_archived(run_id=rid, child_session_key=r.child_session_key))
             except Exception:
                 pass
             if on_expire:
