@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="images/clawchain_logo.png" alt="Pipixia" width="400">
+  <img src="images/Pipixia.png" alt="Pipixia" width="400">
   <h1>Pipixia</h1>
   <p>
     <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
