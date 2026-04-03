@@ -18,7 +18,7 @@
 ## 架构总览
 
 <p align="center">
-  <img src="images/clawchain_arch.png" alt="Pipixia 架构" width="800">
+  <img src="images/pipixia_arch.png" alt="Pipixia 架构" width="800">
 </p>
 
 | 层 | 技术 |
@@ -62,7 +62,7 @@ Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现�
 此外，系统支持 **技能演化**（Skill Evolution）：`MemSkillEvolver` 通过多阶段 LLM 流水线（评估 → 生成 → 质量评分）从历史对话中提炼可复用的操作技能，写入 SKILL.md 文件后自动注入 Agent 的系统提示词。
 
 <p align="center">
-  <img src="images/clawchain_memory_mechanism.png" alt="记忆机制" width="700">
+  <img src="images/pipixia_memory_mechanism.png" alt="记忆机制" width="700">
 </p>
 
 ### 上下文管理
@@ -85,13 +85,13 @@ Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现�
 结果投递采用独立的投递状态机（`pending → queued → delivering → delivered`），支持超时重试和降级写入。所有事件通过 **标准化事件总线** 发送，23 种事件类型由 `Events` 工厂类统一构建，消除裸 dict 拼写风险。
 
 <p align="center">
-  <img src="images/clawchain_subagent_mechanism.png" alt="子 Agent 机制" width="700">
+  <img src="images/pipixia_subagent_mechanism.png" alt="子 Agent 机制" width="700">
 </p>
 
 ### 中断与排队
 
 <p align="center">
-  <img src="images/clawchain_interrupt_queue_mechanism.png" alt="中断与排队机制" width="700">
+  <img src="images/pipixia_interrupt_queue_mechanism.png" alt="中断与排队机制" width="700">
 </p>
 
 会话 busy 时新消息进入 followup 队列；用户点击 stop 时调用 abort 取消当前 run，保存 partial 结果并返回终态。

@@ -35,6 +35,9 @@ class MemSearchTool(BaseTool):
     args_schema: type[BaseModel] = MemSearchInput
     agent_id: str = ""
 
+    def _run(self, query: str, max_results: int = 8) -> str:
+        raise NotImplementedError("Use _arun for async execution")
+
     async def _arun(self, query: str, max_results: int = 8) -> str:
         try:
             from graph.agent import agent_manager

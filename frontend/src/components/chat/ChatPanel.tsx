@@ -25,12 +25,12 @@ export default function ChatPanel() {
       <div className="h-full flex flex-col" style={{ background: "var(--bg)" }} data-testid="chat-panel">
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center px-6 max-w-md animate-fade-in-up">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[var(--accent)] to-blue-500 flex items-center justify-center mx-auto mb-5"
-              style={{ boxShadow: "var(--shadow-glow), var(--shadow-lg)" }}>
-              <Bot className="w-8 h-8 text-white" />
+            <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-5"
+              style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}>
+              <Bot className="w-7 h-7" />
             </div>
             <h2 className="text-xl font-semibold text-[var(--text)] mb-2">
-              {currentAgent?.name || "ClawChain"}
+              {currentAgent?.name || "Pipixia"}
             </h2>
             <p className="text-sm text-[var(--text-secondary)] leading-relaxed mb-6">
               {currentAgent?.description || t.agentDescription}

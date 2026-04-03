@@ -108,7 +108,7 @@ export default function HomePage() {
             minWidth: 280,
             background: "var(--bg)",
             borderLeft: "1px solid var(--border)",
-            boxShadow: "0 14px 36px rgba(0, 0, 0, 0.12)",
+            boxShadow: "var(--shadow-xl)",
           }}
         >
           <InspectorPanel />
@@ -116,7 +116,7 @@ export default function HomePage() {
         {inspectorPanelMode === "hidden" && (
           <button
             className="absolute right-2 top-1/2 -translate-y-1/2 z-30 btn-ghost p-1.5 rounded-full"
-            style={{ background: "var(--glass)", border: "1px solid var(--border)" }}
+            style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
             title="展开侧栏（停靠）"
             onClick={() => setInspectorPanelMode("docked")}
           >

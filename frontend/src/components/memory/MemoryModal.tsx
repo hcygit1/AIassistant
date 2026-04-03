@@ -620,16 +620,14 @@ export default function MemoryModal() {
     <>
       {/* Backdrop */}
       <div className="fixed inset-0 z-[60] transition-opacity"
-        style={{ background: "rgba(0,0,0,0.35)", backdropFilter: "blur(6px)" }}
+        style={{ background: "rgba(0,0,0,0.30)" }}
         onClick={() => setShowMemoryModal(false)} aria-hidden />
 
       {/* Modal */}
       <div className="fixed inset-4 sm:inset-8 z-[61] flex flex-col rounded-2xl overflow-hidden animate-scale-in"
         style={{
-          background: "var(--glass-heavy)",
-          backdropFilter: "blur(var(--blur-heavy)) saturate(1.8)",
-          WebkitBackdropFilter: "blur(var(--blur-heavy)) saturate(1.8)",
-          border: "1px solid var(--glass-border)",
+          background: "var(--bg-elevated)",
+          border: "1px solid var(--border)",
           boxShadow: "var(--shadow-xl)",
         }}>
 

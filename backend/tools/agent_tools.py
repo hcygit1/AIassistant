@@ -248,6 +248,9 @@ class SessionsSpawnTool(BaseTool):
         "失败",
     )
 
+    def _run(self, **kwargs: Any) -> str:
+        raise NotImplementedError("Use _arun for async execution")
+
     async def _arun(
         self,
         task: str,
@@ -846,6 +849,9 @@ class SubagentsTool(BaseTool):
     current_session_id: str = ""
     _agent_manager: Any = None
     _spawn_tool: Any = None
+
+    def _run(self, **kwargs: Any) -> str:
+        raise NotImplementedError("Use _arun for async execution")
 
     async def _arun(
         self,

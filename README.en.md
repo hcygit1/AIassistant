@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="images/clawchain_logo.png" alt="Pipixia" width="400">
+  <img src="images/Pipixia.png" alt="Pipixia" width="400">
   <h1>Pipixia</h1>
   <p>
     <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
@@ -18,7 +18,7 @@
 ## Architecture
 
 <p align="center">
-  <img src="images/clawchain_arch.png" alt="Pipixia Architecture" width="800">
+  <img src="images/pipixia_arch.png" alt="Pipixia Architecture" width="800">
 </p>
 
 | Layer | Technology |
@@ -62,7 +62,7 @@ Pipixia implements a **write-index-recall** three-phase memory architecture for 
 The system also supports **Skill Evolution**: `MemSkillEvolver` extracts reusable operational skills from conversation history through a multi-stage LLM pipeline (evaluate → generate → quality score), writing them as SKILL.md files that are automatically injected into the Agent's system prompt.
 
 <p align="center">
-  <img src="images/clawchain_memory_mechanism.png" alt="Memory mechanism" width="700">
+  <img src="images/pipixia_memory_mechanism.png" alt="Memory mechanism" width="700">
 </p>
 
 ### Context Management
@@ -85,13 +85,13 @@ The main Agent spawns sub-agents via `sessions_spawn`, each with an isolated ses
 Result delivery uses a separate announce state machine (`pending → queued → delivering → delivered`) with timeout retry and fallback write. All events flow through a **standardized event bus** with 23 event types built by the `Events` factory class.
 
 <p align="center">
-  <img src="images/clawchain_subagent_mechanism.png" alt="Sub-agent mechanism" width="700">
+  <img src="images/pipixia_subagent_mechanism.png" alt="Sub-agent mechanism" width="700">
 </p>
 
 ### Interrupt and Queuing
 
 <p align="center">
-  <img src="images/clawchain_interrupt_queue_mechanism.png" alt="Interrupt and queuing" width="700">
+  <img src="images/pipixia_interrupt_queue_mechanism.png" alt="Interrupt and queuing" width="700">
 </p>
 
 New messages queue as followups when a session is busy. Stop requests abort the current run, save partial results, and return a terminal state.

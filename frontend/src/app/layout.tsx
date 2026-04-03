@@ -3,8 +3,8 @@ import "./globals.css";
 import { AppProvider } from "@/lib/store";
 
 export const metadata: Metadata = {
-  title: "ClawChain",
-  description: "LangChain-powered AI Agent system with full-stack architecture",
+  title: "Pipixia",
+  description: "Local-first AI Agent with persistent memory and context management",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

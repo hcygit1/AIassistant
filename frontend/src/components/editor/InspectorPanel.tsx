@@ -71,7 +71,7 @@ export default function InspectorPanel() {
   const activeTab = inspectorTab as TabId;
 
   return (
-    <div className="h-full flex flex-col" style={{ background: "var(--glass-heavy)", backdropFilter: "blur(var(--blur-glass))" }} data-testid="inspector-panel">
+    <div className="h-full flex flex-col" style={{ background: "var(--bg-elevated)" }} data-testid="inspector-panel">
       {/* Tab bar */}
       <div className="flex flex-shrink-0 items-stretch" style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex flex-1 min-w-0">

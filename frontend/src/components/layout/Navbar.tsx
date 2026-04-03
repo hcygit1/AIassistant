@@ -64,18 +64,18 @@ export default function Navbar() {
   const subagentCount = runningSubagents?.length || 0;
 
   return (
-    <nav className="relative z-50 h-12 px-3 flex items-center justify-between flex-shrink-0 glass-heavy"
-      style={{ borderBottom: "1px solid var(--border)" }}>
+    <nav className="relative z-50 h-11 px-3 flex items-center justify-between flex-shrink-0"
+      style={{ background: "var(--bg-elevated)", borderBottom: "1px solid var(--border)" }}>
 
       {/* ---- Left: Brand + Agent Switcher ---- */}
       <div className="flex items-center gap-2.5">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--accent)] to-blue-500 flex items-center justify-center flex-shrink-0"
-            style={{ boxShadow: "var(--shadow-glow)" }}>
-            <Bot className="w-4 h-4 text-white" />
+          <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
+            style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}>
+            <Bot className="w-3.5 h-3.5" />
           </div>
           <span className="font-semibold text-[var(--text)] text-[13px] tracking-tight hidden sm:inline">
-            ClawChain
+            Pipixia
           </span>
         </div>
 

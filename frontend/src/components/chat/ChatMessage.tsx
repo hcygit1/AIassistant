@@ -183,17 +183,14 @@ export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
       {hideAvatar ? (
         <div className="w-8 flex-shrink-0" />
       ) : (
-        <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 transition-shadow duration-200 ${isUser
-            ? "bg-gradient-to-br from-[var(--accent)] to-blue-500 text-white"
-            : ""
-          }`}
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
           style={
             isUser
-              ? { boxShadow: "var(--shadow-xs)" }
+              ? { background: "var(--accent)", color: "var(--text-on-accent)" }
               : { background: "var(--hover)", color: "var(--text-secondary)" }
           }
         >
-          {isUser ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+          {isUser ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
         </div>
       )}
 
@@ -232,19 +229,15 @@ export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
         {/* Message bubble */}
         {!isEmpty && !isTextToolCall && (message.content || (message.isStreaming && !hasToolCalls) || isUser) && (
           <div className="relative">
-            <div className={`inline-block rounded-2xl px-4 py-2.5 text-sm leading-relaxed transition-shadow duration-200 ${isUser ? "rounded-tr-md" : "rounded-tl-md"
+            <div className={`inline-block rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${isUser ? "rounded-tr-md" : "rounded-tl-md"
               }`}
               style={isUser ? {
-                background: "linear-gradient(135deg, var(--accent) 0%, #2563eb 100%)",
+                background: "var(--accent)",
                 color: "var(--text-on-accent)",
-                boxShadow: "var(--shadow-sm)",
               } : {
-                background: "var(--glass-heavy)",
-                backdropFilter: "blur(var(--blur-glass))",
-                WebkitBackdropFilter: "blur(var(--blur-glass))",
+                background: "var(--bg-elevated)",
                 border: "1px solid var(--border)",
                 color: "var(--text)",
-                boxShadow: "var(--shadow-xs)",
               }}
             >
               {isUser ? (

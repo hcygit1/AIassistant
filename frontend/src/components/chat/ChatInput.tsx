@@ -123,7 +123,7 @@ export default function ChatInput() {
                 className="p-2 rounded-lg text-white transition-all disabled:opacity-20 disabled:cursor-not-allowed"
                 style={{
                   background: text.trim() ? "var(--accent)" : "var(--text-tertiary)",
-                  boxShadow: text.trim() ? "var(--shadow-xs), var(--shadow-glow)" : "none",
+                  boxShadow: text.trim() ? "var(--shadow-xs)" : "none",
                 }}
               >
                 <ArrowUp className="w-4 h-4" />

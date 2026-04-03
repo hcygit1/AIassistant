@@ -467,7 +467,7 @@ export default function ConfigModal() {
   if (loading || !config) {
     return (
       <>
-        <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(4px)" }}
+        <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,0.25)" }}
           onClick={() => setShowConfigModal(false)} aria-hidden />
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="glass-card px-8 py-6 text-sm" style={{ color: "var(--text-secondary)" }}>
@@ -517,16 +517,14 @@ export default function ConfigModal() {
     <>
       {/* Backdrop */}
       <div className="fixed inset-0 z-40 transition-opacity"
-        style={{ background: "rgba(0,0,0,0.25)", backdropFilter: "blur(4px)" }}
+        style={{ background: "rgba(0,0,0,0.25)" }}
         onClick={() => setShowConfigModal(false)} aria-hidden />
 
       {/* Drawer */}
       <div className="fixed right-0 top-0 bottom-0 w-[480px] max-w-[95vw] z-50 flex flex-col animate-slide-in-from-right" data-testid="config-modal"
         style={{
-          background: "var(--glass-heavy)",
-          backdropFilter: "blur(var(--blur-heavy)) saturate(1.8)",
-          WebkitBackdropFilter: "blur(var(--blur-heavy)) saturate(1.8)",
-          borderLeft: "1px solid var(--glass-border)",
+          background: "var(--bg-elevated)",
+          borderLeft: "1px solid var(--border)",
           boxShadow: "var(--shadow-xl)",
         }}>
 
