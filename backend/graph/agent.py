@@ -22,25 +22,25 @@ from config import (
 )
 from graph.prompt_builder import prompt_builder
 from graph.session_manager import session_manager
-from graph.run_tracker import run_tracker
-from graph.audit_log import audit_logger
-from graph.token_counter import count_messages_tokens
+from infra.run_tracker import run_tracker
+from infra.audit_log import audit_logger
+from infra.token_counter import count_messages_tokens
 from graph.session_pruning import prune_messages
 from graph.command_parser import parse_command, execute_command
 from graph.tool_call_parser import parse_text_tool_calls, strip_tool_call_patterns
-from graph.errors import (
+from infra.errors import (
     is_compaction_failure_error,
     is_likely_context_overflow_error,
     is_role_ordering_error,
     is_session_corruption_error,
     is_transient_http_error,
 )
-from graph.model_selection import (
+from llm.model_selection import (
     resolve_fallback_candidates,
     run_with_fallback_stream,
 )
-from graph.models_config import ModelRef
-from graph.llm_factory import create_llm
+from llm.models_config import ModelRef
+from llm.llm_factory import create_llm
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ class LifecycleHooks:
 
 
 
-from graph.event_bus import EventBus, Events, event_bus
+from infra.event_bus import EventBus, Events, event_bus
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ class AgentManager:
                 save_task = asyncio.create_task(self._periodic_state_save(agent_id))
                 self._state_save_tasks[agent_id] = save_task
             else:
-                from graph.thinking import resolve_agent_think_default
+                from llm.thinking import resolve_agent_think_default
                 think_level = resolve_agent_think_default(agent_id)
                 self._states[agent_id] = AgentState(agent_id=agent_id, think_level=think_level.value)
 
@@ -303,29 +303,29 @@ class AgentManager:
 
     def get_llm(self, agent_id: str = "main"):
         """获取指定 Agent 的 LLM 实例（per-agent 动态创建，按 Provider 配置路由）"""
-        from graph.llm_factory import llm_cache
-        from graph.model_selection import resolve_agent_model
+        from llm.llm_factory import llm_cache
+        from llm.model_selection import resolve_agent_model
 
         ref = resolve_agent_model(agent_id)
         return llm_cache.get_or_create(agent_id, ref)
 
     def get_current_model_ref(self, agent_id: str = "main"):
         """获取 Agent 当前使用的 ModelRef"""
-        from graph.model_selection import resolve_agent_model
+        from llm.model_selection import resolve_agent_model
         return resolve_agent_model(agent_id)
 
     def switch_model(self, agent_id: str, model_raw: str) -> str:
         """运行时切换 Agent 模型，返回新模型描述"""
-        from graph.llm_factory import llm_cache
-        from graph.model_selection import resolve_agent_model, get_model_display_name
-        from graph.models_config import parse_model_ref
+        from llm.llm_factory import llm_cache
+        from llm.model_selection import resolve_agent_model, get_model_display_name
+        from llm.models_config import parse_model_ref
 
         ref = parse_model_ref(model_raw)
         if not ref:
             raise ValueError(f"Invalid model reference: {model_raw}")
 
         if not ref.provider:
-            from graph.models_config import models_config
+            from llm.models_config import models_config
             found = models_config.find_model_by_id(ref.model)
             if found:
                 provider, model_def = found
@@ -564,7 +564,7 @@ class AgentManager:
         history = prune_messages(history, agent_id=agent_id)
 
         from graph.context_budget import resolve_budget
-        from graph.token_counter import count_tokens
+        from infra.token_counter import count_tokens
         _budget = resolve_budget(agent_id)
         _sp_tokens = count_tokens(system_prompt)
         _summary_tokens = count_tokens(history[0].get("content", "")) if history and history[0].get("role") == "system" else 0
@@ -987,7 +987,7 @@ class AgentManager:
 
         messages = data.get("messages", [])
 
-        from graph.token_counter import detect_compaction_level
+        from infra.token_counter import detect_compaction_level
         level = detect_compaction_level(messages, agent_id=agent_id, overhead_tokens=overhead_tokens)
 
         if level == "none":
@@ -1107,7 +1107,7 @@ class AgentManager:
                 keep_recent_tokens = 8000
                 compressible_count = 0
                 try:
-                    from graph.token_counter import (
+                    from infra.token_counter import (
                         count_messages_tokens,
                         resolve_compaction_threshold,
                     )
@@ -1183,9 +1183,9 @@ class AgentManager:
         text_to_summarize: str,
     ) -> dict[str, Any]:
         """生成结构化摘要 dict，失败时降级为 raw_summary。"""
-        from graph.retry import retry_async
-        from graph.token_counter import count_tokens
-        from graph.model_selection import resolve_agent_model, get_model_context_window
+        from llm.retry import retry_async
+        from infra.token_counter import count_tokens
+        from llm.model_selection import resolve_agent_model, get_model_context_window
 
         store = self.mem_stores.get(agent_id)
         prev_summary: dict[str, Any] = {}
@@ -1272,9 +1272,9 @@ class AgentManager:
         text_to_summarize: str,
     ) -> dict[str, Any]:
         """纯文本摘要降级：返回只含 raw_summary 的 dict。"""
-        from graph.retry import retry_async
-        from graph.token_counter import count_tokens
-        from graph.model_selection import resolve_agent_model, get_model_context_window
+        from llm.retry import retry_async
+        from infra.token_counter import count_tokens
+        from llm.model_selection import resolve_agent_model, get_model_context_window
 
         from graph.context_budget import resolve_budget
         budget = resolve_budget(agent_id)

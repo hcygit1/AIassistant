@@ -8,7 +8,7 @@ from pathlib import Path
 
 from config import DATA_DIR
 
-from .types import CronJob, CronStore
+from .cron_types import CronJob, CronStore
 
 
 def resolve_cron_store_path(override: str | None = None) -> Path:

@@ -25,7 +25,7 @@ class SubagentSteerRequest(BaseModel):
 @router.get("/agents/{agent_id}/events")
 async def agent_events(agent_id: str):
     """SSE 端点：订阅 Agent 的生命周期事件"""
-    from graph.event_bus import event_bus
+    from infra.event_bus import event_bus
 
     queue = event_bus.subscribe(agent_id)
 
@@ -57,7 +57,7 @@ async def agent_events(agent_id: str):
 @router.get("/agents/{agent_id}/usage")
 async def agent_usage(agent_id: str, session_id: str | None = None):
     """获取 Agent 的 token 使用统计"""
-    from graph.run_tracker import run_tracker
+    from infra.run_tracker import run_tracker
     from config import resolve_agent_config
 
     usage = run_tracker.get_cumulative_usage(agent_id, session_id)
@@ -72,7 +72,7 @@ async def agent_usage(agent_id: str, session_id: str | None = None):
 @router.get("/agents/{agent_id}/audit-log")
 async def agent_audit_log(agent_id: str, limit: int = 50):
     """获取最近的审计日志"""
-    from graph.audit_log import audit_logger
+    from infra.audit_log import audit_logger
     return audit_logger.read_recent(agent_id, limit)
 
 

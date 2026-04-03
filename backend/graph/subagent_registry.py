@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
-from graph.state_machine import (
+from infra.state_machine import (
     SUBAGENT_ANNOUNCE_TRANSITIONS,
     SUBAGENT_RUN_TRANSITIONS,
     InvalidTransitionError,
@@ -403,7 +403,7 @@ class SubagentRegistry:
             r.ended_at = time.time()
             # 发送事件通知前端
             try:
-                from graph.event_bus import Events, event_bus
+                from infra.event_bus import Events, event_bus
                 event_bus.emit(r.requester_agent_id, Events.subagent_archived(run_id=rid, child_session_key=r.child_session_key))
             except Exception:
                 pass

@@ -186,7 +186,7 @@ async def execute_command(
 
 async def _cmd_status(agent_id: str, session_id: str, agent_state: Any, locale: str) -> dict[str, Any]:
     from graph.session_manager import session_manager
-    from graph.token_counter import count_messages_tokens
+    from infra.token_counter import count_messages_tokens
 
     data = session_manager.load_session(session_id, agent_id)
     msg_count = len(data.get("messages", [])) if data else 0
@@ -215,7 +215,7 @@ async def _cmd_status(agent_id: str, session_id: str, agent_state: Any, locale: 
 
 async def _cmd_context(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
     from graph.session_manager import session_manager
-    from graph.token_counter import count_messages_tokens
+    from infra.token_counter import count_messages_tokens
     from graph.context_budget import resolve_budget
 
     budget = resolve_budget(agent_id)
@@ -247,8 +247,8 @@ async def _cmd_context(agent_id: str, session_id: str, locale: str) -> dict[str,
 
 
 def _cmd_usage(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
-    from graph.run_tracker import run_tracker
-    from graph.model_selection import resolve_agent_model, get_model_display_name
+    from infra.run_tracker import run_tracker
+    from llm.model_selection import resolve_agent_model, get_model_display_name
 
     model_ref = resolve_agent_model(agent_id)
     model_name = get_model_display_name(model_ref)
@@ -271,7 +271,7 @@ def _cmd_think(agent_state: Any, args: list[str], locale: str) -> dict[str, Any]
     if agent_state is None:
         return {"handled": True, "response": t("state_unavail", locale), "action": "info"}
 
-    from graph.thinking import (
+    from llm.thinking import (
         ThinkLevel, parse_think_level, think_level_name,
         cycle_think_level, THINK_LEVELS,
     )
@@ -311,8 +311,8 @@ def _cmd_toggle_setting(agent_state: Any, setting: str, args: list[str], locale:
 
 
 def _cmd_model(agent_id: str, args: list[str], locale: str) -> dict[str, Any]:
-    from graph.model_selection import resolve_agent_model, get_model_display_name
-    from graph.models_config import models_config
+    from llm.model_selection import resolve_agent_model, get_model_display_name
+    from llm.models_config import models_config
 
     current_ref = resolve_agent_model(agent_id)
     current_name = get_model_display_name(current_ref)
@@ -380,8 +380,8 @@ def _cmd_subagents(agent_id: str, session_id: str, locale: str) -> dict[str, Any
 
 def _cmd_whoami(agent_id: str, locale: str) -> dict[str, Any]:
     from config import resolve_agent_config, resolve_agent_workspace
-    from graph.model_selection import resolve_agent_model, get_model_display_name
-    from graph.models_config import models_config
+    from llm.model_selection import resolve_agent_model, get_model_display_name
+    from llm.models_config import models_config
 
     cfg = resolve_agent_config(agent_id)
     workspace = resolve_agent_workspace(agent_id)

@@ -215,7 +215,7 @@ async def update_secrets(req: SecretsUpdateRequest):
 
 @router.get("/models")
 async def list_models():
-    from graph.models_config import models_config
+    from llm.models_config import models_config
 
     providers = []
     for p in models_config.list_providers():
@@ -253,8 +253,8 @@ async def list_models():
 
 @router.get("/models/current/{agent_id}")
 async def get_current_model(agent_id: str):
-    from graph.model_selection import resolve_agent_model, get_model_display_name
-    from graph.models_config import models_config
+    from llm.model_selection import resolve_agent_model, get_model_display_name
+    from llm.models_config import models_config
 
     try:
         ref = resolve_agent_model(agent_id)
@@ -356,8 +356,8 @@ def _deep_merge_inplace(base: dict, override: dict) -> None:
 def _reload_subsystems(updates: dict[str, Any]) -> None:
     if "models" in updates:
         try:
-            from graph.models_config import models_config
-            from graph.llm_factory import llm_cache
+            from llm.models_config import models_config
+            from llm.llm_factory import llm_cache
             from config import get_config
             models_config.reload(get_config().get("models"))
             llm_cache.invalidate_all()

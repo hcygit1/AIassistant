@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from graph.approval_store import approval_store
+from infra.approval_store import approval_store
 
 router = APIRouter()
 

@@ -11,8 +11,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from config import get_config, list_agents, is_cron_enabled
-from cron.store import load_cron_store, save_cron_store, resolve_cron_store_path
-from cron.types import CronJob, CronSchedule, CronPayload
+from scheduler.cron_store import load_cron_store, save_cron_store, resolve_cron_store_path
+from scheduler.cron_types import CronJob, CronSchedule, CronPayload
 
 router = APIRouter()
 
@@ -94,7 +94,7 @@ async def create_cron_job(body: CronJobCreate):
         created_at_ms=now_ms,
         updated_at_ms=now_ms,
     )
-    from cron.scheduler import _compute_next_run
+    from scheduler.cron_scheduler import _compute_next_run
     job.next_run_at_ms = _compute_next_run(job, now_ms, None)
     store.jobs.append(job)
     save_cron_store(store, _store_path())
@@ -142,7 +142,7 @@ async def update_cron_job(job_id: str, body: CronJobUpdate):
                 if p.get("kind") == "systemEvent":
                     j.payload = CronPayload(kind="systemEvent", text=str(p.get("text", "")).strip())
             j.updated_at_ms = int(time.time() * 1000)
-            from cron.scheduler import _compute_next_run
+            from scheduler.cron_scheduler import _compute_next_run
             now_ms = int(time.time() * 1000)
             j.next_run_at_ms = _compute_next_run(j, now_ms, j.last_run_at_ms)
             save_cron_store(store, _store_path())
@@ -249,7 +249,7 @@ async def create_reminder(body: ReminderCreate):
         created_at_ms=now_ms,
         updated_at_ms=now_ms,
     )
-    from cron.scheduler import _compute_next_run
+    from scheduler.cron_scheduler import _compute_next_run
     job.next_run_at_ms = _compute_next_run(job, now_ms, None)
     store.jobs.append(job)
     save_cron_store(store, _store_path())

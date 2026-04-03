@@ -82,8 +82,8 @@ class ExecTool(BaseTool):
             return f"命令被拒绝: {deny_reason}" if locale == "zh-CN" else f"Command rejected: {deny_reason}"
 
         if needs_approval:
-            from graph.approval_store import approval_store
-            from graph.event_bus import Events, event_bus
+            from infra.approval_store import approval_store
+            from infra.event_bus import Events, event_bus
 
             cfg = get_exec_approval_config()
             timeout_sec = cfg.get("ask_timeout_seconds", 60)
@@ -214,8 +214,8 @@ class ProcessKillTool(BaseTool):
             return f"命令被拒绝: {deny_reason}"
 
         if needs_approval:
-            from graph.approval_store import approval_store
-            from graph.event_bus import Events, event_bus
+            from infra.approval_store import approval_store
+            from infra.event_bus import Events, event_bus
 
             cfg = get_exec_approval_config()
             timeout_sec = cfg.get("ask_timeout_seconds", 60)

@@ -81,7 +81,7 @@ async def lifespan(application: FastAPI):
     cfg = get_config()
     cron_cfg = cfg.get("cron") or {}
     if cron_cfg.get("enabled"):
-        from cron.scheduler import CronScheduler
+        from scheduler.cron_scheduler import CronScheduler
         from graph.heartbeat import request_heartbeat_now
         cron_scheduler = CronScheduler()
         cron_scheduler.set_request_heartbeat_now(request_heartbeat_now)

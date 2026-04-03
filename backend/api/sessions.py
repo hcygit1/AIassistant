@@ -28,7 +28,7 @@ async def get_main_session(agent_id: str):
     if data is None:
         data = session_manager.ensure_session(session_id, agent_id)
 
-    from graph.token_counter import count_messages_tokens
+    from infra.token_counter import count_messages_tokens
     messages = data.get("messages", [])
 
     return {

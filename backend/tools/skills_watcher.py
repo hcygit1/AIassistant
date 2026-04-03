@@ -40,7 +40,7 @@ def _flush_snapshots() -> None:
         return
     try:
         from tools.skills_scanner import write_skills_snapshot
-        from graph.event_bus import Events, event_bus
+        from infra.event_bus import Events, event_bus
         for agent_id in agents:
             try:
                 write_skills_snapshot(agent_id)

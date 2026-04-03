@@ -62,7 +62,7 @@ def _reconcile_orphaned(run_id: str, entry: SubagentRunRecord, reason: str) -> b
 async def _deliver_announce_for_run(run_id: str, entry: SubagentRunRecord) -> bool:
     """向 requester 交付 announce"""
     from graph.session_manager import session_manager
-    from graph.event_bus import Events, event_bus
+    from infra.event_bus import Events, event_bus
 
     parsed = session_manager.session_id_from_session_key(entry.requester_session_key)
     if not parsed:

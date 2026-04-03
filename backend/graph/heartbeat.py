@@ -17,7 +17,7 @@ from graph.heartbeat_utils import (
     is_within_active_hours,
 )
 from graph.session_manager import session_manager
-from graph.audit_log import audit_logger
+from infra.audit_log import audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +359,7 @@ class HeartbeatRunner:
                             agent_id=agent_id,
                         ),
                     )
-                    from graph.event_bus import Events, event_bus
+                    from infra.event_bus import Events, event_bus
                     event_bus.emit(agent_id, Events.heartbeat_message(session_id=session_id, agent_id=agent_id))
                 audit_logger.log(agent_id, "heartbeat_response", {"response": response[:500]})
         except Exception as e:

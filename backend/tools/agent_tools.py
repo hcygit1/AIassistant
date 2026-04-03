@@ -466,7 +466,7 @@ class SessionsSpawnTool(BaseTool):
     ) -> None:
         """向 requester 交付 announce；若 requester 是子会话则触发其新 run 并递归向上"""
         from graph.subagent_registry import registry
-        from graph.event_bus import Events, event_bus
+        from infra.event_bus import Events, event_bus
         from graph.session_manager import session_manager
         from graph.message_queue import message_queue_manager
 
@@ -665,7 +665,7 @@ class SessionsSpawnTool(BaseTool):
         run_timeout_seconds: int = 0,
     ) -> None:
         from graph.subagent_registry import registry
-        from graph.event_bus import Events, event_bus
+        from infra.event_bus import Events, event_bus
 
         started_at: float | None = None
         result_parts: list[str] = []

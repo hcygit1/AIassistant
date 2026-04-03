@@ -281,7 +281,7 @@ def load_config() -> dict[str, Any]:
 def _init_models_config(cfg: dict[str, Any]) -> None:
     """初始化模型配置管理器"""
     try:
-        from graph.models_config import models_config
+        from llm.models_config import models_config
         models_config.initialize(cfg.get("models"))
     except Exception as e:
         import logging
