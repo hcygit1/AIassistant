@@ -1,15 +1,15 @@
 """记忆检索引擎 — 渐进式瀑布搜索
 
-三层记忆架构:
+两层记忆架构:
   短期 = session history (不经过此模块)
   中期 = Task 摘要 + 挂靠 Chunk 片段
-  长期 = Skill 技能指南 (按需检索加载)
+
+Skill 技能由 skills_scanner 静态扫描注入系统 Prompt，不经过此模块检索。
 
 搜索流程 (瀑布式):
   ① 搜 Tasks — FTS + ANN → RRF
   ② Task 不够 min_task_hits → 补搜 orphan Chunks
   ③ 对命中的 Task 搜其下属 Chunks → 按 query 相关度取 top-N 拼接
-  ④ 独立搜 Skills (不占 Task/Chunk budget)
 """
 
 from __future__ import annotations
@@ -39,7 +39,6 @@ class RecallHit:
     role: str = ""
     session_key: str = ""
     task_id: str | None = None
-    skill_id: str | None = None
     created_at: int = 0
 
 
@@ -57,7 +56,6 @@ class TaskGroup:
 class RecallResult:
     task_groups: list[TaskGroup] = field(default_factory=list)
     orphan_hits: list[RecallHit] = field(default_factory=list)
-    skill_hits: list[RecallHit] = field(default_factory=list)
     total_candidates: int = 0
     note: str = ""
 
@@ -77,18 +75,16 @@ class RecallResult:
             ))
             result.extend(g.chunks)
         result.extend(self.orphan_hits)
-        result.extend(self.skill_hits)
         return result
 
     @property
     def has_content(self) -> bool:
-        return bool(self.task_groups or self.orphan_hits or self.skill_hits)
+        return bool(self.task_groups or self.orphan_hits)
 
     @property
     def max_score(self) -> float:
         scores: list[float] = [g.task_score for g in self.task_groups]
         scores.extend(h.score for h in self.orphan_hits)
-        scores.extend(h.score for h in self.skill_hits)
         return max(scores) if scores else 0.0
 
 
@@ -161,9 +157,7 @@ class MemRecall:
         self.min_task_hits: int = recall.get("min_task_hits", 3)
         self.chunks_per_task: int = recall.get("chunks_per_task", 3)
         self.max_orphan_chunks: int = recall.get("max_orphan_chunks", 5)
-        self.max_skill_results: int = recall.get("max_skill_results", 3)
-        self.budget_chars: int = recall.get("budget_chars", 4000)
-        self.skill_budget_chars: int = recall.get("skill_budget_chars", 2000)
+        self.budget_chars: int = recall.get("budget_chars", 20000)
         self.min_task_score: float = recall.get("min_task_score", 0.3)
         self.rrf_k: int = recall.get("rrf_k", 60)
         self.recency_half_life_days: float = recall.get("recency_half_life_days", 14)
@@ -227,18 +221,25 @@ class MemRecall:
                 len(c.content_excerpt) for c in group.chunks
             )
 
-        # ④ 独立搜 Skills
-        skill_hits = await self._search_skills(query, sub_queries, query_vectors, owner)
-        logger.debug("Recall: %d skill hits", len(skill_hits))
-
-        # ⑤ 过滤低分结果
+        # ④ 过滤低分结果
         min_s = self.min_inject_score
         orphan_hits = [h for h in orphan_hits if h.score >= min_s]
-        skill_hits = [h for h in skill_hits if h.score >= min_s]
         for g in task_groups:
             g.chunks = [c for c in g.chunks if c.score >= min_s]
 
-        # ⑥ max_results 截断
+        # ④-b orphan chunk 纳入总预算
+        budget_remaining = max(0, self.budget_chars - chars_used)
+        trimmed_orphans: list[RecallHit] = []
+        orphan_chars = 0
+        for h in orphan_hits:
+            h_chars = len(h.content_excerpt) + len(h.summary)
+            if orphan_chars + h_chars > budget_remaining and trimmed_orphans:
+                break
+            trimmed_orphans.append(h)
+            orphan_chars += h_chars
+        orphan_hits = trimmed_orphans
+
+        # ⑤ max_results 截断
         if max_results is not None:
             total_hits = 0
             trimmed_groups: list[TaskGroup] = []
@@ -256,22 +257,17 @@ class MemRecall:
 
             remaining = max(0, max_results - total_hits)
             orphan_hits = orphan_hits[:remaining]
-            remaining -= len(orphan_hits)
-            skill_hits = skill_hits[:max(0, remaining)]
 
-        total = len(task_hits) + len(orphan_hits) + len(skill_hits)
+        total = len(task_hits) + len(orphan_hits)
         note_parts = []
         if task_groups:
             note_parts.append(f"tasks:{len(task_groups)}")
         if orphan_hits:
             note_parts.append(f"orphans:{len(orphan_hits)}")
-        if skill_hits:
-            note_parts.append(f"skills:{len(skill_hits)}")
 
         return RecallResult(
             task_groups=task_groups,
             orphan_hits=orphan_hits,
-            skill_hits=skill_hits,
             total_candidates=total,
             note=",".join(note_parts) or "empty",
         )
@@ -451,62 +447,6 @@ class MemRecall:
             if hits:
                 result[tid] = hits
         return result
-
-    # ------------------------------------------------------------------
-    # ④ Skill search (FTS + ANN → RRF)
-    # ------------------------------------------------------------------
-
-    async def _search_skills(
-        self, query: str, sub_queries: list[str],
-        query_vectors: dict[str, list[float]] | None = None,
-        owner: str | None = None,
-    ) -> list[RecallHit]:
-        if self.max_skill_results <= 0:
-            return []
-        pool_size = self.max_skill_results * 5
-        qv = query_vectors or {}
-
-        fts_hits = self.store.fts_search_skills(query, limit=pool_size, owner=owner)
-        fts_ranked = [(h.skill_id, h.score) for h in fts_hits]
-
-        vec_scores: dict[str, float] = {}
-        for sub_q in sub_queries:
-            q_vec = qv.get(sub_q)
-            if not q_vec:
-                continue
-            try:
-                ann_hits = self.store.ann_search_skills(q_vec, top_k=pool_size, owner=owner)
-                for h in ann_hits:
-                    vec_scores[h.skill_id] = max(vec_scores.get(h.skill_id, 0.0), h.score)
-            except Exception:
-                logger.warning("Skill vector search failed for: %s", sub_q)
-
-        vec_ranked = sorted(vec_scores.items(), key=lambda x: -x[1])
-        rrf_scores = rrf_fuse([fts_ranked, vec_ranked], k=self.rrf_k)
-        if not rrf_scores:
-            return []
-
-        sorted_skills = sorted(rrf_scores.items(), key=lambda x: -x[1])
-        results: list[RecallHit] = []
-        chars_used = 0
-        for sid, score in sorted_skills[:self.max_skill_results]:
-            skill = self.store.get_skill(sid)
-            if not skill or skill.status not in ("active", "draft"):
-                continue
-            desc = skill.description or ""
-            if chars_used + len(desc) > self.skill_budget_chars and results:
-                break
-            chars_used += len(desc)
-            results.append(RecallHit(
-                chunk_id=f"skill:{sid}",
-                score=round(score, 3),
-                summary=skill.name,
-                content_excerpt=desc[:500],
-                role="skill",
-                skill_id=sid,
-                created_at=skill.created_at,
-            ))
-        return results
 
     # ------------------------------------------------------------------
     # Factory

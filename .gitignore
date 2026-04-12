@@ -46,6 +46,7 @@ frontend/.next/
 frontend/out/
 
 # IDE
+.cursor/
 .idea/
 .vscode/
 *.swp

@@ -410,9 +410,7 @@ class MemRecallConfig(BaseModel):
     min_task_hits: int = 3
     chunks_per_task: int = 3
     max_orphan_chunks: int = 5
-    max_skill_results: int = 3
-    budget_chars: int = 4000
-    skill_budget_chars: int = 2000
+    budget_chars: int = 20000
     min_task_score: float = 0.3
     rrf_k: int = 60
     recency_half_life_days: float = 14
