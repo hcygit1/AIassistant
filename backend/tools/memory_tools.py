@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# mem_search — Hybrid recall (FTS5 + ANN + RRF + MMR + recency)
+# mem_search — Hybrid recall (FTS5 + ANN + RRF + recency)
 # ---------------------------------------------------------------------------
 
 class MemSearchInput(BaseModel):
@@ -48,7 +48,8 @@ class MemSearchTool(BaseTool):
         if not recall:
             return "记忆系统未初始化。"
 
-        result = await recall.search(query, max_results=max_results)
+        owner = f"agent:{self.agent_id}" if self.agent_id else None
+        result = await recall.search(query, owner=owner, max_results=max_results)
 
         if not result.hits:
             return f"未找到与 '{query}' 相关的记忆。"

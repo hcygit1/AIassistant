@@ -348,11 +348,11 @@ class MemTaskProcessor:
 
     @staticmethod
     def _parse_title_from_summary(summary: str) -> tuple[str, str]:
-        m = re.search(r"📌\s*(?:Title|标题)\s*\n(.+)", summary)
+        m = re.search(r"📌\s*(?:Title|标题)\s*\n?(.+)", summary)
         if m:
             title = m.group(1).strip()[:80]
-            body = summary[:m.start()].strip() + summary[m.end():].strip()
-            return title, body.strip()
+            body = (summary[:m.start()].strip() + "\n" + summary[m.end():].strip()).strip()
+            return title, body
         return "", summary
 
     @staticmethod

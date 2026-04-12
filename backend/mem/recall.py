@@ -15,13 +15,12 @@
 from __future__ import annotations
 
 import logging
-import math
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from mem.store import MemStore, SearchHit, TaskSearchHit, SkillSearchHit
+from mem.store import MemStore
 from mem.embedder import MemEmbedder
 
 logger = logging.getLogger(__name__)
@@ -168,6 +167,7 @@ class MemRecall:
         self.min_task_score: float = recall.get("min_task_score", 0.3)
         self.rrf_k: int = recall.get("rrf_k", 60)
         self.recency_half_life_days: float = recall.get("recency_half_life_days", 14)
+        self.min_inject_score: float = recall.get("min_inject_score", 0.015)
 
     # ------------------------------------------------------------------
     # Main search (waterfall)
@@ -185,19 +185,26 @@ class MemRecall:
 
         sub_queries = expand_query(query)
 
+        query_vectors: dict[str, list[float]] = {}
+        for sq in sub_queries:
+            try:
+                query_vectors[sq] = await self.embedder.embed_query(sq)
+            except Exception:
+                logger.warning("Embed failed for sub-query: %s", sq)
+
         # ① 搜 Tasks
-        task_hits = await self._search_tasks(query, sub_queries)
+        task_hits = await self._search_tasks(query, sub_queries, query_vectors, owner)
         logger.debug("Recall: %d task hits", len(task_hits))
 
         # ② Task 不够 → 补搜 orphan Chunks
         orphan_hits: list[RecallHit] = []
         if len(task_hits) < self.min_task_hits:
-            orphan_hits = await self._search_orphan_chunks(query, sub_queries, session_id)
+            orphan_hits = await self._search_orphan_chunks(query, sub_queries, session_id, query_vectors, owner)
             logger.debug("Recall: %d orphan chunk hits", len(orphan_hits))
 
         # ③ 对命中的 Tasks 搜下属 Chunks → 组装 TaskGroup
         task_ids = [tid for tid, _, _ in task_hits]
-        chunk_map = await self._search_chunks_for_tasks(task_ids, query, sub_queries)
+        chunk_map = await self._search_chunks_for_tasks(task_ids, query, sub_queries, query_vectors, owner)
 
         task_groups: list[TaskGroup] = []
         chars_used = 0
@@ -221,8 +228,36 @@ class MemRecall:
             )
 
         # ④ 独立搜 Skills
-        skill_hits = await self._search_skills(query, sub_queries)
+        skill_hits = await self._search_skills(query, sub_queries, query_vectors, owner)
         logger.debug("Recall: %d skill hits", len(skill_hits))
+
+        # ⑤ 过滤低分结果
+        min_s = self.min_inject_score
+        orphan_hits = [h for h in orphan_hits if h.score >= min_s]
+        skill_hits = [h for h in skill_hits if h.score >= min_s]
+        for g in task_groups:
+            g.chunks = [c for c in g.chunks if c.score >= min_s]
+
+        # ⑥ max_results 截断
+        if max_results is not None:
+            total_hits = 0
+            trimmed_groups: list[TaskGroup] = []
+            for g in task_groups:
+                group_count = 1 + len(g.chunks)
+                if total_hits + group_count > max_results:
+                    remaining = max_results - total_hits
+                    if remaining > 1:
+                        g.chunks = g.chunks[:remaining - 1]
+                        trimmed_groups.append(g)
+                    break
+                trimmed_groups.append(g)
+                total_hits += group_count
+            task_groups = trimmed_groups
+
+            remaining = max(0, max_results - total_hits)
+            orphan_hits = orphan_hits[:remaining]
+            remaining -= len(orphan_hits)
+            skill_hits = skill_hits[:max(0, remaining)]
 
         total = len(task_hits) + len(orphan_hits) + len(skill_hits)
         note_parts = []
@@ -247,17 +282,22 @@ class MemRecall:
 
     async def _search_tasks(
         self, query: str, sub_queries: list[str],
+        query_vectors: dict[str, list[float]] | None = None,
+        owner: str | None = None,
     ) -> list[tuple[str, float, Any]]:
         pool_size = self.max_task_results * 5
+        qv = query_vectors or {}
 
-        fts_hits = self.store.fts_search_tasks(query, limit=pool_size)
+        fts_hits = self.store.fts_search_tasks(query, limit=pool_size, owner=owner)
         fts_ranked = [(h.task_id, h.score) for h in fts_hits]
 
         vec_scores: dict[str, float] = {}
         for sub_q in sub_queries:
+            q_vec = qv.get(sub_q)
+            if not q_vec:
+                continue
             try:
-                q_vec = await self.embedder.embed_query(sub_q)
-                ann_hits = self.store.ann_search_tasks(q_vec, top_k=pool_size)
+                ann_hits = self.store.ann_search_tasks(q_vec, top_k=pool_size, owner=owner)
                 for h in ann_hits:
                     vec_scores[h.task_id] = max(vec_scores.get(h.task_id, 0.0), h.score)
             except Exception:
@@ -271,6 +311,8 @@ class MemRecall:
         sorted_tasks = sorted(rrf_scores.items(), key=lambda x: -x[1])
         results: list[tuple[str, float, Any]] = []
         for tid, score in sorted_tasks[:self.max_task_results]:
+            if score < self.min_task_score:
+                break
             task = self.store.get_task(tid)
             if task and task.status == "completed":
                 results.append((tid, score, task))
@@ -282,20 +324,25 @@ class MemRecall:
 
     async def _search_orphan_chunks(
         self, query: str, sub_queries: list[str], exclude_session: str | None,
+        query_vectors: dict[str, list[float]] | None = None,
+        owner: str | None = None,
     ) -> list[RecallHit]:
         pool_size = self.max_orphan_chunks * 5
+        qv = query_vectors or {}
 
         fts_hits = self.store.fts_search_orphan_chunks(
-            query, limit=pool_size, exclude_session=exclude_session,
+            query, limit=pool_size, exclude_session=exclude_session, owner=owner,
         )
         fts_ranked = [(h.chunk_id, h.score) for h in fts_hits]
 
         vec_scores: dict[str, float] = {}
         for sub_q in sub_queries:
+            q_vec = qv.get(sub_q)
+            if not q_vec:
+                continue
             try:
-                q_vec = await self.embedder.embed_query(sub_q)
                 ann_hits = self.store.ann_search_orphan_chunks(
-                    q_vec, top_k=pool_size, exclude_session=exclude_session,
+                    q_vec, top_k=pool_size, exclude_session=exclude_session, owner=owner,
                 )
                 for h in ann_hits:
                     vec_scores[h.chunk_id] = max(vec_scores.get(h.chunk_id, 0.0), h.score)
@@ -345,20 +392,25 @@ class MemRecall:
         task_ids: list[str],
         query: str,
         sub_queries: list[str],
+        query_vectors: dict[str, list[float]] | None = None,
+        owner: str | None = None,
     ) -> dict[str, list[RecallHit]]:
         if not task_ids:
             return {}
 
         pool_size = len(task_ids) * self.chunks_per_task * 3
+        qv = query_vectors or {}
 
-        fts_hits = self.store.fts_search_chunks_in_tasks(query, task_ids, limit=pool_size)
+        fts_hits = self.store.fts_search_chunks_in_tasks(query, task_ids, limit=pool_size, owner=owner)
         fts_ranked = [(h.chunk_id, h.score) for h in fts_hits]
 
         vec_scores: dict[str, float] = {}
         for sub_q in sub_queries:
+            q_vec = qv.get(sub_q)
+            if not q_vec:
+                continue
             try:
-                q_vec = await self.embedder.embed_query(sub_q)
-                ann_hits = self.store.ann_search_chunks_in_tasks(q_vec, task_ids, top_k=pool_size)
+                ann_hits = self.store.ann_search_chunks_in_tasks(q_vec, task_ids, top_k=pool_size, owner=owner)
                 for h in ann_hits:
                     vec_scores[h.chunk_id] = max(vec_scores.get(h.chunk_id, 0.0), h.score)
             except Exception:
@@ -406,19 +458,24 @@ class MemRecall:
 
     async def _search_skills(
         self, query: str, sub_queries: list[str],
+        query_vectors: dict[str, list[float]] | None = None,
+        owner: str | None = None,
     ) -> list[RecallHit]:
         if self.max_skill_results <= 0:
             return []
         pool_size = self.max_skill_results * 5
+        qv = query_vectors or {}
 
-        fts_hits = self.store.fts_search_skills(query, limit=pool_size)
+        fts_hits = self.store.fts_search_skills(query, limit=pool_size, owner=owner)
         fts_ranked = [(h.skill_id, h.score) for h in fts_hits]
 
         vec_scores: dict[str, float] = {}
         for sub_q in sub_queries:
+            q_vec = qv.get(sub_q)
+            if not q_vec:
+                continue
             try:
-                q_vec = await self.embedder.embed_query(sub_q)
-                ann_hits = self.store.ann_search_skills(q_vec, top_k=pool_size)
+                ann_hits = self.store.ann_search_skills(q_vec, top_k=pool_size, owner=owner)
                 for h in ann_hits:
                     vec_scores[h.skill_id] = max(vec_scores.get(h.skill_id, 0.0), h.score)
             except Exception:
@@ -479,14 +536,3 @@ def _format_date(ts_ms: int) -> str:
         return dt.strftime("%-m/%d")
     except Exception:
         return ""
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)

@@ -595,19 +595,22 @@ class MemStore:
         return hits
 
     def ann_search_tasks(
-        self, query_vec: list[float], top_k: int = 5
+        self, query_vec: list[float], top_k: int = 5,
+        owner: str | None = None,
     ) -> list[TaskSearchHit]:
         blob = serialize_float32(query_vec)
-        rows = self._conn.execute(
-            """SELECT v.task_id, v.distance,
-                      t.title, t.summary, t.status, t.started_at, t.ended_at
-               FROM vec_tasks v
-               JOIN tasks t ON t.id = v.task_id
-               WHERE v.embedding MATCH ? AND k = ?
-                 AND t.status = 'completed'
-               ORDER BY v.distance""",
-            (blob, top_k),
-        ).fetchall()
+        sql = """SELECT v.task_id, v.distance,
+                        t.title, t.summary, t.status, t.started_at, t.ended_at
+                 FROM vec_tasks v
+                 JOIN tasks t ON t.id = v.task_id
+                 WHERE v.embedding MATCH ? AND k = ?
+                   AND t.status = 'completed'"""
+        params: list[Any] = [blob, top_k]
+        if owner:
+            sql += " AND t.owner = ?"
+            params.append(owner)
+        sql += " ORDER BY v.distance"
+        rows = self._conn.execute(sql, params).fetchall()
 
         return [
             TaskSearchHit(
@@ -623,19 +626,22 @@ class MemStore:
         ]
 
     def ann_search_skills(
-        self, query_vec: list[float], top_k: int = 5
+        self, query_vec: list[float], top_k: int = 5,
+        owner: str | None = None,
     ) -> list[SkillSearchHit]:
         blob = serialize_float32(query_vec)
-        rows = self._conn.execute(
-            """SELECT v.skill_id, v.distance,
-                      s.name, s.description
-               FROM vec_skills v
-               JOIN skills s ON s.id = v.skill_id
-               WHERE v.embedding MATCH ? AND k = ?
-                 AND s.status IN ('active', 'draft')
-               ORDER BY v.distance""",
-            (blob, top_k),
-        ).fetchall()
+        sql = """SELECT v.skill_id, v.distance,
+                        s.name, s.description
+                 FROM vec_skills v
+                 JOIN skills s ON s.id = v.skill_id
+                 WHERE v.embedding MATCH ? AND k = ?
+                   AND s.status IN ('active', 'draft')"""
+        params: list[Any] = [blob, top_k]
+        if owner:
+            sql += " AND s.owner = ?"
+            params.append(owner)
+        sql += " ORDER BY v.distance"
+        rows = self._conn.execute(sql, params).fetchall()
 
         return [
             SkillSearchHit(
@@ -744,22 +750,26 @@ class MemStore:
             return []
 
     def fts_search_tasks(
-        self, query: str, limit: int = 10
+        self, query: str, limit: int = 10,
+        owner: str | None = None,
     ) -> list[TaskSearchHit]:
         sanitized = _sanitize_fts(query)
         if not sanitized:
             return []
         try:
-            rows = self._conn.execute(
-                """SELECT t.id as task_id, rank,
-                          t.title, t.summary, t.status, t.started_at, t.ended_at
-                   FROM tasks_fts f
-                   JOIN tasks t ON t.rowid = f.rowid
-                   WHERE tasks_fts MATCH ?
-                     AND t.status = 'completed'
-                   ORDER BY rank LIMIT ?""",
-                (sanitized, limit),
-            ).fetchall()
+            sql = """SELECT t.id as task_id, rank,
+                            t.title, t.summary, t.status, t.started_at, t.ended_at
+                     FROM tasks_fts f
+                     JOIN tasks t ON t.rowid = f.rowid
+                     WHERE tasks_fts MATCH ?
+                       AND t.status = 'completed'"""
+            params: list[Any] = [sanitized]
+            if owner:
+                sql += " AND t.owner = ?"
+                params.append(owner)
+            sql += " ORDER BY rank LIMIT ?"
+            params.append(limit)
+            rows = self._conn.execute(sql, params).fetchall()
 
             if not rows:
                 return []
@@ -944,22 +954,26 @@ class MemStore:
         self._conn.commit()
 
     def fts_search_skills(
-        self, query: str, limit: int = 10
+        self, query: str, limit: int = 10,
+        owner: str | None = None,
     ) -> list[SkillSearchHit]:
         sanitized = _sanitize_fts(query)
         if not sanitized:
             return []
         try:
-            rows = self._conn.execute(
-                """SELECT s.id as skill_id, rank,
-                          s.name, s.description
-                   FROM skills_fts f
-                   JOIN skills s ON s.rowid = f.rowid
-                   WHERE skills_fts MATCH ?
-                     AND s.status IN ('active', 'draft')
-                   ORDER BY rank LIMIT ?""",
-                (sanitized, limit),
-            ).fetchall()
+            sql = """SELECT s.id as skill_id, rank,
+                            s.name, s.description
+                     FROM skills_fts f
+                     JOIN skills s ON s.rowid = f.rowid
+                     WHERE skills_fts MATCH ?
+                       AND s.status IN ('active', 'draft')"""
+            params: list[Any] = [sanitized]
+            if owner:
+                sql += " AND s.owner = ?"
+                params.append(owner)
+            sql += " ORDER BY rank LIMIT ?"
+            params.append(limit)
+            rows = self._conn.execute(sql, params).fetchall()
 
             if not rows:
                 return []
@@ -986,21 +1000,24 @@ class MemStore:
         query_vec: list[float],
         task_ids: list[str],
         top_k: int = 10,
+        owner: str | None = None,
     ) -> list[SearchHit]:
         if not task_ids:
             return []
         blob = serialize_float32(query_vec)
-        rows = self._conn.execute(
-            """SELECT v.chunk_id, v.distance,
-                      c.summary, c.content, c.role, c.session_key,
-                      c.task_id, c.created_at
-               FROM vec_chunks v
-               JOIN chunks c ON c.id = v.chunk_id
-               WHERE v.embedding MATCH ? AND k = ?
-                 AND c.dedup_status = 'active'
-               ORDER BY v.distance""",
-            (blob, top_k * 3),
-        ).fetchall()
+        sql = """SELECT v.chunk_id, v.distance,
+                        c.summary, c.content, c.role, c.session_key,
+                        c.task_id, c.created_at
+                 FROM vec_chunks v
+                 JOIN chunks c ON c.id = v.chunk_id
+                 WHERE v.embedding MATCH ? AND k = ?
+                   AND c.dedup_status = 'active'"""
+        params: list[Any] = [blob, top_k * 3]
+        if owner:
+            sql += " AND c.owner = ?"
+            params.append(owner)
+        sql += " ORDER BY v.distance"
+        rows = self._conn.execute(sql, params).fetchall()
 
         task_set = set(task_ids)
         hits: list[SearchHit] = []
@@ -1027,6 +1044,7 @@ class MemStore:
         query: str,
         task_ids: list[str],
         limit: int = 10,
+        owner: str | None = None,
     ) -> list[SearchHit]:
         if not task_ids:
             return []
@@ -1042,9 +1060,13 @@ class MemStore:
                      JOIN chunks c ON c.rowid = f.rowid
                      WHERE chunks_fts MATCH ?
                        AND c.dedup_status = 'active'
-                       AND c.task_id IN ({placeholders})
-                     ORDER BY rank LIMIT ?"""
-            params: list[Any] = [sanitized, *task_ids, limit * 2]
+                       AND c.task_id IN ({placeholders})"""
+            params: list[Any] = [sanitized, *task_ids]
+            if owner:
+                sql += " AND c.owner = ?"
+                params.append(owner)
+            sql += " ORDER BY rank LIMIT ?"
+            params.append(limit * 2)
             rows = self._conn.execute(sql, params).fetchall()
             if not rows:
                 return []
@@ -1071,19 +1093,22 @@ class MemStore:
         query_vec: list[float],
         top_k: int = 10,
         exclude_session: str | None = None,
+        owner: str | None = None,
     ) -> list[SearchHit]:
         blob = serialize_float32(query_vec)
-        rows = self._conn.execute(
-            """SELECT v.chunk_id, v.distance,
-                      c.summary, c.content, c.role, c.session_key,
-                      c.task_id, c.created_at
-               FROM vec_chunks v
-               JOIN chunks c ON c.id = v.chunk_id
-               WHERE v.embedding MATCH ? AND k = ?
-                 AND c.dedup_status IN ('active', 'orphaned')
-               ORDER BY v.distance""",
-            (blob, top_k * 3),
-        ).fetchall()
+        sql = """SELECT v.chunk_id, v.distance,
+                        c.summary, c.content, c.role, c.session_key,
+                        c.task_id, c.created_at
+                 FROM vec_chunks v
+                 JOIN chunks c ON c.id = v.chunk_id
+                 WHERE v.embedding MATCH ? AND k = ?
+                   AND c.dedup_status IN ('active', 'orphaned')"""
+        params: list[Any] = [blob, top_k * 3]
+        if owner:
+            sql += " AND c.owner = ?"
+            params.append(owner)
+        sql += " ORDER BY v.distance"
+        rows = self._conn.execute(sql, params).fetchall()
 
         hits: list[SearchHit] = []
         for r in rows:
@@ -1111,6 +1136,7 @@ class MemStore:
         query: str,
         limit: int = 10,
         exclude_session: str | None = None,
+        owner: str | None = None,
     ) -> list[SearchHit]:
         sanitized = _sanitize_fts(query)
         if not sanitized:
@@ -1128,6 +1154,9 @@ class MemStore:
             if exclude_session:
                 sql += " AND c.session_key != ?"
                 params.append(exclude_session)
+            if owner:
+                sql += " AND c.owner = ?"
+                params.append(owner)
             sql += " ORDER BY rank LIMIT ?"
             params.append(limit * 2)
             rows = self._conn.execute(sql, params).fetchall()

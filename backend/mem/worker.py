@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Literal
 
@@ -120,7 +121,7 @@ class MemWorker:
         self.dedup_threshold = dedup_threshold
         self._on_chunks_ingested = on_chunks_ingested
 
-        self._queue: list[tuple[IngestMessage, bool]] = []
+        self._queue: deque[tuple[IngestMessage, bool]] = deque()
         self._processing = False
         self._lock = asyncio.Lock()
 
@@ -155,7 +156,7 @@ class MemWorker:
 
         try:
             while self._queue:
-                msg, is_session_end = self._queue.pop(0)
+                msg, is_session_end = self._queue.popleft()
                 last_session = msg.session_key
                 any_session_end = any_session_end or is_session_end
                 try:
@@ -376,8 +377,6 @@ class MemWorker:
         temperature: float = 0.0,
     ) -> str:
         endpoint = f"{self.llm_base_url}/chat/completions"
-        if not endpoint.endswith("/chat/completions"):
-            endpoint = f"{self.llm_base_url}/chat/completions"
 
         headers = {
             "Content-Type": "application/json",
