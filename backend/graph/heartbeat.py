@@ -235,21 +235,6 @@ class HeartbeatRunner:
             )
             return
 
-        # 会话忙碌
-        from graph.message_queue import message_queue_manager
-        if message_queue_manager.is_session_busy(agent_id, session_id):
-            emit_heartbeat_event(
-                agent_id,
-                HeartbeatEvent(
-                    ts=int(time.time() * 1000),
-                    status="skipped",
-                    reason="requests-in-flight",
-                    duration_ms=int((time.time() - started) * 1000),
-                    agent_id=agent_id,
-                ),
-            )
-            return
-
         # 检查 pending cron 事件：若有则用 cron prompt 替代默认
         from infra.system_events import peek_system_event_entries_for_agent, drain_system_event_entries
         main_sid = session_manager.resolve_main_session_id(agent_id)
@@ -268,11 +253,9 @@ class HeartbeatRunner:
         else:
             full_prompt = None
 
-        # now_str 用于 audit，cron 分支可能未设置
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         if full_prompt is None:
-            # HEARTBEAT.md 空文件跳过
             if heartbeat_md.exists():
                 try:
                     content = heartbeat_md.read_text(encoding="utf-8")
@@ -296,26 +279,12 @@ class HeartbeatRunner:
 
         audit_logger.log(agent_id, "heartbeat_trigger", {"time": now_str})
 
-        try:
-            from graph.agent import agent_manager
-
-            response_parts: list[str] = []
-            async for event in agent_manager.astream(
-                message=full_prompt,
-                session_id=session_id,
-                agent_id=agent_id,
-                prompt_mode="minimal",
-            ):
-                if event.get("type") == "token":
-                    response_parts.append(event.get("content", ""))
-
-            response = "".join(response_parts).strip()
+        async def _handle_heartbeat_result(response: str) -> None:
             ack_max = hb.get("ackMaxChars", 300)
             should_skip, stripped = strip_heartbeat_token(response, max_ack_chars=ack_max)
 
             if should_skip:
                 if cron_events_present:
-                    # 仅在真正发出提醒后才消费 cron 事件，避免模型失败导致事件丢失。
                     emit_heartbeat_event(
                         agent_id,
                         HeartbeatEvent(
@@ -326,11 +295,7 @@ class HeartbeatRunner:
                             agent_id=agent_id,
                         ),
                     )
-                    audit_logger.log(
-                        agent_id,
-                        "heartbeat_error",
-                        {"error": "cron-events-not-delivered"},
-                    )
+                    audit_logger.log(agent_id, "heartbeat_error", {"error": "cron-events-not-delivered"})
                     return
                 session_manager.rollback_last_turn(session_id, agent_id)
                 status = "ok-empty" if not response.strip() else "ok-token"
@@ -362,19 +327,33 @@ class HeartbeatRunner:
                     from infra.event_bus import Events, event_bus
                     event_bus.emit(agent_id, Events.heartbeat_message(session_id=session_id, agent_id=agent_id))
                 audit_logger.log(agent_id, "heartbeat_response", {"response": response[:500]})
-        except Exception as e:
-            logger.error(f"Heartbeat execution failed for {agent_id}: {e}")
-            emit_heartbeat_event(
-                agent_id,
-                HeartbeatEvent(
-                    ts=int(time.time() * 1000),
-                    status="failed",
-                    reason=str(e),
-                    duration_ms=int((time.time() - started) * 1000),
-                    agent_id=agent_id,
+
+        from graph.session_dispatcher import PendingTask, dispatcher_manager
+        from graph.message_queue import message_queue_manager
+        queue = message_queue_manager.get_queue(agent_id, session_id)
+        dispatcher = dispatcher_manager.get(agent_id, session_id, queue.lock)
+
+        dispatcher.submit(PendingTask(
+            kind="cron" if cron_events_present else "heartbeat",
+            priority=2 if cron_events_present else 3,
+            content=full_prompt,
+            agent_id=agent_id,
+            session_id=session_id,
+            result_handler=_handle_heartbeat_result,
+            on_failure=lambda: (
+                emit_heartbeat_event(
+                    agent_id,
+                    HeartbeatEvent(
+                        ts=int(time.time() * 1000),
+                        status="skipped",
+                        reason="session-busy",
+                        duration_ms=int((time.time() - started) * 1000),
+                        agent_id=agent_id,
+                    ),
                 ),
-            )
-            audit_logger.log(agent_id, "heartbeat_error", {"error": str(e)})
+                audit_logger.log(agent_id, "heartbeat_skipped", {"reason": "session-busy"}),
+            ),
+        ))
 
     @property
     def active_agents(self) -> list[str]:

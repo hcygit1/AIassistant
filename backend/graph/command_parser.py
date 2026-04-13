@@ -71,7 +71,6 @@ _T: dict[str, dict[str, str]] = {
     "api_protocol":   {"zh": "API 协议", "en": "API Protocol"},
     "workspace_label": {"zh": "工作区", "en": "Workspace"},
     "chat_queued":      {"zh": "Agent 正在处理中，消息已排队（第 {pos} 条）", "en": "Agent is busy, message queued (position {pos})"},
-    "chat_queued_done": {"zh": "[消息已排队，等待处理]", "en": "[Message queued, waiting for processing]"},
     "title_gen_system": {"zh": "你是一个标题生成器。根据用户的第一条消息，生成一个不超过10个字的中文标题。只输出标题，不要任何解释或标点。", "en": "You are a title generator. Based on the user's first message, generate a title of no more than 6 words. Output only the title, no explanation or punctuation."},
 }
 

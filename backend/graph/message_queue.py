@@ -1,90 +1,35 @@
-"""消息队列 — 会话级串行化 + followup 队列"""
+"""消息队列 — 会话级串行化
+
+每个 session 持有一把 asyncio.Lock，chat.py 和 SessionDispatcher 共享，
+保证同一 session 的 Agent 调用串行执行。
+"""
 
 from __future__ import annotations
 
 import asyncio
-import logging
-import time
-from dataclasses import dataclass, field
-from typing import Any
-
-logger = logging.getLogger(__name__)
-
-def _get_followup_cap() -> int:
-    """从配置获取followup队列上限"""
-    try:
-        from config import get_config
-        cfg = get_config()
-        return cfg.get("app", {}).get("messageQueue", {}).get("followupCap", 20)
-    except Exception:
-        return 20
-
-
-def _get_debounce_ms() -> int:
-    """从配置获取防抖时间（毫秒）"""
-    try:
-        from config import get_config
-        cfg = get_config()
-        return cfg.get("app", {}).get("messageQueue", {}).get("debounceMs", 1000)
-    except Exception:
-        return 1000
-
-
-@dataclass
-class FollowupItem:
-    message: str
-    timestamp: float = field(default_factory=time.time)
 
 
 class SessionQueue:
-    """每个 session 一个实例，保证串行执行 + followup 收集"""
+    """每个 session 一个实例，提供串行锁和 abort 能力。"""
 
     def __init__(self):
         self._lock = asyncio.Lock()
-        self._followup: list[FollowupItem] = []
-        self._busy = False
         self._active_task: asyncio.Task | None = None
 
     @property
-    def is_busy(self) -> bool:
-        return self._busy
+    def lock(self) -> asyncio.Lock:
+        return self._lock
 
     @property
-    def pending_count(self) -> int:
-        return len(self._followup)
-
-    def enqueue_followup(self, message: str) -> int:
-        followup_cap = _get_followup_cap()
-        if len(self._followup) >= followup_cap:
-            self._followup.pop(0)
-        self._followup.append(FollowupItem(message=message))
-        return len(self._followup)
-
-    def clear_followups(self) -> int:
-        n = len(self._followup)
-        self._followup.clear()
-        return n
-
-    def drain_followup(self) -> str | None:
-        if not self._followup:
-            return None
-        items = self._followup[:]
-        self._followup.clear()
-        if len(items) == 1:
-            return items[0].message
-        # Preserve timestamps for context understanding
-        lines = []
-        for i, item in enumerate(items, 1):
-            ts = time.strftime("%H:%M:%S", time.localtime(item.timestamp))
-            lines.append(f"[{ts}] {item.message}")
-        return "\n".join(lines)
+    def is_busy(self) -> bool:
+        # 与 chat / SessionDispatcher 共享同一把锁：任一方持锁即视为忙
+        return self._lock.locked()
 
     async def acquire(self) -> None:
         await self._lock.acquire()
-        self._busy = True
+        self._user_aborted = False
 
     def release(self) -> None:
-        self._busy = False
         self._active_task = None
         try:
             self._lock.release()
@@ -100,7 +45,6 @@ class SessionQueue:
             return False
         if task.done():
             return False
-        # Store whether this was user-initiated for the task to check
         self._user_aborted = user_initiated
         task.cancel()
         return True
@@ -132,3 +76,14 @@ class MessageQueueManager:
 
 
 message_queue_manager = MessageQueueManager()
+
+
+def cleanup_session_runtime(agent_id: str, session_id: str) -> None:
+    """释放会话的 SessionDispatcher 与 SessionQueue（会话删除或维护 prune 时调用）。
+
+    须先停止 dispatcher（共享同一把 asyncio.Lock），再移除 SessionQueue。
+    """
+    from graph.session_dispatcher import dispatcher_manager
+
+    dispatcher_manager.cleanup(agent_id, session_id)
+    message_queue_manager.cleanup(agent_id, session_id)

@@ -472,6 +472,7 @@ class SessionsSpawnTool(BaseTool):
         from infra.event_bus import Events, event_bus
         from graph.session_manager import session_manager
         from graph.message_queue import message_queue_manager
+        from graph.session_dispatcher import PendingTask, dispatcher_manager
 
         # #region agent log
         _debug_log(
@@ -500,130 +501,39 @@ class SessionsSpawnTool(BaseTool):
         is_main = req_session == main_session_id
         if is_main:
             queue = message_queue_manager.get_queue(req_agent, req_session)
-            lock_acquired = False
+            dispatcher = dispatcher_manager.get(req_agent, main_session_id, queue.lock)
 
-            async def _run_main_announce() -> None:
-                async for _ in self._agent_manager.astream(
-                    message=announce_msg,
-                    session_id=main_session_id,
-                    agent_id=req_agent,
-                    prompt_mode="minimal",
-                    persist_input_role="system",
-                ):
-                    pass
+            registry.set_announce_state(run_id, "queued")
+            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="queued"))
 
-            try:
-                registry.set_announce_state(run_id, "queued")
-                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="queued"))
-                await asyncio.wait_for(queue.acquire(), timeout=ANNOUNCE_ACQUIRE_TIMEOUT_SEC)
-                lock_acquired = True
-                queue.set_active_task(asyncio.current_task())
-                registry.set_announce_state(run_id, "delivering")
-                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivering"))
-                # #region agent log
-                _debug_log(
-                    "backend/tools/agent_tools.py:_deliver_announce_to_requester",
-                    "astream_start",
-                    {"run_id": run_id, "session_id": main_session_id},
-                    "H2A",
-                )
-                # #endregion
-                await asyncio.wait_for(_run_main_announce(), timeout=ANNOUNCE_RUN_TIMEOUT_SEC)
-                # #region agent log
-                _debug_log(
-                    "backend/tools/agent_tools.py:_deliver_announce_to_requester",
-                    "astream_end",
-                    {"run_id": run_id, "session_id": main_session_id},
-                    "H2A",
-                )
-                # #endregion
-                registry.mark_announce_delivered(run_id)
-                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivered"))
-            except asyncio.TimeoutError:
-                session_manager.save_message(main_session_id, req_agent, "system", announce_msg)
-                registry.mark_announce_dropped(run_id)
-                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
-                event_bus.emit(
-                    req_agent,
-                    Events.subagent_error(
-                        run_id=run_id,
-                        error=(
-                            f"announce queue timeout after {ANNOUNCE_ACQUIRE_TIMEOUT_SEC}s"
-                            if not lock_acquired
-                            else f"announce delivery timeout after {ANNOUNCE_RUN_TIMEOUT_SEC}s"
-                        ),
-                    ),
-                )
-                return
-            except Exception as e:
-                # 兜底：至少把系统消息写回主会话，避免结果丢失
-                session_manager.save_message(main_session_id, req_agent, "system", announce_msg)
-                registry.mark_announce_dropped(run_id)
-                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
-                event_bus.emit(req_agent, Events.subagent_error(run_id=run_id, error=str(e)[:200]))
-                return
-            finally:
-                if lock_acquired:
-                    queue.release()
-            return
-
-        busy = message_queue_manager.is_session_busy(req_agent, req_session)
-        # #region agent log
-        _debug_log(
-            "backend/tools/agent_tools.py:_deliver_announce_to_requester",
-            "busy_check",
-            {"run_id": run_id, "req_agent": req_agent, "req_session": req_session, "is_busy": busy},
-            "H2A",
-        )
-        # #endregion
-        if busy:
-            if not registry.mark_announce_retry(run_id):
-                registry.mark_announce_dropped(run_id)
-                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
-                session_manager.save_message(
-                    req_session,
-                    req_agent,
-                    "system",
-                    "[Announce Dropped] Sub-agent finished but requester session is busy, retry limit reached or expired.",
-                )
-                return
-            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="retrying"))
-            rec = registry.get_run(run_id)
-            cnt = getattr(rec, "announce_retry_count", 0) if rec else 0
-            delay_s = min(2 ** cnt, 8)
-
-            async def _retry_later():
-                await asyncio.sleep(delay_s)
-                await self._deliver_announce_to_requester(
-                    requester_key=requester_key,
-                    child_session_key=child_session_key,
-                    run_id=run_id,
-                    task=task,
-                    result=result,
-                    outcome=outcome,
-                    label=label,
-                    started_at=started_at,
-                    ended_at=ended_at,
-                )
-            asyncio.create_task(_retry_later())
-            return
-
-        parent_reply = ""
-        try:
-            registry.set_announce_state(run_id, "delivering")
-            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivering"))
-            async for event in self._agent_manager.astream(
-                message=announce_msg,
-                session_id=req_session,
+            dispatcher.submit(PendingTask(
+                kind="announce",
+                priority=0,
+                content=announce_msg,
                 agent_id=req_agent,
-                prompt_mode="minimal",
-                persist_input_role="system",
-            ):
-                if event.get("type") == "done":
-                    parent_reply = event.get("content", "") or parent_reply
-                elif event.get("type") == "token":
-                    parent_reply += event.get("content", "")
-            parent_child_key = f"agent:{req_agent}:subagent:{req_session}"
+                session_id=main_session_id,
+                run_id=run_id,
+                on_success=lambda: (
+                    registry.mark_announce_delivered(run_id),
+                    event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivered")),
+                ),
+                on_failure=lambda: (
+                    session_manager.save_message(main_session_id, req_agent, "system", announce_msg),
+                    registry.mark_announce_dropped(run_id),
+                    event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped")),
+                ),
+            ))
+            return
+
+        queue = message_queue_manager.get_queue(req_agent, req_session)
+        dispatcher = dispatcher_manager.get(req_agent, req_session, queue.lock)
+
+        registry.set_announce_state(run_id, "queued")
+        event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="queued"))
+
+        parent_child_key = f"agent:{req_agent}:subagent:{req_session}"
+
+        async def _sub_session_announce_result(parent_reply: str) -> None:
             grandparent = registry.resolve_requester_for_child_session(parent_child_key)
             if grandparent:
                 g_req_key, _ = grandparent
@@ -635,17 +545,19 @@ class SessionsSpawnTool(BaseTool):
                     result=parent_reply or result,
                     outcome=outcome,
                     label=label,
+                    started_at=started_at,
+                    ended_at=ended_at,
                 )
-            registry.mark_announce_delivered(run_id)
-            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivered"))
-        except Exception as e:
+
+        async def _sub_session_announce_fail(exc: Exception) -> None:
             session_manager.save_message(
-                req_session, req_agent, "system",
-                f"[Announce processing failed] {str(e)[:200]}",
+                req_session,
+                req_agent,
+                "system",
+                f"[Announce processing failed] {str(exc)[:200]}",
             )
             registry.mark_announce_dropped(run_id)
             event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
-            parent_child_key = f"agent:{req_agent}:subagent:{req_session}"
             grandparent = registry.resolve_requester_for_child_session(parent_child_key)
             if grandparent:
                 g_req_key, _ = grandparent
@@ -654,9 +566,27 @@ class SessionsSpawnTool(BaseTool):
                     child_session_key=parent_child_key,
                     run_id=run_id,
                     task=task,
-                    result=f"Sub-agent aggregation failed: {e}",
+                    result=f"Sub-agent aggregation failed: {exc}",
                     outcome="error",
+                    label=label,
+                    started_at=started_at,
+                    ended_at=ended_at,
                 )
+
+        dispatcher.submit(PendingTask(
+            kind="announce",
+            priority=0,
+            content=announce_msg,
+            agent_id=req_agent,
+            session_id=req_session,
+            run_id=run_id,
+            result_handler=_sub_session_announce_result,
+            on_success=lambda: (
+                registry.mark_announce_delivered(run_id),
+                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivered")),
+            ),
+            on_failure_async=_sub_session_announce_fail,
+        ))
 
     async def _run_subagent(
         self,

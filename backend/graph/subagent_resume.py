@@ -87,42 +87,31 @@ async def _deliver_announce_for_run(run_id: str, entry: SubagentRunRecord) -> bo
     ]
     announce_msg = "\n".join(msg_lines)
 
-    if req_session == main_sid:
-        try:
-            from graph.agent import agent_manager
-            async for _ in agent_manager.astream(
-                message=announce_msg,
-                session_id=main_sid,
-                agent_id=req_agent,
-                prompt_mode="minimal",
-                persist_input_role="system",
-            ):
-                pass
-            registry.mark_announce_delivered(run_id)
-            event_bus.emit(req_agent, Events.subagent_done(run_id=run_id, result=result[:300]))
-            return True
-        except Exception:
-            session_manager.save_message(main_sid, req_agent, "system", announce_msg)
-            registry.mark_announce_dropped(run_id)
-            event_bus.emit(req_agent, Events.subagent_done(run_id=run_id, result=result[:300]))
-            return True
+    from graph.session_dispatcher import PendingTask, dispatcher_manager
+    from graph.message_queue import message_queue_manager
 
-    try:
-        from graph.agent import agent_manager
-        async for event in agent_manager.astream(
-            message=announce_msg,
-            session_id=req_session,
-            agent_id=req_agent,
-            prompt_mode="minimal",
-            persist_input_role="system",
-        ):
-            pass
-        registry.mark_announce_delivered(run_id)
-        return True
-    except Exception as e:
-        logger.warning(f"Resume announce failed for run={run_id}: {e}")
-        registry.mark_announce_dropped(run_id)
-        return False
+    target_sid = main_sid if req_session == main_sid else req_session
+    queue = message_queue_manager.get_queue(req_agent, target_sid)
+    dispatcher = dispatcher_manager.get(req_agent, target_sid, queue.lock)
+
+    dispatcher.submit(PendingTask(
+        kind="announce",
+        priority=0,
+        content=announce_msg,
+        agent_id=req_agent,
+        session_id=target_sid,
+        run_id=run_id,
+        on_success=lambda: (
+            registry.mark_announce_delivered(run_id),
+            event_bus.emit(req_agent, Events.subagent_done(run_id=run_id, result=result[:300])),
+        ),
+        on_failure=lambda: (
+            session_manager.save_message(target_sid, req_agent, "system", announce_msg),
+            registry.mark_announce_dropped(run_id),
+            event_bus.emit(req_agent, Events.subagent_done(run_id=run_id, result=result[:300])),
+        ),
+    ))
+    return True
 
 
 async def resume_subagent_runs() -> None:

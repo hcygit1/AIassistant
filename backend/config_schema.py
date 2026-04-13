@@ -277,8 +277,7 @@ class CronConfig(BaseModel):
 
 class MessageQueueConfig(BaseModel):
     """消息队列配置"""
-    debounceMs: int = Field(default=1000, ge=100, le=10000)  # 防抖时间
-    followupCap: int = Field(default=20, ge=5, le=100)  # followup队列上限
+    debounceMs: int = Field(default=1000, ge=100, le=10000)
 
 
 class SystemEventsConfig(BaseModel):

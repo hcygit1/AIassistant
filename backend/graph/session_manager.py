@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import threading
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from config import get_config, resolve_agent_sessions_dir
+
+logger = logging.getLogger(__name__)
 
 
 class _SessionCache:
@@ -548,6 +551,12 @@ class SessionManager:
                                 path.unlink()
                             except Exception:
                                 pass
+                    try:
+                        from graph.message_queue import cleanup_session_runtime
+
+                        cleanup_session_runtime(agent_id, sid)
+                    except Exception as e:
+                        logger.warning("cleanup_session_runtime after session prune: %s", e)
                 store.pop(key, None)
             if to_remove:
                 self._save_session_store(agent_id, store)
@@ -708,6 +717,12 @@ class SessionManager:
             self._cache.invalidate(cache_key)
             session_key = self.session_key_from_session_id(agent_id, session_id)
             self._remove_session_store_entry(agent_id, session_key)
+            try:
+                from graph.message_queue import cleanup_session_runtime
+
+                cleanup_session_runtime(agent_id, session_id)
+            except Exception as e:
+                logger.warning("cleanup_session_runtime after delete_session: %s", e)
             return True
         return False
 

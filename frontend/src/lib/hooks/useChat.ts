@@ -73,6 +73,7 @@ export function useChat(
   const chatTimeoutRef = useRef<number | null>(null);
   const userStoppedRef = useRef(false);
   const streamingAssistantIdRef = useRef<string | null>(null);
+  const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
 
   const addLifecycleEvent = useCallback((event: SSEEvent) => {
     if (event.type === "lifecycle" && event.event) {
@@ -114,7 +115,21 @@ export function useChat(
   }, []);
 
   const sendMessage = useCallback(async (text: string) => {
-    if (!text.trim() || isStreaming) return;
+    if (!text.trim()) return;
+
+    // Agent 忙时入队到本地缓冲，不发 HTTP
+    if (isStreaming) {
+      const { enqueue } = await import("../messageQueue");
+      enqueue(text.trim());
+      const now = Date.now();
+      setMessages(prev => [...prev, {
+        id: `user-${now}`,
+        role: "user" as const,
+        content: text.trim(),
+        createdAt: now,
+      }]);
+      return;
+    }
 
     let sessionId = currentSessionId;
     if (!sessionId) {
@@ -493,8 +508,21 @@ export function useChat(
         });
       }
       options?.onTurnComplete?.();
+
+      // 自动消费本地队列中的下一条消息（用 ref 避免闭包拿到过期的 sendMessage）
+      try {
+        const { dequeue } = await import("../messageQueue");
+        const next = dequeue();
+        if (next) {
+          setTimeout(() => {
+            void sendMessageRef.current?.(next.text);
+          }, 50);
+        }
+      } catch { /* ignore */ }
     }
   }, [currentAgentId, currentSessionId, isStreaming, addLifecycleEvent, setCurrentSessionId, loadMessages, options]);
+
+  sendMessageRef.current = sendMessage;
 
   const stopStreaming = useCallback(async () => {
     userStoppedRef.current = true;

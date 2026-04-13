@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncGenerator
+from typing import AsyncGenerator
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from graph.message_queue import SessionQueue
 
 router = APIRouter()
 
@@ -23,7 +25,6 @@ class ChatRequest(BaseModel):
 class ChatAbortRequest(BaseModel):
     session_id: str = ""
     agent_id: str = "main"
-    clear_followups: bool = False
     user_initiated: bool = True
 
 
@@ -35,7 +36,6 @@ def _should_skip_auto_title(message: str) -> bool:
 
 
 async def _event_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
-    from graph.agent import agent_manager
     from graph.session_manager import session_manager
     from graph.message_queue import message_queue_manager
 
@@ -49,55 +49,24 @@ async def _event_generator(req: ChatRequest) -> AsyncGenerator[str, None]:
     locale = get_config().get("app", {}).get("locale", "zh-CN")
 
     if queue.is_busy:
-        pos = queue.enqueue_followup(req.message)
-        queued_data = json.dumps({
-            "type": "queued",
-            "position": pos,
-            "message": t("chat_queued", locale, pos=str(pos)),
-        }, ensure_ascii=False)
-        yield f"event: queued\ndata: {queued_data}\n\n"
-        done_data = json.dumps({
-            "type": "done", "content": t("chat_queued_done", locale),
+        busy_data = json.dumps({
+            "type": "busy",
             "session_id": req.session_id,
+            "message": t("chat_queued", locale, pos="1"),
         }, ensure_ascii=False)
-        yield f"event: done\ndata: {done_data}\n\n"
+        yield f"event: busy\ndata: {busy_data}\n\n"
         return
 
     await queue.acquire()
     queue.set_active_task(asyncio.current_task())
     try:
-        await _run_turn(req, queue)
         async for chunk in _stream_turn(req, queue):
             yield chunk
     finally:
         queue.release()
 
-    # followup 队列自动排空
-    while True:
-        followup_msg = queue.drain_followup()
-        if not followup_msg:
-            break
-        followup_req = ChatRequest(
-            message=followup_msg,
-            session_id=req.session_id,
-            agent_id=req.agent_id,
-            stream=req.stream,
-        )
-        await queue.acquire()
-        queue.set_active_task(asyncio.current_task())
-        try:
-            async for chunk in _stream_turn(followup_req, queue):
-                yield chunk
-        finally:
-            queue.release()
 
-
-async def _run_turn(req: ChatRequest, queue: Any) -> None:
-    """Placeholder — actual streaming happens in _stream_turn"""
-    pass
-
-
-async def _stream_turn(req: ChatRequest, queue: Any) -> AsyncGenerator[str, None]:
+async def _stream_turn(req: ChatRequest, queue: SessionQueue) -> AsyncGenerator[str, None]:
     from graph.agent import agent_manager
     from graph.session_manager import session_manager
 
@@ -130,10 +99,6 @@ async def _stream_turn(req: ChatRequest, queue: Any) -> AsyncGenerator[str, None
         was_user_initiated = queue.was_user_aborted()
         # User-initiated stop: preserve partial output to avoid "whole turn disappearing"
         if was_user_initiated:
-            try:
-                queue.clear_followups()
-            except Exception:
-                pass
             try:
                 data = session_manager.load_session(req.session_id, req.agent_id) or {}
                 messages = data.get("messages", []) if isinstance(data, dict) else []
@@ -235,9 +200,4 @@ async def abort_chat(req: ChatAbortRequest):
     session_id = req.session_id or session_manager.resolve_main_session_id(req.agent_id)
     queue = message_queue_manager.get_queue(req.agent_id, session_id)
     aborted = queue.abort_active_task(user_initiated=req.user_initiated)
-    cleared = queue.clear_followups() if req.clear_followups else 0
-    return {
-        "aborted": bool(aborted),
-        "pending_followups": queue.pending_count,
-        "cleared_followups": cleared,
-    }
+    return {"aborted": bool(aborted)}
