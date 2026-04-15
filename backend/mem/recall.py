@@ -148,6 +148,7 @@ class MemRecall:
         store: MemStore,
         embedder: MemEmbedder,
         config: dict[str, Any] | None = None,
+        agent_id: str | None = None,
     ):
         self.store = store
         self.embedder = embedder
@@ -157,7 +158,11 @@ class MemRecall:
         self.min_task_hits: int = recall.get("min_task_hits", 3)
         self.chunks_per_task: int = recall.get("chunks_per_task", 3)
         self.max_orphan_chunks: int = recall.get("max_orphan_chunks", 5)
-        self.budget_chars: int = recall.get("budget_chars", 20000)
+        from runtime.context_budget import resolve_budget
+        self.budget_chars: int = recall.get(
+            "budget_chars",
+            resolve_budget(agent_id).memory_injection_chars,
+        )
         self.min_task_score: float = recall.get("min_task_score", 0.3)
         self.rrf_k: int = recall.get("rrf_k", 60)
         self.recency_half_life_days: float = recall.get("recency_half_life_days", 14)
@@ -459,8 +464,9 @@ class MemRecall:
         *,
         store: MemStore,
         embedder: MemEmbedder,
+        agent_id: str | None = None,
     ) -> MemRecall:
-        return cls(store=store, embedder=embedder, config=config)
+        return cls(store=store, embedder=embedder, config=config, agent_id=agent_id)
 
 
 # ---------------------------------------------------------------------------

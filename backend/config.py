@@ -49,10 +49,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "thinking_reserve": 0.20,
                 "active_ratio": 0.80,
                 "session_summary_ratio": 0.05,
+                "memory_injection_ratio": 0.05,
                 "jit_tool_output_ratio": 0.036,
                 "sliding_ratio": 0.80,
                 "forced_ratio": 0.95,
-                "max_file_chars": 20000,
             },
             "compaction": {
                 "enabled": True,

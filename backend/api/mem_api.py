@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_store():
-    from graph.agent import agent_manager
+    from runtime.agent import agent_manager
     return agent_manager.mem_stores.get("main")
 
 

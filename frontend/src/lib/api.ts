@@ -73,10 +73,142 @@ export async function fetchChatTimeout(): Promise<{ timeoutSeconds: number }> {
   return resp.json();
 }
 
-export async function streamChat(
+const TURN_POLL_MS = 500;
+
+export interface ChatSubmitResponse {
+  turn_id: string;
+  position: number;
+  status: string;
+  session_id: string;
+}
+
+export async function submitChat(
   message: string,
   sessionId: string,
   agentId: string,
+): Promise<ChatSubmitResponse> {
+  const resp = await fetch(`${API_BASE}/chat/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, session_id: sessionId, agent_id: agentId }),
+  });
+  if (resp.status === 409) {
+    throw new Error((await readErrorMessage(resp)) || "Another user turn is active for this session");
+  }
+  if (!resp.ok) throw new Error(await readErrorMessage(resp));
+  return resp.json();
+}
+
+export async function getTurnStatus(turnId: string): Promise<{
+  turn_id: string;
+  status: string;
+  position: number;
+  session_id: string;
+  agent_id: string;
+  error?: string | null;
+}> {
+  const resp = await fetch(`${API_BASE}/chat/turn/${encodeURIComponent(turnId)}/status`);
+  if (resp.status === 404) {
+    return {
+      turn_id: turnId,
+      status: "done",
+      position: 0,
+      session_id: "",
+      agent_id: "",
+    };
+  }
+  if (!resp.ok) throw new Error(await readErrorMessage(resp));
+  return resp.json();
+}
+
+export async function fetchPendingTurn(
+  sessionId: string,
+  agentId: string,
+): Promise<{
+  turn_id: string | null;
+  status: string | null;
+  position?: number;
+  session_id: string;
+  agent_id: string;
+}> {
+  const u = new URL(`${API_BASE}/chat/pending-turn`);
+  u.searchParams.set("session_id", sessionId);
+  u.searchParams.set("agent_id", agentId);
+  const resp = await fetch(u.toString());
+  if (!resp.ok) throw new Error(await readErrorMessage(resp));
+  return resp.json();
+}
+
+/** true = open SSE; false = turn already finished (reload messages from server). */
+export async function waitUntilTurnRunning(turnId: string, signal?: AbortSignal): Promise<boolean> {
+  while (true) {
+    if (signal?.aborted) {
+      const e = new Error("Aborted");
+      e.name = "AbortError";
+      throw e;
+    }
+    const s = await getTurnStatus(turnId);
+    if (s.status === "running") return true;
+    if (s.status === "done" || s.status === "error" || s.status === "cancelled") {
+      return false;
+    }
+    await new Promise(r => setTimeout(r, TURN_POLL_MS));
+  }
+}
+
+async function consumeSseStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onEvent: (event: SSEEvent) => void,
+) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      if (buffer.trim()) {
+        const remaining = buffer.trim();
+        if (remaining.startsWith("data: ")) {
+          try {
+            const parsed = JSON.parse(remaining.slice(6)) as SSEEvent;
+            onEvent(parsed);
+          } catch {
+            // ignore
+          }
+        }
+      }
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    let reachedTerminalEvent = false;
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          const parsed = JSON.parse(line.slice(6)) as SSEEvent;
+          onEvent(parsed);
+          if (parsed.type === "done" || parsed.type === "error" || parsed.type === "aborted") {
+            reachedTerminalEvent = true;
+            break;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (reachedTerminalEvent) {
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore
+      }
+      break;
+    }
+  }
+}
+
+export async function streamTurn(
+  turnId: string,
   onEvent: (event: SSEEvent) => void,
   opts?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<void> {
@@ -98,65 +230,14 @@ export async function streamChat(
   }
   const effectiveSignal = controller.signal;
 
-  async function consumeStream(reader: ReadableStreamDefaultReader<Uint8Array>) {
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        if (buffer.trim()) {
-          const remaining = buffer.trim();
-          if (remaining.startsWith("data: ")) {
-            try {
-              const parsed = JSON.parse(remaining.slice(6)) as SSEEvent;
-              onEvent(parsed);
-            } catch {
-              // ignore
-            }
-          }
-        }
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      let reachedTerminalEvent = false;
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          try {
-            const parsed = JSON.parse(line.slice(6)) as SSEEvent;
-            onEvent(parsed);
-            if (parsed.type === "done" || parsed.type === "error" || parsed.type === "aborted") {
-              reachedTerminalEvent = true;
-              break;
-            }
-          } catch {
-            // ignore
-          }
-        }
-      }
-      if (reachedTerminalEvent) {
-        try {
-          await reader.cancel();
-        } catch {
-          // ignore reader cancellation failures
-        }
-        break;
-      }
-    }
-  }
-
   try {
-    const resp = await fetch(`${API_BASE}/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, session_id: sessionId, agent_id: agentId, stream: true }),
+    const resp = await fetch(`${API_BASE}/chat/turn/${encodeURIComponent(turnId)}/stream`, {
       signal: effectiveSignal,
     });
-    if (!resp.ok) throw new Error(`Chat failed: ${resp.status}`);
+    if (!resp.ok) throw new Error(`Stream failed: ${resp.status}`);
     const reader = resp.body?.getReader();
     if (!reader) throw new Error("No response body");
-    await consumeStream(reader);
+    await consumeSseStream(reader, onEvent);
   } catch (e) {
     if (timeoutFired && e instanceof Error && e.name === "AbortError") {
       throw new Error(`Request timeout (${Math.round((timeoutMs ?? 0) / 1000)}s)`);
@@ -170,16 +251,18 @@ export async function streamChat(
 export async function abortChat(
   agentId: string,
   sessionId: string,
-  opts?: { userInitiated?: boolean },
+  opts?: { userInitiated?: boolean; turnId?: string },
 ): Promise<{ aborted: boolean }> {
+  const body: Record<string, unknown> = {
+    agent_id: agentId,
+    session_id: sessionId,
+    user_initiated: opts?.userInitiated !== false,
+  };
+  if (opts?.turnId) body.turn_id = opts.turnId;
   const resp = await fetch(`${API_BASE}/chat/abort`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      agent_id: agentId,
-      session_id: sessionId,
-      user_initiated: opts?.userInitiated !== false,
-    }),
+    body: JSON.stringify(body),
   });
   if (!resp.ok) {
     throw new Error(await readErrorMessage(resp));
@@ -455,7 +538,8 @@ export interface SubagentTreeItem {
   spawn_depth?: number;
   requester_session_key?: string;
   child_session_key?: string;
-  announce_state?: "pending" | "queued" | "delivering" | "retrying" | "delivered" | "dropped";
+  result_delivery_state?: "pending" | "queued" | "delivering" | "retrying" | "delivered" | "dropped";
+  delivery_work_id?: string | null;
   announce_retry_count?: number;
   archive_at_ms?: number | null;
   descendants_active_count?: number;

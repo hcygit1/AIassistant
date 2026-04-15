@@ -21,15 +21,13 @@ class ContextBudget:
 
     # 二级切分 (active 内部)
     session_summary_ratio: float = 0.05
+    memory_injection_ratio: float = 0.05
     # 历史工具截断阈值
     jit_tool_output_ratio: float = 0.036
 
     # 压缩触发 (基于 active)
     sliding_ratio: float = 0.80
     forced_ratio: float = 0.95
-
-    # 单文件截断上限 (chars)
-    max_file_chars: int = 20_000
 
     # --- 派生属性 ---
 
@@ -44,6 +42,14 @@ class ContextBudget:
     @property
     def session_summary_chars(self) -> int:
         return self.session_summary_tokens * CHARS_PER_TOKEN
+
+    @property
+    def memory_injection_tokens(self) -> int:
+        return int(self.active_tokens * self.memory_injection_ratio)
+
+    @property
+    def memory_injection_chars(self) -> int:
+        return self.memory_injection_tokens * CHARS_PER_TOKEN
 
     @property
     def jit_tool_output_tokens(self) -> int:

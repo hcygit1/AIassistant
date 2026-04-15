@@ -33,8 +33,8 @@ class SessionStatusTool(BaseTool):
         ]
 
         try:
-            from graph.session_manager import session_manager
-            from graph.subagent_registry import registry
+            from sessions.session_manager import session_manager
+            from subagents.subagent_registry import registry
 
             session_id = (
                 self.current_session_id
@@ -52,7 +52,7 @@ class SessionStatusTool(BaseTool):
 
 
 def get_status_tools(agent_id: str, session_id: str = "") -> list[BaseTool]:
-    from graph.session_manager import session_manager
+    from sessions.session_manager import session_manager
 
     effective_session_id = (
         session_id or session_manager.resolve_main_session_id(agent_id)

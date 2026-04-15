@@ -79,7 +79,7 @@ class SessionManager:
     @staticmethod
     def _emit_lifecycle(event_name: str, agent_id: str, session_id: str, **extra: Any) -> None:
         try:
-            from graph.session_lifecycle import lifecycle_bus, LifecycleEvent, LifecyclePayload
+            from runtime.session_lifecycle import lifecycle_bus, LifecycleEvent, LifecyclePayload
             ev = LifecycleEvent(event_name)
             lifecycle_bus.emit(LifecyclePayload(
                 event=ev, agent_id=agent_id, session_id=session_id, data=extra,
@@ -202,7 +202,7 @@ class SessionManager:
             return data
         if not spawned_by and session_id.startswith("subagent-"):
             try:
-                from graph.subagent_registry import registry
+                from subagents.subagent_registry import registry
                 child_sk = self.session_key_from_session_id(agent_id, session_id)
                 resolved = registry.resolve_requester_for_child_session(child_sk)
                 if resolved:
@@ -552,7 +552,7 @@ class SessionManager:
                             except Exception:
                                 pass
                     try:
-                        from graph.message_queue import cleanup_session_runtime
+                        from sessions.session_lock_manager import cleanup_session_runtime
 
                         cleanup_session_runtime(agent_id, sid)
                     except Exception as e:
@@ -634,7 +634,7 @@ class SessionManager:
                         spawned_by = data.get("spawned_by")
                         if not spawned_by:
                             try:
-                                from graph.subagent_registry import registry
+                                from subagents.subagent_registry import registry
                                 resolved = registry.resolve_requester_for_child_session(sk)
                                 if resolved:
                                     spawned_by = resolved[0]
@@ -718,7 +718,7 @@ class SessionManager:
             session_key = self.session_key_from_session_id(agent_id, session_id)
             self._remove_session_store_entry(agent_id, session_key)
             try:
-                from graph.message_queue import cleanup_session_runtime
+                from sessions.session_lock_manager import cleanup_session_runtime
 
                 cleanup_session_runtime(agent_id, session_id)
             except Exception as e:

@@ -173,7 +173,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             _print_status("OK", f"已创建默认配置: {config_path}")
 
     from config import load_config
-    from graph.workspace import ensure_agent_workspace
+    from runtime.workspace import ensure_agent_workspace
     cfg = load_config()
 
     agents_list = cfg.get("agents", {}).get("list", [])
@@ -195,7 +195,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
 def cmd_onboard(args: argparse.Namespace) -> None:
     from config import get_raw_config, load_config, save_config, _config_path, is_initialized
-    from graph.workspace import ensure_agent_workspace
+    from runtime.workspace import ensure_agent_workspace
 
     if not is_initialized():
         _print_status("INFO", "配置文件不存在，先运行 setup...")
@@ -499,7 +499,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
 def cmd_start(args: argparse.Namespace) -> None:
     """One-command startup: setup + quick config + serve."""
     from config import get_raw_config, is_initialized, load_config, save_config
-    from graph.workspace import ensure_agent_workspace
+    from runtime.workspace import ensure_agent_workspace
 
     if not is_initialized():
         _print_status("INFO", "未检测到初始化配置，正在执行 setup...")

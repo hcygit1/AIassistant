@@ -20,14 +20,14 @@ from config import (
     resolve_mem_config,
     list_agents,
 )
-from graph.prompt_builder import prompt_builder
-from graph.session_manager import session_manager
+from runtime.prompt_builder import prompt_builder
+from sessions.session_manager import session_manager
 from infra.run_tracker import run_tracker
 from infra.audit_log import audit_logger
 from infra.token_counter import count_messages_tokens
-from graph.session_pruning import prune_messages
-from graph.command_parser import parse_command, execute_command
-from graph.tool_call_parser import parse_text_tool_calls, strip_tool_call_patterns
+from sessions.session_pruning import prune_messages
+from runtime.command_parser import parse_command, execute_command
+from runtime.tool_call_parser import parse_text_tool_calls, strip_tool_call_patterns
 from infra.errors import (
     is_compaction_failure_error,
     is_likely_context_overflow_error,
@@ -269,7 +269,12 @@ class AgentManager:
             )
             self.mem_workers[agent_id] = worker
 
-            recall = MemRecall.from_config(mem_cfg, store=store, embedder=embedder)
+            recall = MemRecall.from_config(
+                mem_cfg,
+                store=store,
+                embedder=embedder,
+                agent_id=agent_id,
+            )
             self.mem_recalls[agent_id] = recall
 
             logger.info("Mem system initialized for agent %s", agent_id)
@@ -279,7 +284,7 @@ class AgentManager:
     async def initialize(self, data_dir: str) -> None:
         self.data_dir = data_dir
 
-        from graph.workspace import ensure_agent_workspace
+        from runtime.workspace import ensure_agent_workspace
 
         for agent in list_agents():
             agent_id = agent["id"]
@@ -520,7 +525,7 @@ class AgentManager:
         write_skills_snapshot(agent_id)
 
         # 检测 BOOTSTRAP.md
-        from graph.workspace import has_bootstrap
+        from runtime.workspace import has_bootstrap
         extra_prompt = ""
         if has_bootstrap(agent_id):
             bootstrap_path = resolve_agent_workspace(agent_id) / "BOOTSTRAP.md"
@@ -536,7 +541,7 @@ class AgentManager:
         tools = self._build_tools(agent_id, session_id)
         available_tool_names = [t.name for t in tools] if tools else None
 
-        from graph.prompt_builder import PromptParams
+        from runtime.prompt_builder import PromptParams
         from config import get_config
         _locale = get_config().get("app", {}).get("locale", "zh-CN")
         prompt_params = PromptParams(
@@ -563,7 +568,7 @@ class AgentManager:
         # 会话修剪
         history = prune_messages(history, agent_id=agent_id)
 
-        from graph.context_budget import resolve_budget
+        from runtime.context_budget import resolve_budget
         from infra.token_counter import count_tokens
         _budget = resolve_budget(agent_id)
         _sp_tokens = count_tokens(system_prompt)
@@ -576,6 +581,7 @@ class AgentManager:
         candidates = resolve_fallback_candidates(agent_id)
         did_retry_transient = False
         did_reset_compaction = False
+        did_retry_forced_compaction = False
 
         async def run_for_model(provider: str, model: str):
             ref = ModelRef(provider=provider, model=model)
@@ -884,9 +890,42 @@ class AgentManager:
                     return
 
                 if is_likely_context_overflow_error(msg):
+                    if not did_retry_forced_compaction:
+                        did_retry_forced_compaction = True
+                        logger.warning(
+                            "Context overflow detected for agent=%s session=%s. "
+                            "Attempting forced compaction retry.",
+                            agent_id,
+                            session_id,
+                        )
+                        try:
+                            forced_result = await self.compress_session(
+                                session_id, agent_id, level="forced"
+                            )
+                            if "error" not in forced_result:
+                                audit_logger.log(
+                                    agent_id,
+                                    "forced_compaction_retry",
+                                    {"session_id": session_id, "reason": msg[:200]},
+                                )
+                                continue
+                            logger.warning(
+                                "Forced compaction retry skipped for agent=%s session=%s: %s",
+                                agent_id,
+                                session_id,
+                                forced_result.get("error", "unknown"),
+                            )
+                        except Exception as forced_err:
+                            logger.warning(
+                                "Forced compaction retry failed for agent=%s session=%s: %s",
+                                agent_id,
+                                session_id,
+                                forced_err,
+                            )
+
                     yield {
                         "type": "error",
-                        "error": "⚠️ 上下文溢出 — 提示过长。请缩短消息或使用更大 context 的模型。",
+                        "error": "⚠️ 上下文溢出，已尝试紧急压缩但仍失败。请缩短消息或使用更大 context 的模型。",
                     }
                     return
 
@@ -1228,7 +1267,7 @@ class AgentManager:
             "- 只输出 JSON，不要输出其他内容"
         )
 
-        from graph.context_budget import resolve_budget
+        from runtime.context_budget import resolve_budget
         budget = resolve_budget(agent_id)
         summary_max_tokens = budget.session_summary_tokens
 
@@ -1276,7 +1315,7 @@ class AgentManager:
         from infra.token_counter import count_tokens
         from llm.model_selection import resolve_agent_model, get_model_context_window
 
-        from graph.context_budget import resolve_budget
+        from runtime.context_budget import resolve_budget
         budget = resolve_budget(agent_id)
         summary_max_tokens = budget.session_summary_tokens
 
@@ -1446,7 +1485,7 @@ class AgentManager:
     # ------------------------------------------------------------------
 
     async def register_agent(self, agent_id: str) -> None:
-        from graph.workspace import ensure_agent_workspace
+        from runtime.workspace import ensure_agent_workspace
 
         ensure_agent_workspace(agent_id)
         self._init_mem_system(agent_id)

@@ -40,7 +40,7 @@ class MemSearchTool(BaseTool):
 
     async def _arun(self, query: str, max_results: int = 8) -> str:
         try:
-            from graph.agent import agent_manager
+            from runtime.agent import agent_manager
             recall = agent_manager.mem_recalls.get(self.agent_id)
         except Exception:
             recall = None
@@ -90,7 +90,7 @@ class MemGetTool(BaseTool):
 
     def _run(self, chunk_id: str) -> str:
         try:
-            from graph.agent import agent_manager
+            from runtime.agent import agent_manager
             store = agent_manager.mem_stores.get(self.agent_id)
         except Exception:
             store = None

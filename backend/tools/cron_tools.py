@@ -91,19 +91,14 @@ class CronTool(BaseTool):
         if action == "wake":
             if not (text or "").strip():
                 return "wake 需要提供 text 参数。"
-            from infra.system_events import enqueue_system_event
-            from graph.heartbeat import request_heartbeat_now
-            from graph.session_manager import session_manager
+            from system_messages.reminder_delivery import reminder_delivery_service
 
             agent_id = self.current_agent_id or "main"
-            main_sid = session_manager.resolve_main_session_id(agent_id)
-            session_key = session_manager.session_key_from_session_id(agent_id, main_sid)
-            enqueue_system_event(
-                (text or "").strip(),
-                session_key=session_key,
-                context_key="cron:wake",
+            reminder_delivery_service.deliver_cron_reminder(
+                agent_id=agent_id,
+                text=(text or "").strip(),
+                run_id="cron:wake",
             )
-            request_heartbeat_now(agent_id, "wake")
             return f"已发送提醒到主会话，内容：{(text or '').strip()[:100]}..."
 
         if action == "add":
@@ -161,19 +156,14 @@ class CronTool(BaseTool):
                 return f"已删除任务 {target.id}。"
 
             if action == "run":
-                from infra.system_events import enqueue_system_event
-                from graph.heartbeat import request_heartbeat_now
-                from graph.session_manager import session_manager
+                from system_messages.reminder_delivery import reminder_delivery_service
 
                 agent_id = target.agent_id or "main"
-                main_sid = session_manager.resolve_main_session_id(agent_id)
-                session_key = session_manager.session_key_from_session_id(agent_id, main_sid)
-                enqueue_system_event(
-                    target.payload.text,
-                    session_key=session_key,
-                    context_key=f"cron:{target.id}",
+                reminder_delivery_service.deliver_cron_reminder(
+                    agent_id=agent_id,
+                    text=target.payload.text,
+                    run_id=target.id,
                 )
-                request_heartbeat_now(agent_id, f"cron:{target.id}")
                 return f"已触发任务 {target.id}：{target.payload.text[:50]}..."
 
             if action == "update":

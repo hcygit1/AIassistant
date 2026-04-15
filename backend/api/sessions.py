@@ -13,8 +13,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from config import list_agents, resolve_agent_sessions_dir
-from graph.session_manager import session_manager
-from graph.prompt_builder import prompt_builder
+from sessions.session_manager import session_manager
+from runtime.prompt_builder import prompt_builder
 
 router = APIRouter()
 

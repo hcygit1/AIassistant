@@ -118,7 +118,7 @@ export default function SubagentPanel() {
             addTrace("killed", "已终止");
             triggerRefresh();
           } else if (event.type === "subagent_announce") {
-            const st = String((event as any).announce_state || "").trim();
+            const st = String((event as any).result_delivery_state || "").trim();
             const label =
               st === "queued"
                 ? "等待主会话队列"
@@ -420,9 +420,9 @@ function SubagentTreeNode({
                   <span className="break-words">{node.result_summary.slice(0, 300)}</span>
                 </div>
               )}
-              {node.announce_state && (
+              {node.result_delivery_state && (
                 <div className="mx-2 mb-2 text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                  announce: {node.announce_state}
+                  delivery: {node.result_delivery_state}
                   {(node.announce_retry_count || 0) > 0 ? ` (retry ${node.announce_retry_count})` : ""}
                   {node.descendants_active_count ? ` | descendants running ${node.descendants_active_count}` : ""}
                 </div>

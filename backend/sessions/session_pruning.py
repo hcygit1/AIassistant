@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from graph.context_budget import resolve_budget
+from runtime.context_budget import resolve_budget
 
 TOOL_OUTPUT_RECENT_PRESERVE = 4
 

@@ -14,8 +14,8 @@ async def compress_session(agent_id: str, session_id: str):
     1. Compress — 压缩旧消息为摘要
     2. Post-Compaction Context — 注入上下文提醒 Agent 重新执行启动序列
     """
-    from graph.agent import agent_manager
-    from graph.session_manager import session_manager
+    from runtime.agent import agent_manager
+    from sessions.session_manager import session_manager
 
     data = session_manager.load_session(session_id, agent_id)
     if data is None:

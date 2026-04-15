@@ -170,18 +170,14 @@ async def run_cron_job(job_id: str, mode: str = "force"):
     store = load_cron_store(_store_path())
     for j in store.jobs:
         if j.id == job_id:
-            from infra.system_events import enqueue_system_event
-            from graph.session_manager import session_manager
-            from graph.heartbeat import request_heartbeat_now
+            from system_messages.reminder_delivery import reminder_delivery_service
+
             agent_id = j.agent_id or "main"
-            main_sid = session_manager.resolve_main_session_id(agent_id)
-            session_key = session_manager.session_key_from_session_id(agent_id, main_sid)
-            enqueue_system_event(
-                j.payload.text,
-                session_key=session_key,
-                context_key=f"cron:{j.id}",
+            reminder_delivery_service.deliver_cron_reminder(
+                agent_id=agent_id,
+                text=j.payload.text,
+                run_id=j.id,
             )
-            request_heartbeat_now(agent_id, f"cron:{j.id}")
             return {"ok": True, "message": "Triggered"}
     raise HTTPException(404, f"Job {job_id} not found")
 
@@ -205,6 +201,59 @@ async def get_task_history(
     records = task_store.query(agent_id=agent_id, kind=tk, status=ts, limit=limit, offset=offset)
     total = task_store.count(agent_id=agent_id)
     return {"items": records, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/system-work/history")
+async def get_system_work_history(
+    kind: str | None = None,
+    status: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    run_id: str | None = None,
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """查询系统会话工作台账，便于排查 announce / heartbeat / cron 的投递状态。"""
+    from sessions.session_work_store import session_work_store
+
+    items = session_work_store.query(
+        kind=kind,
+        status=status,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        limit=limit,
+        offset=offset,
+    )
+    total = session_work_store.count(
+        kind=kind,
+        status=status,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+    )
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "kind": r.kind,
+                "agent_id": r.agent_id,
+                "session_id": r.session_id,
+                "run_id": r.run_id,
+                "status": r.status,
+                "recover_on_restart": r.recover_on_restart,
+                "created_at_ms": r.created_at_ms,
+                "started_at_ms": r.started_at_ms,
+                "finished_at_ms": r.finished_at_ms,
+                "last_error": r.last_error,
+                "content_preview": r.content[:200],
+            }
+            for r in items
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.post("/tasks/{task_id}/cancel")

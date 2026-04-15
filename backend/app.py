@@ -64,17 +64,22 @@ async def lifespan(application: FastAPI):
     load_config()
     _setup_logging_from_config()
 
-    from graph.agent import agent_manager
+    from runtime.agent import agent_manager
     scan_all_skills()
     await agent_manager.initialize(str(DATA_DIR))
     skills_watcher.start()
 
-    from graph.heartbeat import heartbeat_runner
+    from system_messages.heartbeat import heartbeat_runner
     agent_ids = [a["id"] for a in list_agents()]
     await heartbeat_runner.start(agent_ids)
     logger.info(f"Heartbeat started for agents: {agent_ids}")
 
-    from graph.subagent_archive import start_subagent_archive
+    from sessions.session_work_delivery import session_work_delivery
+    recovered_work_count = session_work_delivery.recover_pending_work()
+    if recovered_work_count:
+        logger.info("Recovered %s pending system work items", recovered_work_count)
+
+    from subagents.subagent_archive import start_subagent_archive
     start_subagent_archive()
 
     from config import get_config
@@ -82,16 +87,14 @@ async def lifespan(application: FastAPI):
     cron_cfg = cfg.get("cron") or {}
     if cron_cfg.get("enabled"):
         from scheduler.cron_scheduler import CronScheduler
-        from graph.heartbeat import request_heartbeat_now
         cron_scheduler = CronScheduler()
-        cron_scheduler.set_request_heartbeat_now(request_heartbeat_now)
         await cron_scheduler.start()
         application.state.cron_scheduler = cron_scheduler
         logger.info("Cron scheduler started")
     else:
         application.state.cron_scheduler = None
 
-    from graph.subagent_resume import resume_subagent_runs
+    from subagents.subagent_resume import resume_subagent_runs
     try:
         await resume_subagent_runs()
     except Exception as e:
@@ -100,13 +103,13 @@ async def lifespan(application: FastAPI):
     yield
 
     skills_watcher.stop()
-    from graph.subagent_archive import stop_subagent_archive
+    from subagents.subagent_archive import stop_subagent_archive
     stop_subagent_archive()
     if getattr(application.state, "cron_scheduler", None):
         await application.state.cron_scheduler.stop()
 
     # 等待后台记忆保存任务完成
-    from graph.agent import agent_manager
+    from runtime.agent import agent_manager
     await agent_manager.wait_for_pending_tasks(timeout=30)
 
     await heartbeat_runner.stop()

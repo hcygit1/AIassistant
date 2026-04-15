@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from fastapi import HTTPException
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from turns.coordinator import user_turn_coordinator
+from turns.service import user_turn_service
+
+
+class _FakeLock:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+
+
+class _FakeDispatcher:
+    def __init__(self, position: int = 1) -> None:
+        self.position = position
+        self.submitted = []
+
+    def submit(self, task) -> int:
+        self.submitted.append(task)
+        return len(self.submitted)
+
+    def turn_queue_position(self, turn_id: str) -> int | None:
+        return self.position
+
+
+class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        user_turn_coordinator._runtimes.clear()
+        user_turn_coordinator._session_to_turn.clear()
+
+    async def test_submit_creates_turn_and_enqueues_user_work_item(self) -> None:
+        dispatcher = _FakeDispatcher(position=1)
+        with (
+            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
+            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
+        ):
+            result = await user_turn_service.submit(" hello ", "main", "main-main")
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["position"], 1)
+        self.assertEqual(len(dispatcher.submitted), 1)
+        work_item = dispatcher.submitted[0]
+        self.assertEqual(work_item.kind, "user")
+        self.assertEqual(work_item.content, "hello")
+        self.assertEqual(work_item.turn_id, result["turn_id"])
+        runtime = user_turn_coordinator.get(result["turn_id"])
+        self.assertIsNotNone(runtime)
+        self.assertEqual(runtime.status, "queued")
+
+    async def test_submit_rejects_second_active_turn_in_same_session(self) -> None:
+        dispatcher = _FakeDispatcher(position=1)
+        with (
+            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
+            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
+        ):
+            await user_turn_service.submit("first", "main", "main-main")
+            with self.assertRaises(HTTPException) as ctx:
+                await user_turn_service.submit("second", "main", "main-main")
+
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    async def test_status_returns_queued_position(self) -> None:
+        runtime = user_turn_coordinator.create_queued("main", "main-main")
+        dispatcher = _FakeDispatcher(position=3)
+        with (
+            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
+            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
+        ):
+            result = await user_turn_service.status(runtime.turn_id)
+
+        self.assertEqual(result["turn_id"], runtime.turn_id)
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["position"], 3)
+
+    async def test_pending_returns_active_turn_for_session(self) -> None:
+        runtime = user_turn_coordinator.create_queued("main", "main-main")
+        dispatcher = _FakeDispatcher(position=2)
+        with (
+            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
+            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
+        ):
+            result = await user_turn_service.pending("main", "main-main")
+
+        self.assertEqual(result["turn_id"], runtime.turn_id)
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["position"], 2)
+
+    async def test_stream_yields_runtime_queue_items_for_running_turn(self) -> None:
+        runtime = user_turn_coordinator.create_queued("main", "main-main")
+        user_turn_coordinator.set_running(runtime.turn_id)
+        await runtime.stream_queue.put("event: token\ndata: {}\n\n")
+        await runtime.stream_queue.put(None)
+
+        items = []
+        async for item in user_turn_service.stream(runtime.turn_id):
+            items.append(item)
+
+        self.assertEqual(items, ["event: token\ndata: {}\n\n"])
+
+    async def test_abort_cancels_bound_execution_task(self) -> None:
+        runtime = user_turn_coordinator.create_queued("main", "main-main")
+        user_turn_coordinator.set_running(runtime.turn_id)
+
+        async def _never_finishes() -> None:
+            await asyncio.sleep(60)
+
+        task = asyncio.create_task(_never_finishes())
+        user_turn_coordinator.bind_execution_task(runtime.turn_id, task)
+
+        result = await user_turn_service.abort("main", "main-main", turn_id=runtime.turn_id)
+
+        self.assertTrue(result["aborted"])
+        self.assertTrue(task.cancelled() or task.cancelling() > 0)
+        self.assertEqual(
+            user_turn_coordinator.get_cancel_reason(runtime.turn_id),
+            "stopped_by_user",
+        )
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+if __name__ == "__main__":
+    unittest.main()

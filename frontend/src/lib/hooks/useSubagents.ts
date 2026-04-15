@@ -54,15 +54,9 @@ export function useSubagents(
       (event) => {
         const type = event.type || "";
         if (!type.startsWith("subagent_")) return;
-        const announceState = String((event as any).announce_state || "").trim();
-        // #region agent log
-        fetch('http://127.0.0.1:7700/ingest/77c66232-605d-4df3-930c-89bbb8ebd5c2',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e404f0'},body:JSON.stringify({sessionId:'e404f0',runId:'pre-fix',hypothesisId:'H2C',location:'frontend/src/lib/hooks/useSubagents.ts:eventHandler',message:'subagent_event',data:{type,runId:(event as any).run_id || ''},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
+        const announceState = String((event as any).result_delivery_state || "").trim();
         triggerRefresh();
         if (type === "subagent_announce" && (announceState === "delivered" || announceState === "dropped")) {
-          // #region agent log
-          fetch('http://127.0.0.1:7700/ingest/77c66232-605d-4df3-930c-89bbb8ebd5c2',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e404f0'},body:JSON.stringify({sessionId:'e404f0',runId:'pre-fix',hypothesisId:'H2D',location:'frontend/src/lib/hooks/useSubagents.ts:eventHandler',message:'onSubagentDone_call',data:{type,announceState,runId:(event as any).run_id || ''},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           if (doneTimerRef.current) window.clearTimeout(doneTimerRef.current);
           doneTimerRef.current = window.setTimeout(() => {
             onSubagentDone?.();

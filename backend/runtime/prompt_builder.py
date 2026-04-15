@@ -19,7 +19,7 @@ from config import (
     resolve_agent_dir,
     resolve_agent_workspace,
 )
-from graph.context_budget import resolve_budget
+from runtime.context_budget import resolve_budget
 
 
 # ---------------------------------------------------------------------------
@@ -66,16 +66,8 @@ class PromptParams:
     available_tools: list[str] | None = None
     extra_system_prompt: str | None = None
     default_think_level: str = "off"
-    max_file_chars: int | None = None
     locale: str = "zh-CN"
     heartbeat_prompt: str | None = None
-
-    def resolve_file_limit(self) -> int:
-        """返回单文件截断上限 (chars)，未显式设置时从 budget 派生。"""
-        if self.max_file_chars is not None:
-            return self.max_file_chars
-        budget = resolve_budget(self.agent_id)
-        return budget.max_file_chars
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +134,6 @@ class PromptBuilder:
         context_text, file_entries, truncation_events = self._build_project_context_with_report(
             agent_id,
             mode=mode,
-            max_file_chars=params.resolve_file_limit(),
         )
         if context_text:
             _add("project_context", context_text)
@@ -368,24 +359,10 @@ class PromptBuilder:
     # Project Context (with report)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _smart_truncate(content: str, max_chars: int) -> tuple[str, bool]:
-        if len(content) <= max_chars:
-            return content, False
-        head_chars = int(max_chars * 0.7)
-        tail_chars = int(max_chars * 0.2)
-        truncated = (
-            content[:head_chars]
-            + f"\n\n... [已截断：原文 {len(content)} 字符，显示前 {head_chars} + 后 {tail_chars}] ...\n\n"
-            + content[-tail_chars:]
-        )
-        return truncated, True
-
     def _build_project_context_with_report(
         self,
         agent_id: str,
         mode: str = "full",
-        max_file_chars: int = 20_000,
     ) -> tuple[str, list[PromptFileEntry], int]:
         workspace = resolve_agent_workspace(agent_id)
 
@@ -444,11 +421,7 @@ class PromptBuilder:
                         parts.append(section)
                 content = "\n\n".join(parts) if parts else content
 
-            content, was_truncated = self._smart_truncate(content, max_file_chars)
-            if was_truncated:
-                truncation_events += 1
-
-            file_entries.append(PromptFileEntry(label=label, chars=len(content), truncated=was_truncated))
+            file_entries.append(PromptFileEntry(label=label, chars=len(content), truncated=False))
             lines.append(f"\n## {label}")
             lines.append(content)
 

@@ -87,7 +87,7 @@ async def create_agent(req: AgentCreateRequest):
     if req.id in existing:
         raise HTTPException(400, f"Agent '{req.id}' 已存在")
 
-    from graph.workspace import ensure_agent_workspace
+    from runtime.workspace import ensure_agent_workspace
 
     ensure_agent_workspace(req.id, include_bootstrap=True)
 
@@ -114,10 +114,10 @@ async def create_agent(req: AgentCreateRequest):
     from tools.skills_scanner import write_skills_snapshot
     write_skills_snapshot(req.id)
 
-    from graph.agent import agent_manager
+    from runtime.agent import agent_manager
     await agent_manager.register_agent(req.id)
 
-    from graph.heartbeat import heartbeat_runner
+    from system_messages.heartbeat import heartbeat_runner
     await heartbeat_runner.add_agent(req.id)
 
     return {"status": "ok", "agent_id": req.id}
@@ -163,7 +163,7 @@ async def get_heartbeat_history(agent_id: str, limit: int = 30):
     """获取该 Agent 最近的心跳事件列表（有界，用于右侧栏展示）"""
     if not any(a["id"] == agent_id for a in list_agents()):
         raise HTTPException(404, f"Agent '{agent_id}' 不存在")
-    from graph.heartbeat import get_heartbeat_history as _get
+    from system_messages.heartbeat import get_heartbeat_history as _get
     return _get(agent_id, limit=limit)
 
 
@@ -202,7 +202,7 @@ async def delete_agent(agent_id: str, delete_files: bool = True):
                     files_msg = "文件清理失败"
 
     try:
-        from graph.heartbeat import heartbeat_runner
+        from system_messages.heartbeat import heartbeat_runner
         heartbeat_runner.update_config()
     except Exception:
         pass

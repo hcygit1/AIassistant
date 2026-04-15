@@ -252,43 +252,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const loadMainSession = useCallback(async () => {
     const reqId = ++loadMainSessionReqRef.current;
-    // #region agent log
-    fetch('http://127.0.0.1:7700/ingest/77c66232-605d-4df3-930c-89bbb8ebd5c2',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e404f0'},body:JSON.stringify({sessionId:'e404f0',runId:'pre-fix',hypothesisId:'H2D',location:'frontend/src/lib/store.tsx:loadMainSession',message:'start',data:{reqId,currentAgentId},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     try {
       const session = await api.fetchMainSession(currentAgentId);
       if (reqId !== loadMainSessionReqRef.current) {
-        // #region agent log
-        fetch('http://127.0.0.1:7700/ingest/77c66232-605d-4df3-930c-89bbb8ebd5c2',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e404f0'},body:JSON.stringify({sessionId:'e404f0',runId:'post-fix',hypothesisId:'H2D',location:'frontend/src/lib/store.tsx:loadMainSession',message:'stale_after_fetchMainSession_drop',data:{reqId,currentAgentId},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         return;
       }
       setCurrentSessionId(session.session_id);
       await chat.loadMessages(currentAgentId, session.session_id);
       if (reqId !== loadMainSessionReqRef.current) {
-        // #region agent log
-        fetch('http://127.0.0.1:7700/ingest/77c66232-605d-4df3-930c-89bbb8ebd5c2',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e404f0'},body:JSON.stringify({sessionId:'e404f0',runId:'post-fix',hypothesisId:'H2D',location:'frontend/src/lib/store.tsx:loadMainSession',message:'stale_after_loadMessages_drop',data:{reqId,currentAgentId,sessionId:session.session_id},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         return;
       }
       const model = await api.fetchCurrentModel(currentAgentId);
       if (reqId !== loadMainSessionReqRef.current) {
-        // #region agent log
-        fetch('http://127.0.0.1:7700/ingest/77c66232-605d-4df3-930c-89bbb8ebd5c2',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e404f0'},body:JSON.stringify({sessionId:'e404f0',runId:'post-fix',hypothesisId:'H2D',location:'frontend/src/lib/store.tsx:loadMainSession',message:'stale_after_fetchModel_drop',data:{reqId,currentAgentId},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         return;
       }
       setCurrentModel(model);
-      // #region agent log
-      fetch('http://127.0.0.1:7700/ingest/77c66232-605d-4df3-930c-89bbb8ebd5c2',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e404f0'},body:JSON.stringify({sessionId:'e404f0',runId:'pre-fix',hypothesisId:'H2D',location:'frontend/src/lib/store.tsx:loadMainSession',message:'success',data:{reqId,currentAgentId,sessionId:session.session_id},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
     } catch {
       if (reqId !== loadMainSessionReqRef.current) {
         return;
       }
-      // #region agent log
-      fetch('http://127.0.0.1:7700/ingest/77c66232-605d-4df3-930c-89bbb8ebd5c2',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e404f0'},body:JSON.stringify({sessionId:'e404f0',runId:'pre-fix',hypothesisId:'H2D',location:'frontend/src/lib/store.tsx:loadMainSession',message:'error',data:{reqId,currentAgentId},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       chat.setMessages([]);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps

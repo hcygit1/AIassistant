@@ -43,13 +43,13 @@ CompactionLevel = str  # "none" | "sliding" | "forced"
 
 def resolve_compaction_threshold(agent_id: str | None = None) -> int:
     """向后兼容：返回 sliding 阈值（用于 /context 命令等展示）。"""
-    from graph.context_budget import resolve_budget
+    from runtime.context_budget import resolve_budget
     return resolve_budget(agent_id).sliding_threshold
 
 
 def resolve_compaction_thresholds(agent_id: str | None = None) -> tuple[int, int]:
     """返回 (sliding_threshold, forced_threshold)，值由 ContextBudget 统一派生。"""
-    from graph.context_budget import resolve_budget
+    from runtime.context_budget import resolve_budget
     budget = resolve_budget(agent_id)
     return (budget.sliding_threshold, budget.forced_threshold)
 

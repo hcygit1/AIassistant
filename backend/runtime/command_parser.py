@@ -184,7 +184,7 @@ async def execute_command(
 
 
 async def _cmd_status(agent_id: str, session_id: str, agent_state: Any, locale: str) -> dict[str, Any]:
-    from graph.session_manager import session_manager
+    from sessions.session_manager import session_manager
     from infra.token_counter import count_messages_tokens
 
     data = session_manager.load_session(session_id, agent_id)
@@ -213,9 +213,9 @@ async def _cmd_status(agent_id: str, session_id: str, agent_state: Any, locale: 
 
 
 async def _cmd_context(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
-    from graph.session_manager import session_manager
+    from sessions.session_manager import session_manager
     from infra.token_counter import count_messages_tokens
-    from graph.context_budget import resolve_budget
+    from runtime.context_budget import resolve_budget
 
     budget = resolve_budget(agent_id)
 
@@ -337,7 +337,7 @@ def _cmd_model(agent_id: str, args: list[str], locale: str) -> dict[str, Any]:
 
     target = args[0]
     try:
-        from graph.agent import agent_manager
+        from runtime.agent import agent_manager
         new_name = agent_manager.switch_model(agent_id, target)
         return {
             "handled": True,
@@ -353,8 +353,8 @@ def _cmd_model(agent_id: str, args: list[str], locale: str) -> dict[str, Any]:
 
 
 def _cmd_subagents(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
-    from graph.session_manager import session_manager
-    from graph.subagent_registry import registry
+    from sessions.session_manager import session_manager
+    from subagents.subagent_registry import registry
 
     requester_key = session_manager.session_key_from_session_id(agent_id, session_id)
     runs = registry.list_runs_for_requester(requester_key)

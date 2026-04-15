@@ -11,12 +11,12 @@ from datetime import datetime
 from typing import Any
 
 from config import DEFAULT_HEARTBEAT_PROMPT, get_heartbeat_config, resolve_agent_workspace, list_agents
-from graph.heartbeat_utils import (
+from system_messages.heartbeat_utils import (
     strip_heartbeat_token,
     is_heartbeat_content_effectively_empty,
     is_within_active_hours,
 )
-from graph.session_manager import session_manager
+from sessions.session_manager import session_manager
 from infra.audit_log import audit_logger
 
 logger = logging.getLogger(__name__)
@@ -79,18 +79,6 @@ def emit_heartbeat_event(agent_id: str, evt: HeartbeatEvent) -> None:
         task_store.insert(record)
     except Exception as e:
         logger.warning("Failed to persist heartbeat event to task_history: %s", e)
-
-
-def _build_cron_event_prompt(event_texts: list[str]) -> str:
-    """用 cron 事件内容构造 prompt"""
-    text = "\n".join(t for t in event_texts if t).strip()
-    if not text:
-        return "A scheduled cron event was triggered, but no event content was found. Reply HEARTBEAT_OK."
-    return (
-        "A scheduled reminder has been triggered. The reminder content is:\n\n"
-        f"{text}\n\n"
-        "Please relay this reminder to the user in a helpful and friendly way."
-    )
 
 
 def get_heartbeat_history(agent_id: str, limit: int = 30) -> list[dict[str, Any]]:
@@ -183,9 +171,6 @@ class HeartbeatRunner:
                     await asyncio.sleep(step)
                     waited += step
                     now = time.time()
-                    if agent_id in _wake_requested:
-                        _wake_requested.discard(agent_id)
-                        break
                     if now - last_run_at >= interval:
                         break
                 if not self._running:
@@ -235,47 +220,27 @@ class HeartbeatRunner:
             )
             return
 
-        # 检查 pending cron 事件：若有则用 cron prompt 替代默认
-        from infra.system_events import peek_system_event_entries_for_agent, drain_system_event_entries
-        main_sid = session_manager.resolve_main_session_id(agent_id)
-        session_key = session_manager.session_key_from_session_id(agent_id, main_sid)
-        pending = peek_system_event_entries_for_agent(agent_id)
-        cron_events = [e for e in pending if (e.get("contextKey") or "").startswith("cron:")]
-        cron_events_present = False
-        if cron_events:
-            event_texts = [e.get("text", "").strip() for e in cron_events if e.get("text")]
-            event_texts = [t for t in event_texts if t]
-            if event_texts:
-                full_prompt = _build_cron_event_prompt(event_texts)
-                cron_events_present = True
-            else:
-                full_prompt = None
-        else:
-            full_prompt = None
-
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if heartbeat_md.exists():
+            try:
+                content = heartbeat_md.read_text(encoding="utf-8")
+                if is_heartbeat_content_effectively_empty(content):
+                    emit_heartbeat_event(
+                        agent_id,
+                        HeartbeatEvent(
+                            ts=int(time.time() * 1000),
+                            status="skipped",
+                            reason="empty-heartbeat-file",
+                            duration_ms=int((time.time() - started) * 1000),
+                            agent_id=agent_id,
+                        ),
+                    )
+                    return
+            except Exception:
+                pass
 
-        if full_prompt is None:
-            if heartbeat_md.exists():
-                try:
-                    content = heartbeat_md.read_text(encoding="utf-8")
-                    if is_heartbeat_content_effectively_empty(content):
-                        emit_heartbeat_event(
-                            agent_id,
-                            HeartbeatEvent(
-                                ts=int(time.time() * 1000),
-                                status="skipped",
-                                reason="empty-heartbeat-file",
-                                duration_ms=int((time.time() - started) * 1000),
-                                agent_id=agent_id,
-                            ),
-                        )
-                        return
-                except Exception:
-                    pass
-
-            prompt = hb.get("prompt") or DEFAULT_HEARTBEAT_PROMPT
-            full_prompt = f"[心跳轮询] 当前时间: {now_str}。\n{prompt}"
+        prompt = hb.get("prompt") or DEFAULT_HEARTBEAT_PROMPT
+        full_prompt = f"[心跳轮询] 当前时间: {now_str}。\n{prompt}"
 
         audit_logger.log(agent_id, "heartbeat_trigger", {"time": now_str})
 
@@ -284,19 +249,6 @@ class HeartbeatRunner:
             should_skip, stripped = strip_heartbeat_token(response, max_ack_chars=ack_max)
 
             if should_skip:
-                if cron_events_present:
-                    emit_heartbeat_event(
-                        agent_id,
-                        HeartbeatEvent(
-                            ts=int(time.time() * 1000),
-                            status="failed",
-                            reason="cron-events-not-delivered",
-                            duration_ms=int((time.time() - started) * 1000),
-                            agent_id=agent_id,
-                        ),
-                    )
-                    audit_logger.log(agent_id, "heartbeat_error", {"error": "cron-events-not-delivered"})
-                    return
                 session_manager.rollback_last_turn(session_id, agent_id)
                 status = "ok-empty" if not response.strip() else "ok-token"
                 emit_heartbeat_event(
@@ -311,8 +263,6 @@ class HeartbeatRunner:
                 audit_logger.log(agent_id, "heartbeat_ok", {})
             else:
                 target = hb.get("target", "webchat")
-                if cron_events_present:
-                    drain_system_event_entries(session_key)
                 if target == "webchat":
                     emit_heartbeat_event(
                         agent_id,
@@ -328,14 +278,12 @@ class HeartbeatRunner:
                     event_bus.emit(agent_id, Events.heartbeat_message(session_id=session_id, agent_id=agent_id))
                 audit_logger.log(agent_id, "heartbeat_response", {"response": response[:500]})
 
-        from graph.session_dispatcher import PendingTask, dispatcher_manager
-        from graph.message_queue import message_queue_manager
-        queue = message_queue_manager.get_queue(agent_id, session_id)
-        dispatcher = dispatcher_manager.get(agent_id, session_id, queue.lock)
+        from sessions.session_dispatcher import PRIORITY_HEARTBEAT
+        from sessions.session_work_delivery import session_work_delivery
 
-        dispatcher.submit(PendingTask(
-            kind="cron" if cron_events_present else "heartbeat",
-            priority=2 if cron_events_present else 3,
+        session_work_delivery.deliver(
+            kind="heartbeat",
+            priority=PRIORITY_HEARTBEAT,
             content=full_prompt,
             agent_id=agent_id,
             session_id=session_id,
@@ -353,7 +301,7 @@ class HeartbeatRunner:
                 ),
                 audit_logger.log(agent_id, "heartbeat_skipped", {"reason": "session-busy"}),
             ),
-        ))
+        )
 
     @property
     def active_agents(self) -> list[str]:
@@ -361,11 +309,3 @@ class HeartbeatRunner:
 
 
 heartbeat_runner = HeartbeatRunner()
-
-# 供 Cron 调用的「立即唤醒」接口
-_wake_requested: set[str] = set()
-
-
-def request_heartbeat_now(agent_id: str, reason: str | None = None) -> None:
-    """立即唤醒指定 Agent 的心跳（供 Cron 等调用）。"""
-    _wake_requested.add(agent_id)

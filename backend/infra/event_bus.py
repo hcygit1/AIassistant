@@ -136,8 +136,12 @@ class Events:
         return {"type": "subagent_killed", "run_id": run_id}
 
     @staticmethod
-    def subagent_announce(*, run_id: str, announce_state: str) -> dict[str, Any]:
-        return {"type": "subagent_announce", "run_id": run_id, "announce_state": announce_state}
+    def subagent_announce(*, run_id: str, result_delivery_state: str) -> dict[str, Any]:
+        return {
+            "type": "subagent_announce",
+            "run_id": run_id,
+            "result_delivery_state": result_delivery_state,
+        }
 
     @staticmethod
     def subagent_archived(*, run_id: str, child_session_key: str) -> dict[str, Any]:

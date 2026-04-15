@@ -1,4 +1,4 @@
-"""Cron 调度器 — 到点触发 systemEvent 并唤醒心跳"""
+"""Cron 调度器 — 到点触发提醒投递"""
 
 from __future__ import annotations
 
@@ -50,17 +50,12 @@ def _compute_next_run(job: CronJob, now_ms: int, last_run_ms: int | None = None)
 
 
 class CronScheduler:
-    """Cron 调度器：后台循环检查 due jobs，触发 enqueue + request_heartbeat_now。"""
+    """Cron 调度器：后台循环检查 due jobs，并将提醒直接投递为会话工作项。"""
 
     def __init__(self, store_path: Path | None = None):
         self._store_path = store_path or resolve_cron_store_path()
         self._running = False
         self._task: asyncio.Task | None = None
-        self._request_heartbeat_now: callable | None = None
-
-    def set_request_heartbeat_now(self, fn: callable) -> None:
-        """注入 request_heartbeat_now(agent_id, reason)。"""
-        self._request_heartbeat_now = fn
 
     async def start(self) -> None:
         """启动调度循环。"""
@@ -138,52 +133,22 @@ class CronScheduler:
                 await asyncio.sleep(10)
 
     async def _fire_job(self, job: CronJob) -> None:
-        """触发 job：enqueue_system_event + request_heartbeat_now。
-        确保事件入队和心跳唤醒的一致性。
-        """
+        """触发 job：直接投递为 cron SessionWorkItem。"""
         if job.payload.kind != "systemEvent" or not job.payload.text.strip():
             return
-        from infra.system_events import enqueue_system_event
-        from graph.session_manager import session_manager
-        agent_id = job.agent_id or "main"
-        main_sid = session_manager.resolve_main_session_id(agent_id)
-        session_key = session_manager.session_key_from_session_id(agent_id, main_sid)
+        from system_messages.reminder_delivery import reminder_delivery_service
 
-        # 标记是否成功入队
-        event_enqueued = False
-        heartbeat_ok = False
+        agent_id = job.agent_id or "main"
 
         try:
-            enqueue_system_event(
-                job.payload.text,
-                session_key=session_key,
-                context_key=f"cron:{job.id}",
+            reminder_delivery_service.deliver_cron_reminder(
+                agent_id=agent_id,
+                text=job.payload.text,
+                run_id=job.id,
             )
-            event_enqueued = True
-            logger.debug(f"Cron event enqueued: {job.id}")
+            logger.debug(f"Cron reminder submitted: {job.id}")
         except Exception as e:
-            logger.error(f"Failed to enqueue cron event {job.id}: {e}")
-            return  # 入队失败，直接返回
+            logger.error(f"Failed to submit cron reminder {job.id}: {e}")
+            raise
 
-        # 尝试唤醒心跳，带重试机制
-        if self._request_heartbeat_now:
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    self._request_heartbeat_now(agent_id, f"cron:{job.id}")
-                    heartbeat_ok = True
-                    break
-                except Exception as e:
-                    logger.warning(f"request_heartbeat_now failed (attempt {attempt + 1}/{max_retries}): {e}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(0.5 * (attempt + 1))  # 指数退避
-
-            if not heartbeat_ok:
-                # 心跳唤醒失败，记录错误但事件已入队，心跳会在下次轮询时处理
-                logger.error(f"Failed to wake heartbeat for cron job {job.id} after {max_retries} attempts. "
-                           f"Event is enqueued and will be processed on next heartbeat cycle.")
-        else:
-            logger.warning(f"request_heartbeat_now not configured for cron job {job.id}")
-
-        logger.info(f"Cron job {job.id} fired: {job.payload.text[:50]}... "
-                   f"(event_enqueued={event_enqueued}, heartbeat_ok={heartbeat_ok})")
+        logger.info(f"Cron job {job.id} fired: {job.payload.text[:50]}...")

@@ -9,13 +9,11 @@
       "contextBudget": {
         "thinking_reserve": 0.30,
         "active_ratio": 0.70,
-        "system_prompt_ratio": 0.05,
         "session_summary_ratio": 0.03,
-        "recent_messages_ratio": 0.82,
+        "memory_injection_ratio": 0.05,
         "jit_tool_output_ratio": 0.10,
         "sliding_ratio": 0.77,
-        "forced_ratio": 1.0,
-        "max_file_chars": 8000
+        "forced_ratio": 1.0
       },
       "compaction": {
         "enabled": true,

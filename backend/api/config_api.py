@@ -171,7 +171,7 @@ async def update_tool_policy(req: ToolPolicyUpdateRequest):
         del agent_entry["tools"]
     save_config(cfg)
     try:
-        from graph.heartbeat import heartbeat_runner
+        from system_messages.heartbeat import heartbeat_runner
         heartbeat_runner.update_config()
     except Exception:
         pass
@@ -283,7 +283,7 @@ class ModelSwitchRequest(BaseModel):
 @router.post("/models/switch/{agent_id}")
 async def switch_model(agent_id: str, req: ModelSwitchRequest):
     """运行时切换模型。scope='agent' 仅改该 agent；scope='default' 改全局默认。"""
-    from graph.agent import agent_manager
+    from runtime.agent import agent_manager
     from config import get_raw_config, save_config
 
     try:
@@ -366,7 +366,7 @@ def _reload_subsystems(updates: dict[str, Any]) -> None:
 
     if "agents" in updates:
         try:
-            from graph.heartbeat import heartbeat_runner
+            from system_messages.heartbeat import heartbeat_runner
             heartbeat_runner.update_config()
         except Exception:
             pass

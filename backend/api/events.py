@@ -116,7 +116,8 @@ def _run_to_item(r, session_manager, time_module) -> dict:
         "spawn_depth": r.spawn_depth,
         "requester_session_key": r.requester_session_key,
         "child_session_key": r.child_session_key,
-        "announce_state": getattr(r, "announce_state", "pending"),
+        "result_delivery_state": getattr(r, "result_delivery_state", "pending"),
+        "delivery_work_id": getattr(r, "delivery_work_id", None),
         "announce_retry_count": getattr(r, "announce_retry_count", 0),
         "archive_at_ms": getattr(r, "archive_at_ms", None),
     }
@@ -171,8 +172,8 @@ async def list_subagents(
     """
     import time as time_module
     from config import get_config
-    from graph.subagent_registry import registry
-    from graph.session_manager import session_manager
+    from subagents.subagent_registry import registry
+    from sessions.session_manager import session_manager
 
     cfg = get_config()
     default_recent = (
@@ -223,8 +224,8 @@ async def list_subagents(
 
 @router.post("/agents/{agent_id}/subagents/kill")
 async def kill_subagents(agent_id: str, req: SubagentKillRequest):
-    from graph.subagent_registry import registry
-    from graph.session_manager import session_manager
+    from subagents.subagent_registry import registry
+    from sessions.session_manager import session_manager
 
     session_id = (req.session_id or "").strip() or session_manager.resolve_main_session_id(agent_id)
     root_session_key = session_manager.session_key_from_session_id(agent_id, session_id)
@@ -259,9 +260,9 @@ async def kill_subagents(agent_id: str, req: SubagentKillRequest):
 async def steer_subagent(agent_id: str, req: SubagentSteerRequest):
     import uuid
 
-    from graph.subagent_registry import registry
-    from graph.session_manager import session_manager
-    from graph.agent import agent_manager
+    from subagents.subagent_registry import registry
+    from sessions.session_manager import session_manager
+    from runtime.agent import agent_manager
     from tools.agent_tools import SessionsSpawnTool
 
     run_id = (req.run_id or "").strip()
@@ -322,8 +323,8 @@ async def steer_subagent(agent_id: str, req: SubagentSteerRequest):
 @router.get("/agents/{agent_id}/status")
 async def agent_status(agent_id: str):
     """获取 Agent 运行状态"""
-    from graph.agent import agent_manager
-    from graph.heartbeat import heartbeat_runner
+    from runtime.agent import agent_manager
+    from system_messages.heartbeat import heartbeat_runner
 
     state = agent_manager.get_state(agent_id)
     return {

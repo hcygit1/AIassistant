@@ -12,7 +12,7 @@ import asyncio
 import logging
 from typing import Literal
 
-from graph.subagent_registry import registry, SubagentRunRecord
+from subagents.subagent_registry import registry, SubagentRunRecord
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _resolve_orphan_reason(entry: SubagentRunRecord) -> Literal["missing-session
     if not child_key:
         return "missing-session-entry"
     try:
-        from graph.session_manager import session_manager
+        from sessions.session_manager import session_manager
         parts = child_key.split(":")
         if len(parts) < 4:
             return "missing-session-entry"
@@ -61,57 +61,9 @@ def _reconcile_orphaned(run_id: str, entry: SubagentRunRecord, reason: str) -> b
 
 async def _deliver_announce_for_run(run_id: str, entry: SubagentRunRecord) -> bool:
     """向 requester 交付 announce"""
-    from graph.session_manager import session_manager
-    from infra.event_bus import Events, event_bus
+    from subagents.subagent_delivery import subagent_announce_delivery
 
-    parsed = session_manager.session_id_from_session_key(entry.requester_session_key)
-    if not parsed:
-        return False
-    req_agent, req_session = parsed
-    main_sid = session_manager.resolve_main_session_id(req_agent)
-
-    task_label = (entry.label or entry.task[:50] or "task").strip()
-    result = (entry.result_summary or "(no output)")[:500]
-    outcome = entry.outcome or "completed"
-    start = entry.started_at or entry.ended_at or 0
-    end = entry.ended_at or 0
-    runtime_s = int(end - start) if start else 0
-
-    msg_lines = [
-        f"[System Message] [sessionId: {run_id}] A subagent task \"{task_label}\" just {outcome}.",
-        "",
-        "Result:",
-        result,
-        "",
-        f"Stats: runtime {runtime_s}s",
-    ]
-    announce_msg = "\n".join(msg_lines)
-
-    from graph.session_dispatcher import PendingTask, dispatcher_manager
-    from graph.message_queue import message_queue_manager
-
-    target_sid = main_sid if req_session == main_sid else req_session
-    queue = message_queue_manager.get_queue(req_agent, target_sid)
-    dispatcher = dispatcher_manager.get(req_agent, target_sid, queue.lock)
-
-    dispatcher.submit(PendingTask(
-        kind="announce",
-        priority=0,
-        content=announce_msg,
-        agent_id=req_agent,
-        session_id=target_sid,
-        run_id=run_id,
-        on_success=lambda: (
-            registry.mark_announce_delivered(run_id),
-            event_bus.emit(req_agent, Events.subagent_done(run_id=run_id, result=result[:300])),
-        ),
-        on_failure=lambda: (
-            session_manager.save_message(target_sid, req_agent, "system", announce_msg),
-            registry.mark_announce_dropped(run_id),
-            event_bus.emit(req_agent, Events.subagent_done(run_id=run_id, result=result[:300])),
-        ),
-    ))
-    return True
+    return await subagent_announce_delivery.deliver_recovered_run(run_id, entry)
 
 
 async def resume_subagent_runs() -> None:
@@ -126,7 +78,7 @@ async def resume_subagent_runs() -> None:
             _reconcile_orphaned(run_id, entry, reason)
             continue
 
-        if entry.announce_state == "delivered":
+        if getattr(entry, "result_delivery_state", "pending") == "delivered":
             registry._runs.pop(run_id, None)
             registry._persist_to_disk()
             continue
@@ -151,7 +103,7 @@ async def resume_subagent_runs() -> None:
                 registry._runs.pop(run_id, None)
                 registry._persist_to_disk()
             elif not registry.mark_announce_retry(run_id):
-                registry.mark_announce_dropped(run_id)
+                registry.mark_result_delivery_dropped(run_id)
                 registry._runs.pop(run_id, None)
                 registry._persist_to_disk()
             continue
@@ -166,6 +118,6 @@ async def resume_subagent_runs() -> None:
             registry._runs.pop(run_id, None)
             registry._persist_to_disk()
         elif not registry.mark_announce_retry(run_id):
-            registry.mark_announce_dropped(run_id)
+            registry.mark_result_delivery_dropped(run_id)
             registry._runs.pop(run_id, None)
             registry._persist_to_disk()

@@ -117,7 +117,7 @@ class SessionsListTool(BaseTool):
 
     def _run(self, agent_id: str = "", spawned_by: str = "") -> str:
         target_id = agent_id or self.current_agent_id
-        from graph.session_manager import session_manager
+        from sessions.session_manager import session_manager
 
         spawned_by_key: str | None = None
         if spawned_by and (spawned_by or "").strip():
@@ -159,7 +159,7 @@ class SessionsHistoryTool(BaseTool):
 
     def _run(self, session_id: str = "", agent_id: str = "", limit: int = 20) -> str:
         target_id = agent_id or self.current_agent_id
-        from graph.session_manager import session_manager
+        from sessions.session_manager import session_manager
         effective_sid = (session_id or "").strip() or self.current_session_id
         if not effective_sid:
             effective_sid = session_manager.resolve_main_session_id(target_id)
@@ -200,7 +200,7 @@ class SessionsSendTool(BaseTool):
 
     def _run(self, session_id: str = "", message: str = "", agent_id: str = "") -> str:
         target_id = agent_id or self.current_agent_id
-        from graph.session_manager import session_manager
+        from sessions.session_manager import session_manager
         effective_sid = (session_id or "").strip() or self.current_session_id
         if not effective_sid:
             effective_sid = session_manager.resolve_main_session_id(target_id)
@@ -274,8 +274,8 @@ class SessionsSpawnTool(BaseTool):
                 f"Error: Current agent is not allowed to spawn tasks for '{target_id}'. "
                 f"Please explicitly add this agent to agents.list[].subagents.allow_agents in the configuration."
             )
-        from graph.session_manager import session_manager
-        from graph.subagent_registry import registry
+        from sessions.session_manager import session_manager
+        from subagents.subagent_registry import registry
 
         requester_key = session_manager.session_key_from_session_id(
             self.current_agent_id,
@@ -347,62 +347,6 @@ class SessionsSpawnTool(BaseTool):
             f"  Task: {task}"
         )
 
-    def _parse_requester_key(self, requester_key: str) -> tuple[str, str] | None:
-        """requester_key (session_key) -> (agent_id, session_id)"""
-        from graph.session_manager import session_manager
-        return session_manager.session_id_from_session_key(requester_key)
-
-    def _build_announce_message(
-        self,
-        run_id: str,
-        task: str,
-        result: str,
-        outcome: str = "completed successfully",
-        label: str | None = None,
-        started_at: float | None = None,
-        ended_at: float | None = None,
-    ) -> str:
-        """构建 announce 消息 (支持 i18n)"""
-        import time as _time
-        from config import get_config
-        locale = get_config().get("app", {}).get("locale", "zh-CN")
-
-        task_label = label or task[:50] or "task"
-        findings = (result or ("(无输出)" if locale == "zh-CN" else "(no output)"))[:500]
-        end = ended_at or _time.time()
-        start = started_at or end
-        runtime_s = int(end - start) if start else 0
-
-        # 根据 outcome 映射 i18n
-        outcome_map = {
-            "completed successfully": {"zh": "成功完成", "en": "completed successfully"},
-            "completed with empty output": {"zh": "完成但无输出", "en": "completed with empty output"},
-            "completed with tool errors": {"zh": "完成但工具执行出错", "en": "completed with tool errors"},
-            "timed out": {"zh": "执行超时", "en": "timed out"},
-            "error": {"zh": "执行出错", "en": "error"},
-        }
-        res_outcome = outcome_map.get(outcome, {"zh": outcome, "en": outcome})
-        outcome_text = res_outcome.get(locale if locale in ("zh", "en", "zh-CN", "en-US") else "en", res_outcome["en"])
-        if locale == "zh-CN" or locale == "zh":
-            lines = [
-                f"[系统消息] [会话ID: {run_id}] 子任务 \"{task_label}\" {outcome_text}。",
-                "",
-                "结果:",
-                findings,
-                "",
-                f"统计: 运行耗时 {runtime_s}秒",
-            ]
-        else:
-            lines = [
-                f"[System Message] [sessionId: {run_id}] A subagent task \"{task_label}\" just {outcome_text}.",
-                "",
-                "Result:",
-                findings,
-                "",
-                f"Stats: runtime {runtime_s}s",
-            ]
-        return "\n".join(lines)
-
     def _looks_like_failure_output(self, text: str) -> bool:
         normalized = (text or "").strip().lower()
         if not normalized:
@@ -417,7 +361,7 @@ class SessionsSpawnTool(BaseTool):
         tool_calls: list[dict[str, Any]],
     ) -> tuple[str, bool]:
         """优先使用流式文本；若为空则回读会话最后一条 assistant 消息与工具输出。"""
-        from graph.session_manager import session_manager
+        from sessions.session_manager import session_manager
 
         if (streamed_text or "").strip():
             return streamed_text.strip(), self._looks_like_failure_output(streamed_text)
@@ -455,139 +399,6 @@ class SessionsSpawnTool(BaseTool):
         has_failure = failure_count > 0 and failure_count >= max(1, len(snippets))
         return merged, has_failure
 
-    async def _deliver_announce_to_requester(
-        self,
-        requester_key: str,
-        child_session_key: str,
-        run_id: str,
-        task: str,
-        result: str,
-        outcome: str = "completed successfully",
-        label: str | None = None,
-        started_at: float | None = None,
-        ended_at: float | None = None,
-    ) -> None:
-        """向 requester 交付 announce；若 requester 是子会话则触发其新 run 并递归向上"""
-        from graph.subagent_registry import registry
-        from infra.event_bus import Events, event_bus
-        from graph.session_manager import session_manager
-        from graph.message_queue import message_queue_manager
-        from graph.session_dispatcher import PendingTask, dispatcher_manager
-
-        # #region agent log
-        _debug_log(
-            "backend/tools/agent_tools.py:_deliver_announce_to_requester",
-            "enter",
-            {"run_id": run_id, "requester_key": requester_key},
-            "H2A",
-        )
-        # #endregion
-        parsed = self._parse_requester_key(requester_key)
-        if not parsed:
-            return
-        req_agent, req_session = parsed
-        main_session_id = session_manager.resolve_main_session_id(req_agent)
-
-        announce_msg = self._build_announce_message(
-            run_id=run_id,
-            task=task,
-            result=result,
-            outcome=outcome,
-            label=label,
-            started_at=started_at,
-            ended_at=ended_at,
-        )
-
-        is_main = req_session == main_session_id
-        if is_main:
-            queue = message_queue_manager.get_queue(req_agent, req_session)
-            dispatcher = dispatcher_manager.get(req_agent, main_session_id, queue.lock)
-
-            registry.set_announce_state(run_id, "queued")
-            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="queued"))
-
-            dispatcher.submit(PendingTask(
-                kind="announce",
-                priority=0,
-                content=announce_msg,
-                agent_id=req_agent,
-                session_id=main_session_id,
-                run_id=run_id,
-                on_success=lambda: (
-                    registry.mark_announce_delivered(run_id),
-                    event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivered")),
-                ),
-                on_failure=lambda: (
-                    session_manager.save_message(main_session_id, req_agent, "system", announce_msg),
-                    registry.mark_announce_dropped(run_id),
-                    event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped")),
-                ),
-            ))
-            return
-
-        queue = message_queue_manager.get_queue(req_agent, req_session)
-        dispatcher = dispatcher_manager.get(req_agent, req_session, queue.lock)
-
-        registry.set_announce_state(run_id, "queued")
-        event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="queued"))
-
-        parent_child_key = f"agent:{req_agent}:subagent:{req_session}"
-
-        async def _sub_session_announce_result(parent_reply: str) -> None:
-            grandparent = registry.resolve_requester_for_child_session(parent_child_key)
-            if grandparent:
-                g_req_key, _ = grandparent
-                await self._deliver_announce_to_requester(
-                    requester_key=g_req_key,
-                    child_session_key=parent_child_key,
-                    run_id=run_id,
-                    task=task,
-                    result=parent_reply or result,
-                    outcome=outcome,
-                    label=label,
-                    started_at=started_at,
-                    ended_at=ended_at,
-                )
-
-        async def _sub_session_announce_fail(exc: Exception) -> None:
-            session_manager.save_message(
-                req_session,
-                req_agent,
-                "system",
-                f"[Announce processing failed] {str(exc)[:200]}",
-            )
-            registry.mark_announce_dropped(run_id)
-            event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="dropped"))
-            grandparent = registry.resolve_requester_for_child_session(parent_child_key)
-            if grandparent:
-                g_req_key, _ = grandparent
-                await self._deliver_announce_to_requester(
-                    requester_key=g_req_key,
-                    child_session_key=parent_child_key,
-                    run_id=run_id,
-                    task=task,
-                    result=f"Sub-agent aggregation failed: {exc}",
-                    outcome="error",
-                    label=label,
-                    started_at=started_at,
-                    ended_at=ended_at,
-                )
-
-        dispatcher.submit(PendingTask(
-            kind="announce",
-            priority=0,
-            content=announce_msg,
-            agent_id=req_agent,
-            session_id=req_session,
-            run_id=run_id,
-            result_handler=_sub_session_announce_result,
-            on_success=lambda: (
-                registry.mark_announce_delivered(run_id),
-                event_bus.emit(req_agent, Events.subagent_announce(run_id=run_id, announce_state="delivered")),
-            ),
-            on_failure_async=_sub_session_announce_fail,
-        ))
-
     async def _run_subagent(
         self,
         run_id: str,
@@ -597,7 +408,7 @@ class SessionsSpawnTool(BaseTool):
         requester_key: str,
         run_timeout_seconds: int = 0,
     ) -> None:
-        from graph.subagent_registry import registry
+        from subagents.subagent_registry import registry
         from infra.event_bus import Events, event_bus
 
         started_at: float | None = None
@@ -703,7 +514,9 @@ class SessionsSpawnTool(BaseTool):
                 "H2B",
             )
             # #endregion
-            await self._deliver_announce_to_requester(
+            from subagents.subagent_delivery import subagent_announce_delivery
+
+            await subagent_announce_delivery.deliver_to_requester(
                 requester_key=requester_key,
                 child_session_key=child_session_key,
                 run_id=run_id,
@@ -713,6 +526,7 @@ class SessionsSpawnTool(BaseTool):
                 label=label,
                 started_at=started_at,
                 ended_at=ended_at,
+                debug_log=_debug_log,
             )
         except asyncio.TimeoutError:
             timeout_secs = run_timeout_seconds
@@ -731,7 +545,9 @@ class SessionsSpawnTool(BaseTool):
             )
             record = registry.get_run(run_id)
             label = record.label if record else None
-            await self._deliver_announce_to_requester(
+            from subagents.subagent_delivery import subagent_announce_delivery
+
+            await subagent_announce_delivery.deliver_to_requester(
                 requester_key=requester_key,
                 child_session_key=child_session_key,
                 run_id=run_id,
@@ -741,6 +557,7 @@ class SessionsSpawnTool(BaseTool):
                 label=label,
                 started_at=started_at,
                 ended_at=__import__("time").time(),
+                debug_log=_debug_log,
             )
         except asyncio.CancelledError:
             registry.mark_terminated(run_id, "killed")
@@ -791,8 +608,8 @@ class SubagentsTool(BaseTool):
         recent_minutes: int | None = None,
     ) -> str:
         from config import get_config
-        from graph.session_manager import session_manager
-        from graph.subagent_registry import registry
+        from sessions.session_manager import session_manager
+        from subagents.subagent_registry import registry
 
         requester_key = session_manager.session_key_from_session_id(
             self.current_agent_id,
@@ -902,7 +719,7 @@ def get_agent_tools(
     # 注入 agentSessionKey/current_session_id，工具从上下文获取当前会话
     effective_session_id = session_id or ""
     if not effective_session_id:
-        from graph.session_manager import session_manager
+        from sessions.session_manager import session_manager
         effective_session_id = session_manager.resolve_main_session_id(agent_id)
     subagents_tool = SubagentsTool(current_agent_id=agent_id, current_session_id=effective_session_id)
     subagents_tool._agent_manager = agent_manager

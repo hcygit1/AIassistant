@@ -47,7 +47,7 @@ export default function SubagentInlineCard({ runId, task }: Props) {
           setStatus(match.state || match.status);
           setElapsed(match.elapsed);
           setResultSummary(match.result_summary || "");
-          setAnnounceState(match.announce_state || "pending");
+          setAnnounceState(match.result_delivery_state || "pending");
           setTerminalReason(match.terminal_reason || "");
           if (match.label) setLabel(match.label);
           if (match.messages?.length > prevMsgCountRef.current) {

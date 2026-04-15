@@ -10,7 +10,7 @@ from typing import Any
 
 from config import DATA_DIR
 
-from graph.subagent_registry import SubagentRunRecord
+from subagents.subagent_registry import SubagentRunRecord
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,8 @@ def _record_to_dict(r: SubagentRunRecord) -> dict[str, Any]:
         "last_announce_retry_at": getattr(r, "last_announce_retry_at", None),
         "state": getattr(r, "state", "running"),
         "terminal_reason": getattr(r, "terminal_reason", None),
-        "announce_state": getattr(r, "announce_state", "pending"),
+        "result_delivery_state": getattr(r, "result_delivery_state", "pending"),
+        "delivery_work_id": getattr(r, "delivery_work_id", None),
     }
 
 
@@ -73,7 +74,8 @@ def _dict_to_record(d: dict[str, Any]) -> SubagentRunRecord:
     r.last_announce_retry_at = d.get("last_announce_retry_at")
     r.state = d.get("state", "running")
     r.terminal_reason = d.get("terminal_reason")
-    r.announce_state = d.get("announce_state", "pending")
+    r.result_delivery_state = d.get("result_delivery_state", "pending")
+    r.delivery_work_id = d.get("delivery_work_id")
     return r
 
 

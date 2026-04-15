@@ -88,8 +88,8 @@ frontend/
 ## API 通信
 
 所有后端请求封装在 `src/lib/api.ts`：
-- SSE 流式对话 (`streamChat`)
-- 中断对话 (`abortChat`)
+- 聊天：`submitChat` → `waitUntilTurnRunning`（若 turn 已结束则直接拉消息）→ `streamTurn`；刷新后 `fetchPendingTurn` 自动续接未完成的 turn
+- 中断对话 (`abortChat`，可带 `turnId`)
 - Agent/Session 管理
 - 配置读写
 - 文件读写

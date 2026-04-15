@@ -140,10 +140,10 @@ class ContextBudgetConfig(BaseModel):
     thinking_reserve: float = 0.20
     active_ratio: float = 0.80
     session_summary_ratio: float = 0.05
+    memory_injection_ratio: float = 0.05
     jit_tool_output_ratio: float = 0.036
     sliding_ratio: float = 0.80
     forced_ratio: float = 0.95
-    max_file_chars: int = 20000
 
 
 class AgentDefaultsConfig(BaseModel):

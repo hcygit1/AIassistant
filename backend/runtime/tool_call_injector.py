@@ -12,7 +12,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableLambda
 
-from graph.tool_call_parser import parse_text_tool_calls, strip_tool_call_patterns
+from runtime.tool_call_parser import parse_text_tool_calls, strip_tool_call_patterns
 
 logger = logging.getLogger(__name__)
 

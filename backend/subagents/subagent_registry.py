@@ -44,7 +44,8 @@ class SubagentRunRecord:
     # webchat 展示/调度元数据
     state: str = "running"
     terminal_reason: str | None = None
-    announce_state: str = "pending"
+    result_delivery_state: str = "pending"
+    delivery_work_id: str | None = None
 
 
 def _resolve_archive_after_ms() -> float | None:
@@ -67,11 +68,11 @@ class SubagentRegistry:
         self._restore_from_disk()
 
     def _restore_from_disk(self) -> None:
-        from graph.subagent_registry_state import restore_registry_from_disk
+        from subagents.subagent_registry_state import restore_registry_from_disk
         restore_registry_from_disk(self._runs, merge_only=False)
 
     def _persist_to_disk(self) -> None:
-        from graph.subagent_registry_state import save_registry_to_disk
+        from subagents.subagent_registry_state import save_registry_to_disk
         save_registry_to_disk(self._runs)
 
     def register_run(
@@ -133,7 +134,7 @@ class SubagentRegistry:
             r.result_summary = result_summary[:1000]
             transition(r, "state", "succeeded", table=SUBAGENT_RUN_TRANSITIONS)
             r.terminal_reason = terminal_reason
-            transition(r, "announce_state", "pending", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
+            transition(r, "result_delivery_state", "pending", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
             self._persist_to_disk()
 
     def mark_terminated(self, run_id: str, reason: str = "killed") -> None:
@@ -214,29 +215,36 @@ class SubagentRegistry:
             return False
         r.announce_retry_count = getattr(r, "announce_retry_count", 0) + 1
         r.last_announce_retry_at = time.time()
-        transition(r, "announce_state", "retrying", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
+        transition(r, "result_delivery_state", "retrying", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
         self._persist_to_disk()
         return True
 
-    def mark_announce_delivered(self, run_id: str) -> None:
+    def mark_result_delivery_delivered(self, run_id: str) -> None:
         r = self._runs.get(run_id)
         if not r:
             return
-        transition(r, "announce_state", "delivered", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
+        transition(r, "result_delivery_state", "delivered", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
         self._persist_to_disk()
 
-    def mark_announce_dropped(self, run_id: str) -> None:
+    def mark_result_delivery_dropped(self, run_id: str) -> None:
         r = self._runs.get(run_id)
         if not r:
             return
-        transition(r, "announce_state", "dropped", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
+        transition(r, "result_delivery_state", "dropped", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
         self._persist_to_disk()
 
-    def set_announce_state(self, run_id: str, new_state: str) -> None:
+    def set_result_delivery_state(self, run_id: str, new_state: str) -> None:
         r = self._runs.get(run_id)
         if not r:
             return
-        transition(r, "announce_state", new_state, table=SUBAGENT_ANNOUNCE_TRANSITIONS)
+        transition(r, "result_delivery_state", new_state, table=SUBAGENT_ANNOUNCE_TRANSITIONS)
+        self._persist_to_disk()
+
+    def set_delivery_work_id(self, run_id: str, work_id: str | None) -> None:
+        r = self._runs.get(run_id)
+        if not r:
+            return
+        r.delivery_work_id = (work_id or "").strip() or None
         self._persist_to_disk()
 
     def get_requester_depth(self, requester_session_key: str) -> int:
