@@ -113,9 +113,9 @@ class UserTurnService:
             yield f"event: error\ndata: {err}\n\n"
             return
 
-        if runtime.status != "running":
+        if runtime.status not in ("queued", "running"):
             err = json.dumps(
-                {"type": "error", "error": f"turn not running (status={runtime.status})"},
+                {"type": "error", "error": f"turn not streamable (status={runtime.status})"},
                 ensure_ascii=False,
             )
             yield f"event: error\ndata: {err}\n\n"

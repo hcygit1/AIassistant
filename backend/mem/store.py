@@ -64,6 +64,8 @@ def _now_ms() -> int:
 # ---------------------------------------------------------------------------
 
 DedupStatus = Literal["active", "duplicate", "merged", "orphaned"]
+SummarySource = Literal["llm", "fallback"]
+EmbeddingStatus = Literal["ok", "failed", "skipped"]
 TaskStatus = Literal["active", "completed", "skipped"]
 SkillStatus = Literal["active", "archived", "draft"]
 SkillVisibility = Literal["private", "public"]
@@ -86,6 +88,9 @@ class Chunk:
     dedup_status: DedupStatus = "active"
     dedup_target: str | None = None
     dedup_reason: str | None = None
+    summary_source: SummarySource = "llm"
+    embedding_status: EmbeddingStatus = "ok"
+    embedding_error: str | None = None
     created_at: int = 0
     updated_at: int = 0
 
@@ -97,6 +102,8 @@ class Task:
     owner: str = "agent:main"
     title: str = ""
     summary: str = ""
+    boundary_summary: str = ""
+    boundary_compacted_count: int = 0
     status: TaskStatus = "active"
     started_at: int = 0
     ended_at: int | None = None
@@ -219,6 +226,9 @@ class MemStore:
                 dedup_status TEXT NOT NULL DEFAULT 'active',
                 dedup_target TEXT,
                 dedup_reason TEXT,
+                summary_source TEXT NOT NULL DEFAULT 'llm',
+                embedding_status TEXT NOT NULL DEFAULT 'ok',
+                embedding_error TEXT,
                 created_at   INTEGER NOT NULL,
                 updated_at   INTEGER NOT NULL
             );
@@ -244,6 +254,8 @@ class MemStore:
                 owner       TEXT NOT NULL DEFAULT 'agent:main',
                 title       TEXT NOT NULL DEFAULT '',
                 summary     TEXT NOT NULL DEFAULT '',
+                boundary_summary TEXT NOT NULL DEFAULT '',
+                boundary_compacted_count INTEGER NOT NULL DEFAULT 0,
                 status      TEXT NOT NULL DEFAULT 'active',
                 started_at  INTEGER NOT NULL,
                 ended_at    INTEGER,
@@ -291,6 +303,9 @@ class MemStore:
                 UNIQUE(session_id, agent_id)
             );
         """)
+
+        self._ensure_chunk_columns()
+        self._ensure_task_columns()
 
         # FTS5 virtual tables — 独立存储预分词文本，不绑定外部内容表
         for stmt in [
@@ -394,7 +409,36 @@ class MemStore:
             )
 
         self._conn.commit()
+
+    def _ensure_chunk_columns(self) -> None:
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(chunks)").fetchall()
+        }
+        additions = {
+            "summary_source": "ALTER TABLE chunks ADD COLUMN summary_source TEXT NOT NULL DEFAULT 'llm'",
+            "embedding_status": "ALTER TABLE chunks ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'ok'",
+            "embedding_error": "ALTER TABLE chunks ADD COLUMN embedding_error TEXT",
+        }
+        for name, stmt in additions.items():
+            if name not in cols:
+                self._conn.execute(stmt)
+        self._conn.commit()
         logger.info("FTS indexes rebuilt with pre-tokenized content")
+
+    def _ensure_task_columns(self) -> None:
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        additions = {
+            "boundary_summary": "ALTER TABLE tasks ADD COLUMN boundary_summary TEXT NOT NULL DEFAULT ''",
+            "boundary_compacted_count": "ALTER TABLE tasks ADD COLUMN boundary_compacted_count INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, stmt in additions.items():
+            if name not in cols:
+                self._conn.execute(stmt)
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Chunks — Write
@@ -414,8 +458,9 @@ class MemStore:
                (id, session_key, turn_id, seq, role, content, kind, summary,
                 task_id, skill_id, owner, content_hash,
                 dedup_status, dedup_target, dedup_reason,
+                summary_source, embedding_status, embedding_error,
                 created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 chunk.id,
                 chunk.session_key,
@@ -432,6 +477,9 @@ class MemStore:
                 chunk.dedup_status,
                 chunk.dedup_target,
                 chunk.dedup_reason,
+                chunk.summary_source,
+                chunk.embedding_status,
+                chunk.embedding_error,
                 chunk.created_at,
                 chunk.updated_at,
             ),
@@ -439,12 +487,36 @@ class MemStore:
         self._sync_chunk_fts(chunk.id)
         self._conn.commit()
 
-    def update_chunk_summary(self, chunk_id: str, summary: str) -> None:
-        self._conn.execute(
-            "UPDATE chunks SET summary = ?, updated_at = ? WHERE id = ?",
-            (summary, _now_ms(), chunk_id),
-        )
+    def update_chunk_summary(
+        self,
+        chunk_id: str,
+        summary: str,
+        *,
+        summary_source: SummarySource | None = None,
+    ) -> None:
+        if summary_source is None:
+            self._conn.execute(
+                "UPDATE chunks SET summary = ?, updated_at = ? WHERE id = ?",
+                (summary, _now_ms(), chunk_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE chunks SET summary = ?, summary_source = ?, updated_at = ? WHERE id = ?",
+                (summary, summary_source, _now_ms(), chunk_id),
+            )
         self._sync_chunk_fts(chunk_id)
+        self._conn.commit()
+
+    def update_chunk_embedding_status(
+        self,
+        chunk_id: str,
+        status: EmbeddingStatus,
+        error: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE chunks SET embedding_status = ?, embedding_error = ?, updated_at = ? WHERE id = ?",
+            (status, error, _now_ms(), chunk_id),
+        )
         self._conn.commit()
 
     def mark_dedup_status(
@@ -457,6 +529,13 @@ class MemStore:
         self._conn.execute(
             "UPDATE chunks SET dedup_status=?, dedup_target=?, dedup_reason=?, updated_at=? WHERE id=?",
             (status, target, reason, _now_ms(), chunk_id),
+        )
+        self._conn.commit()
+
+    def orphan_chunk(self, chunk_id: str, reason: str | None = None) -> None:
+        self._conn.execute(
+            "UPDATE chunks SET dedup_status='orphaned', task_id=NULL, dedup_reason=?, updated_at=? WHERE id=?",
+            (reason, _now_ms(), chunk_id),
         )
         self._conn.commit()
 
@@ -478,11 +557,51 @@ class MemStore:
         ).fetchone()
         return _row_to_chunk(row) if row else None
 
-    def get_chunks_by_task(self, task_id: str, limit: int = 50) -> list[Chunk]:
-        rows = self._conn.execute(
-            "SELECT * FROM chunks WHERE task_id=? AND dedup_status='active' ORDER BY created_at LIMIT ?",
-            (task_id, limit),
-        ).fetchall()
+    def get_chunks_by_task(self, task_id: str, limit: int | None = None) -> list[Chunk]:
+        sql = "SELECT * FROM chunks WHERE task_id=? AND dedup_status='active' ORDER BY created_at"
+        params: list[Any] = [task_id]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_chunk(r) for r in rows]
+
+    def get_chunks_for_embedding_retry(
+        self,
+        owner: str | None = None,
+        limit: int = 100,
+    ) -> list[Chunk]:
+        sql = (
+            "SELECT * FROM chunks WHERE dedup_status='active' AND embedding_status='failed' "
+            "ORDER BY updated_at LIMIT ?"
+        )
+        params: list[Any] = [limit]
+        if owner:
+            sql = (
+                "SELECT * FROM chunks WHERE dedup_status='active' AND embedding_status='failed' "
+                "AND owner=? ORDER BY updated_at LIMIT ?"
+            )
+            params = [owner, limit]
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_chunk(r) for r in rows]
+
+    def get_chunks_for_summary_retry(
+        self,
+        owner: str | None = None,
+        limit: int = 100,
+    ) -> list[Chunk]:
+        sql = (
+            "SELECT * FROM chunks WHERE dedup_status='active' AND summary_source='fallback' "
+            "ORDER BY updated_at LIMIT ?"
+        )
+        params: list[Any] = [limit]
+        if owner:
+            sql = (
+                "SELECT * FROM chunks WHERE dedup_status='active' AND summary_source='fallback' "
+                "AND owner=? ORDER BY updated_at LIMIT ?"
+            )
+            params = [owner, limit]
+        rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_chunk(r) for r in rows]
 
     def get_chunks_in_range(
@@ -802,14 +921,17 @@ class MemStore:
             task.updated_at = now
         self._conn.execute(
             """INSERT OR REPLACE INTO tasks
-               (id, session_key, owner, title, summary, status, started_at, ended_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               (id, session_key, owner, title, summary, boundary_summary, boundary_compacted_count,
+                status, started_at, ended_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task.id,
                 task.session_key,
                 task.owner,
                 task.title,
                 task.summary,
+                task.boundary_summary,
+                task.boundary_compacted_count,
                 task.status,
                 task.started_at,
                 task.ended_at,
@@ -1332,6 +1454,9 @@ def _row_to_chunk(row: sqlite3.Row) -> Chunk:
         dedup_status=row["dedup_status"] or "active",
         dedup_target=row["dedup_target"],
         dedup_reason=row["dedup_reason"],
+        summary_source=row["summary_source"] or "llm",
+        embedding_status=row["embedding_status"] or "ok",
+        embedding_error=row["embedding_error"],
         created_at=row["created_at"] or 0,
         updated_at=row["updated_at"] or 0,
     )
@@ -1344,6 +1469,8 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         owner=row["owner"] or "agent:main",
         title=row["title"] or "",
         summary=row["summary"] or "",
+        boundary_summary=row["boundary_summary"] or "",
+        boundary_compacted_count=row["boundary_compacted_count"] or 0,
         status=row["status"] or "active",
         started_at=row["started_at"] or 0,
         ended_at=row["ended_at"],

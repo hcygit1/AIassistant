@@ -145,7 +145,6 @@ class SessionDispatcher:
             await self._execute_system(task)
 
     async def _execute_user(self, task: SessionWorkItem) -> None:
-        from sessions.session_lock_manager import session_lock_manager
         from runtime.user_turn_stream import iter_user_turn_sse
         from turns.coordinator import user_turn_coordinator
 
@@ -153,7 +152,6 @@ class SessionDispatcher:
             logger.error("user task missing turn_id or stream_queue")
             return
 
-        session_lock = session_lock_manager.get_lock(task.agent_id, task.session_id)
         lock_acquired = False
 
         try:
@@ -197,8 +195,11 @@ class SessionDispatcher:
                 await task.stream_queue.put(None)
             except Exception:
                 pass
-            # SessionLock 与 dispatcher 共享同一把锁，只 release 一次
-            session_lock.release()
+            if lock_acquired:
+                try:
+                    self._lock.release()
+                except RuntimeError:
+                    pass
 
     async def _execute_system(self, task: SessionWorkItem) -> None:
         from runtime.agent import agent_manager

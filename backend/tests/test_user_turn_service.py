@@ -108,6 +108,22 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(items, ["event: token\ndata: {}\n\n"])
 
+    async def test_stream_allows_queued_turn_and_waits_for_events(self) -> None:
+        runtime = user_turn_coordinator.create_queued("main", "main-main")
+
+        async def _produce() -> None:
+            await asyncio.sleep(0)
+            await runtime.stream_queue.put("event: token\ndata: {}\n\n")
+            await runtime.stream_queue.put(None)
+
+        producer = asyncio.create_task(_produce())
+        items = []
+        async for item in user_turn_service.stream(runtime.turn_id):
+            items.append(item)
+        await producer
+
+        self.assertEqual(items, ["event: token\ndata: {}\n\n"])
+
     async def test_abort_cancels_bound_execution_task(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")
         user_turn_coordinator.set_running(runtime.turn_id)

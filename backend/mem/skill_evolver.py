@@ -23,6 +23,18 @@ from mem.embedder import MemEmbedder
 
 logger = logging.getLogger(__name__)
 
+COMMAND_RE = re.compile(r"\b(?:git|python|pip|npm|pnpm|yarn|node|uv|poetry|docker|docker-compose|kubectl|curl|wget|make)\b", re.IGNORECASE)
+PATH_RE = re.compile(r"(?:/[\w./-]+|\b[\w.-]+\.(?:py|json|ya?ml|toml|env|ini|md|sh|ts|tsx|js|jsx)\b)")
+STRUCTURED_SIGNAL_RE = re.compile(r"\b(?:v?\d+\.\d+(?:\.\d+)?|[A-Z]+-\d+|\d{2,5}|0x[a-fA-F0-9]+)\b")
+RESULT_SIGNAL_RE = re.compile(
+    r"(最终|修复|解决|成功|失败|验证|报错|错误|改为|需要|应该|fixed|resolved|success|failed|verify|error|updated|changed|final)",
+    re.IGNORECASE,
+)
+FILLER_RE = re.compile(
+    r"^(?:好的|收到|明白了|谢谢|你好|测试|ok|okay|thanks|thank you|got it|understood|sure)\s*[.!?。！？]*$",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -59,12 +71,15 @@ STRICT criteria — must meet ALL of:
 1. **Repeatable**: The task type is likely to recur
 2. **Transferable**: The approach would help others facing the same problem
 3. **Technical depth**: Contains non-trivial steps, commands, code, configs, or diagnostic reasoning
+4. **Single workflow**: The task can be expressed as one coherent workflow, not a grab bag of unrelated operations
 
 NOT worth distilling:
 - Pure factual Q&A, casual chat, opinion discussion
 - Single-turn simple answers with no workflow
 - One-off personal tasks, organizing personal information
 - Simple information lookup or summarization
+- Tasks that mix multiple independent goals or unrelated workflows
+- Tasks that are mostly project-specific status updates rather than reusable procedure
 
 Task title: {TITLE}
 Task summary:
@@ -72,6 +87,11 @@ Task summary:
 
 LANGUAGE RULE: "reason" MUST use the SAME language as the task title/summary. \
 "suggestedName" stays in English kebab-case.
+
+Naming rules for "suggestedName":
+- Must name a concrete workflow or task type, not a broad domain
+- Prefer action-oriented names like debugging-x, recovering-y, migrating-z
+- Avoid vague names like database-fix, backend-help, troubleshooting
 
 Reply in JSON only:
 {{"shouldGenerate": boolean, "reason": "brief explanation", "suggestedName": "kebab-case", \
@@ -89,9 +109,18 @@ Summary:
 
 Does the new task bring substantive improvements to the existing skill?
 
-Worth upgrading: faster path, more elegant, fewer dependencies, corrects errors, \
-adds edge cases, covers new scenario, fixes outdated info.
-NOT worth upgrading: identical, worse approach, trivial difference.
+Worth upgrading only if the new task adds at least one of:
+- a newly verified step or workflow branch
+- a correction to an incorrect or outdated instruction
+- a clearly new supported scenario within the SAME workflow
+- an important new pitfall, constraint, prerequisite, or verification step
+
+NOT worth upgrading:
+- identical content
+- same workflow but just phrased differently
+- broader domain overlap without the same workflow
+- speculative improvements that were not actually validated in the task
+- cosmetic wording changes
 
 Reply in JSON only:
 {{"shouldUpgrade": boolean, "upgradeType": "refine"|"extend"|"fix", \
@@ -101,10 +130,13 @@ SKILL_GENERATE_PROMPT = """\
 You are a Skill creation expert. Distill the following completed task into a reusable SKILL.md.
 
 Core principles:
-- Description (~100 words) is the trigger mechanism — be proactive about when to use
+- The skill must capture ONE coherent workflow only
+- Description is the trigger mechanism: it must say what the skill does and when to use it
 - Body < 400 lines, focused
 - Use imperative form, explain WHY not just HOW
 - Generalize from the specific task; keep verified commands/code
+- Include only procedures that were actually validated in the task record
+- Do not add unverified alternatives, speculative advice, or broad background explanation
 - LANGUAGE RULE: Write in the SAME language as the user's messages in the task record.
   "name" field uses English kebab-case; everything else matches user's language.
 
@@ -117,24 +149,33 @@ metadata: {{ "openclaw": {{ "emoji": "..." }} }}
 
 # Title
 
+## What this skill does
+(1-2 short paragraphs describing the workflow outcome)
+
 ## When to use this skill
 (2-4 bullet points)
+
+## Prerequisites
+(required environment, access, dependencies, assumptions; write "None" if not needed)
 
 ## Steps
 (Numbered steps with reasoning)
 
+## Verification
+(how to confirm the workflow succeeded)
+
 ## Pitfalls and solutions
 (What went wrong + fix)
-
-## Key takeaways
-(3-5 bullet points)
 
 Task title: {TITLE}
 Task summary:
 {SUMMARY}
 
-Task conversation:
-{CONVERSATION}
+Original goal:
+{ORIGINAL_GOAL}
+
+Key evidence:
+{EVIDENCE}
 
 Output ONLY the complete SKILL.md content."""
 
@@ -160,7 +201,7 @@ Output ONLY the complete updated SKILL.md."""
 
 RELATED_SKILL_JUDGE_PROMPT = """\
 Decide whether a completed TASK should be merged into an EXISTING SKILL. \
-The task and skill must be in the SAME domain/topic.
+The task and skill must represent the SAME workflow, not merely the same broad domain/topic.
 
 TASK TITLE: {TASK_TITLE}
 TASK SUMMARY:
@@ -170,7 +211,9 @@ CANDIDATE SKILLS:
 {SKILL_LIST}
 
 Rules:
-- Output ONE skill index (1 to {N}) ONLY if clearly same domain
+- Output ONE skill index (1 to {N}) ONLY if it is clearly the same workflow/task type
+- Broad domain overlap is NOT enough
+- If the task would make the skill broader or more mixed, output 0
 - Output 0 if none is highly relevant. When in doubt, output 0
 
 Reply JSON only: {{"selectedIndex": 0, "reason": "..."}}"""
@@ -218,14 +261,17 @@ class MemSkillEvolver:
     async def on_task_completed(self, task: Task) -> None:
         if not self.enabled:
             return
+        should_start_drain = False
         async with self._lock:
             if self._processing:
                 self._queue.append(task)
                 return
-        await self._drain(task)
+            self._processing = True
+            should_start_drain = True
+        if should_start_drain:
+            await self._drain(task)
 
     async def _drain(self, task: Task) -> None:
-        self._processing = True
         try:
             await self._process_one(task)
             while self._queue:
@@ -264,8 +310,6 @@ class MemSkillEvolver:
     # ------------------------------------------------------------------
 
     def _rule_filter(self, chunks: list[Chunk], task: Task) -> str | None:
-        if len(chunks) < self.min_chunks_for_eval:
-            return f"chunks不足 ({len(chunks)} < {self.min_chunks_for_eval})"
         if task.status == "skipped":
             return "task状态为skipped"
         if len(task.summary or "") < 100:
@@ -286,14 +330,14 @@ class MemSkillEvolver:
             return None
 
         try:
-            fts_hits = self.store.fts_search_skills(query, limit=10)
+            fts_hits = self.store.fts_search_skills(query, limit=10, owner=task.owner)
         except Exception:
             fts_hits = []
 
         vec_hits: list[tuple[str, float]] = []
         try:
             q_vec = await self.embedder.embed_query(query)
-            ann = self.store.ann_search_skills(q_vec, top_k=10)
+            ann = self.store.ann_search_skills(q_vec, top_k=10, owner=task.owner)
             vec_hits = [(h.skill_id, h.score) for h in ann]
         except Exception:
             pass
@@ -310,7 +354,7 @@ class MemSkillEvolver:
         candidates: list[Skill] = []
         for sid in candidate_ids:
             skill = self.store.get_skill(sid)
-            if skill and skill.status in ("active", "draft"):
+            if skill and skill.status == "active" and skill.owner == (task.owner or "agent:main"):
                 candidates.append(skill)
 
         if not candidates:
@@ -369,8 +413,6 @@ class MemSkillEvolver:
         eval_result = await self._evaluate_upgrade(task, skill)
 
         if not eval_result.should_upgrade or eval_result.confidence < self.min_confidence:
-            if eval_result.confidence < 0.3:
-                await self._handle_new_skill(task, chunks)
             return
 
         logger.info("SkillEvolver: upgrading skill '%s' — %s", skill.name, eval_result.reason)
@@ -431,17 +473,16 @@ class MemSkillEvolver:
     async def _generate_skill(
         self, task: Task, chunks: list[Chunk], eval_result: CreateEvalResult,
     ) -> Skill | None:
-        conversation = "\n\n".join(
-            f"[{'User' if c.role == 'user' else 'Assistant'}]: {c.content[:500]}"
-            for c in chunks[:30]
-        )
+        original_goal = self._extract_original_goal(chunks)
+        evidence = self._build_skill_evidence(chunks)
 
         prompt = (
             SKILL_GENERATE_PROMPT
             .replace("{NAME}", eval_result.suggested_name)
             .replace("{TITLE}", task.title or "")
             .replace("{SUMMARY}", (task.summary or "")[:2000])
-            .replace("{CONVERSATION}", conversation[:8000])
+            .replace("{ORIGINAL_GOAL}", original_goal[:1200])
+            .replace("{EVIDENCE}", evidence[:8000])
         )
 
         try:
@@ -488,16 +529,127 @@ class MemSkillEvolver:
 
         return skill
 
+    @staticmethod
+    def _extract_original_goal(chunks: list[Chunk]) -> str:
+        first_user = next((c for c in chunks if c.role == "user" and c.content.strip()), None)
+        if not first_user:
+            return "(no explicit user goal found)"
+        return first_user.content.strip()
+
+    @staticmethod
+    def _chunk_signal_score(chunk: Chunk, index: int, total: int) -> int:
+        text = (chunk.content or "").strip()
+        if not text or FILLER_RE.match(text):
+            return -100
+
+        score = 0
+        if COMMAND_RE.search(text):
+            score += 3
+        if PATH_RE.search(text):
+            score += 2
+        if STRUCTURED_SIGNAL_RE.search(text):
+            score += 2
+        if RESULT_SIGNAL_RE.search(text) or RESULT_SIGNAL_RE.search(chunk.summary or ""):
+            score += 3
+        if chunk.summary:
+            score += 1
+        if total > 0 and index >= max(0, total - 6):
+            score += 1
+        if 20 <= len(text) <= 600:
+            score += 1
+        return score
+
+    def _build_skill_evidence(self, chunks: list[Chunk]) -> str:
+        conv = [c for c in chunks if c.role in ("user", "assistant")]
+        if not conv:
+            return "(no supporting evidence)"
+
+        def _fmt(chunk: Chunk) -> str:
+            label = "User" if chunk.role == "user" else "Assistant"
+            text = (chunk.summary or chunk.content).strip()
+            if len(text) > 700:
+                text = text[:697] + "..."
+            return f"[{label}] {text}"
+
+        first_user = next((c for c in conv if c.role == "user" and c.content.strip()), None)
+
+        selected: list[Chunk] = []
+        seen_texts: set[str] = set()
+
+        def _add(chunk: Chunk | None) -> None:
+            if not chunk:
+                return
+            key = ((chunk.summary or chunk.content).strip() or chunk.id).lower()
+            if key in seen_texts:
+                return
+            seen_texts.add(key)
+            selected.append(chunk)
+
+        _add(first_user)
+
+        error_candidate = next(
+            (c for c in conv if RESULT_SIGNAL_RE.search(c.content or "") and ("报错" in c.content or "错误" in c.content or "error" in c.content.lower())),
+            None,
+        )
+        _add(error_candidate)
+
+        scored = sorted(
+            (
+                (self._chunk_signal_score(chunk, idx, len(conv)), idx, chunk)
+                for idx, chunk in enumerate(conv)
+            ),
+            key=lambda item: (item[0], item[1]),
+            reverse=True,
+        )
+        for score, _idx, chunk in scored:
+            if score <= 0:
+                continue
+            _add(chunk)
+            if len(selected) >= 8:
+                break
+
+        result_candidate = next(
+            (
+                c for c in reversed(conv)
+                if RESULT_SIGNAL_RE.search(c.content or "") or RESULT_SIGNAL_RE.search(c.summary or "")
+            ),
+            None,
+        )
+        _add(result_candidate)
+
+        return "\n".join(f"{i+1}. {_fmt(chunk)}" for i, chunk in enumerate(selected[:8]))
+
     async def _score_quality(self, content: str, task: Task) -> float:
         prompt = (
-            f"Rate this skill document quality (0-10). Consider: completeness, clarity, "
-            f"actionability, whether it captures the key steps from the task.\n\n"
+            "You are a strict skill quality reviewer. Evaluate whether this skill is high-quality enough "
+            "to be activated by default.\n\n"
+            "Score the skill using these rubric dimensions:\n"
+            "1. workflowFocused: Is it a SINGLE clear workflow rather than a mixed/broad topic?\n"
+            "2. clearTrigger: Does it clearly say what it does and when to use it?\n"
+            "3. actionableSteps: Are the steps concrete and executable?\n"
+            "4. verifiedOnly: Does it avoid speculative or unverified advice?\n"
+            "5. hasVerification: Does it explain how to confirm success?\n"
+            "6. specificEnough: Does it preserve important commands, paths, configs, errors, constraints, or versions when needed?\n\n"
+            "Scoring rules:\n"
+            "- If workflowFocused is false, score must be below 6\n"
+            "- If clearTrigger is false, score must be below 6\n"
+            "- If actionableSteps is false, score must be below 6\n"
+            "- If verification is completely missing, penalize heavily\n"
+            "- If the skill invents unverified alternatives or broad generic advice, penalize heavily\n"
+            "- Only give 6 or above if the skill is genuinely reusable, focused, and operational\n\n"
             f"Task title: {task.title}\n\n"
-            f"Skill content (first 2000 chars):\n{content[:2000]}\n\n"
-            f"Reply with a single number (0-10):"
+            f"Skill content (first 2500 chars):\n{content[:2500]}\n\n"
+            "Reply in JSON only:\n"
+            '{"workflowFocused": true, "clearTrigger": true, "actionableSteps": true, '
+            '"verifiedOnly": true, "hasVerification": true, "specificEnough": true, '
+            '"score": 0.0, "reason": "brief explanation"}'
         )
         try:
             raw = await self._llm_call(prompt, max_tokens=10, temperature=0)
+            parsed = _parse_json(raw, {})
+            score = parsed.get("score")
+            if isinstance(score, (int, float)):
+                return min(10.0, max(0.0, float(score)))
             m = re.search(r"(\d+(?:\.\d+)?)", raw)
             if m:
                 return min(10.0, max(0.0, float(m.group(1))))

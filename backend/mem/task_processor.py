@@ -2,7 +2,7 @@
 
 按 docs/memory-system-refactor.md §4.2 ⑥:
   - session 变化 → finalize 旧 Task，创建新 Task
-  - 超 idle_timeout_hours 空闲 → finalize 旧 Task，创建新 Task
+  - 时间间隔作为弱信号参与 SAME/NEW 判断
   - LLM 判断话题切换 → finalize 旧 Task，创建新 Task
   - finalize: LLM 结构化摘要 → embedding → tasks + tasks_fts + vec_tasks
 """
@@ -23,6 +23,9 @@ from mem.embedder import MemEmbedder
 
 logger = logging.getLogger(__name__)
 
+BOUNDARY_WINDOW_SIZE = 10
+BOUNDARY_ASSISTANT_MAX_LEN = 300
+
 TRIVIAL_RE = re.compile(
     r"^(test|testing|hello|hi|hey|ok|okay|yes|no|yeah|nope|sure|thanks|thx|ping|pong|"
     r"哈哈|好的|嗯|是的|不是|谢谢|你好|测试)\s*[.!?。！？]*$",
@@ -34,37 +37,61 @@ TRIVIAL_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 TASK_SUMMARY_PROMPT = (
-    "You create a DETAILED task summary from a multi-turn conversation. "
-    "This summary will be the ONLY record of this conversation, so it must "
-    "preserve ALL important information.\n\n"
+    "You create a structured high-value task memory from a multi-turn conversation. "
+    "This summary will be used for later retrieval and skill generation, so it must "
+    "preserve the final effective state and the most important operational details.\n\n"
     "CRITICAL LANGUAGE RULE: Write in the SAME language as the user's messages. "
     "Chinese input → Chinese output. English input → English output.\n\n"
     "Output EXACTLY this structure:\n\n"
     "📌 Title\n<short descriptive title, max 60 chars>\n\n"
-    "🎯 Goal\n<what the user wanted to achieve>\n\n"
-    "📋 Key Steps\n<numbered list of important actions taken>\n\n"
-    "✅ Outcome\n<final result — success/failure/partial + key details>\n\n"
-    "💡 Insights\n<lessons learned, gotchas, key decisions>\n\n"
+    "🎯 Goal\n<what the user was trying to achieve>\n\n"
+    "📋 Key Steps\n<numbered list of only the important steps, commands, edits, checks>\n\n"
+    "✅ Outcome\n<final result — success/failure/partial, and the final effective state/value>\n\n"
+    "💡 Insights\n<key lessons, gotchas, important decisions, fixes>\n\n"
     "Rules:\n"
-    "- Preserve ALL: exact commands, file paths, config values, version numbers, error messages\n"
-    "- DISCARD only: greetings, filler\n"
+    "- Preserve exact commands, file paths, config values, version numbers, error codes/messages when important\n"
+    "- Preserve the FINAL effective value/state if something changed during the conversation\n"
+    "- Keep failed attempts only if they explain the final fix or key lesson\n"
+    "- Remove greetings, filler, repeated back-and-forth, and duplicated details\n"
     "- Replace secrets with [REDACTED]\n"
-    "- Target length: 30-50% of original conversation. Output summary only."
+    "- Make it dense and retrieval-friendly, not conversational\n"
+    "- Output summary only"
 )
 
 TOPIC_JUDGE_PROMPT = (
-    "You are a conversation topic boundary detector. "
+    "You are a conservative conversation task-boundary detector. "
     "Given the CURRENT task context and a single NEW user message, "
-    "decide if the new message belongs to the SAME task or starts a NEW one.\n\n"
+    "decide whether the new message belongs to the SAME task or clearly starts a NEW task.\n\n"
     "Answer ONLY \"NEW\" or \"SAME\".\n\n"
-    "SAME — the new message:\n"
-    "- Continues, follows up on, refines, or corrects the same subject\n"
-    "- References entities/concepts from the current task\n"
-    "- Is a natural next step in the same workflow\n\n"
-    "NEW — the new message:\n"
-    "- Introduces a completely unrelated topic\n"
-    "- Cannot be interpreted as a follow-up to the current task\n\n"
-    "When in doubt → SAME. Output exactly one word: NEW or SAME"
+    "Choose SAME when the new message:\n"
+    "- continues, follows up on, retries, corrects, refines, or asks for the next step\n"
+    "- references the same file, service, error, config, command, object, or workflow\n"
+    "- is a natural continuation of the same troubleshooting or implementation thread\n"
+    "- is ambiguous but can reasonably be interpreted as a continuation\n\n"
+    "Choose NEW only when the new message clearly:\n"
+    "- switches to a different goal, object, system, or workflow\n"
+    "- starts a separate request that does not depend on the current task context\n"
+    "- cannot reasonably be treated as a follow-up\n\n"
+    "Important:\n"
+    "- A long time gap is only a weak signal, not a hard boundary\n"
+    "- Even after hours, if the user is clearly continuing the same troubleshooting or workflow, choose SAME\n"
+    "- Same topic area does not automatically mean NEW\n"
+    "- Follow-up questions on the same issue should be SAME\n"
+    "- When in doubt, choose SAME\n\n"
+    "Output exactly one word: NEW or SAME"
+)
+
+BOUNDARY_SUMMARY_PROMPT = (
+    "You maintain a compact task-state summary for future SAME/NEW boundary detection. "
+    "Summarize the current task state, not the conversational style.\n\n"
+    "Include only:\n"
+    "- the current goal\n"
+    "- the current object/system/file/service/error/config being worked on\n"
+    "- the latest effective state or conclusion\n"
+    "- the key steps or checks already performed if they still matter\n"
+    "- key commands, paths, config values, versions, or error codes when important\n\n"
+    "Do not include greetings, filler, repeated back-and-forth, or superseded details.\n"
+    "Keep it dense and short. Output plain text only."
 )
 
 OnTaskCompleted = Callable[[Task], Coroutine[Any, Any, None]]
@@ -137,16 +164,6 @@ class MemTaskProcessor:
 
         task_chunks = self.store.get_chunks_by_task(active_task.id)
 
-        if task_chunks:
-            last_task_ts = max(c.created_at for c in task_chunks)
-            first_unassigned_ts = min(c.created_at for c in unassigned)
-            gap = first_unassigned_ts - last_task_ts
-            if gap > self.idle_timeout_ms:
-                logger.info("Task boundary: time gap %dmin", gap // 60_000)
-                await self._finalize_task(active_task)
-                new_task = self._create_task(session_key, owner)
-                return await self._process_chunks_incrementally(new_task, session_key, owner)
-
         turns = self._group_into_turns(unassigned)
         if not turns:
             self._assign_chunks(unassigned, active_task.id)
@@ -163,16 +180,10 @@ class MemTaskProcessor:
                 current_chunks.extend(turn)
                 continue
 
+            gap_ms: int | None = None
             if current_chunks:
                 last_ts = max(c.created_at for c in current_chunks)
-                if user_chunk.created_at - last_ts > self.idle_timeout_ms:
-                    logger.info("Task boundary: time gap per-turn")
-                    await self._finalize_task(current_task)
-                    current_task = self._create_task(session_key, owner)
-                    current_chunks = []
-                    self._assign_chunks(turn, current_task.id)
-                    current_chunks.extend(turn)
-                    continue
+                gap_ms = user_chunk.created_at - last_ts
 
             existing_user_count = sum(1 for c in current_chunks if c.role == "user")
             if existing_user_count < 1:
@@ -180,9 +191,8 @@ class MemTaskProcessor:
                 current_chunks.extend(turn)
                 continue
 
-            context = self._build_context_summary(current_chunks)
-            new_msg = user_chunk.content[:500]
-            is_new = await self._judge_new_topic(context, new_msg)
+            context = await self._build_boundary_context(current_task, current_chunks)
+            is_new = await self._judge_new_topic(context, user_chunk.content, gap_ms=gap_ms)
 
             if is_new is None:
                 self._assign_chunks(turn, current_task.id)
@@ -233,7 +243,7 @@ class MemTaskProcessor:
             logger.info("Task %s skipped: %s", task.id, skip_reason)
             self.store.finalize_task(task.id, fallback_title, skip_reason, "skipped")
             for c in chunks:
-                self.store.mark_dedup_status(c.id, "orphaned", reason="task_skipped")
+                self.store.orphan_chunk(c.id, reason="task_skipped")
             return
 
         conversation_text = self._build_conversation_text(chunks)
@@ -281,23 +291,90 @@ class MemTaskProcessor:
         return turns
 
     @staticmethod
-    def _build_context_summary(chunks: list[Chunk]) -> str:
-        conv = [c for c in chunks if c.role in ("user", "assistant")]
+    def _boundary_chunks(chunks: list[Chunk]) -> list[Chunk]:
+        return [c for c in chunks if c.role in ("user", "assistant")]
+
+    @staticmethod
+    def _format_boundary_chunk(chunk: Chunk) -> str:
+        label = "User" if chunk.role == "user" else "Assistant"
+        if chunk.role == "user":
+            text = chunk.content
+        else:
+            text = chunk.summary or chunk.content[:BOUNDARY_ASSISTANT_MAX_LEN]
+        return f"[{label}]: {text}"
+
+    @staticmethod
+    def _fallback_boundary_summary(existing_summary: str, chunks: list[Chunk]) -> str:
+        parts: list[str] = []
+        if existing_summary.strip():
+            parts.append(existing_summary.strip())
+        parts.extend(MemTaskProcessor._format_boundary_chunk(c) for c in chunks)
+        return "\n".join(parts)[:4000]
+
+    async def _refresh_boundary_summary(self, task: Task, chunks: list[Chunk]) -> None:
+        conv = self._boundary_chunks(chunks)
+        if len(conv) <= BOUNDARY_WINDOW_SIZE:
+            if task.boundary_summary or task.boundary_compacted_count:
+                task.boundary_summary = ""
+                task.boundary_compacted_count = 0
+                self.store.update_task(task.id, boundary_summary="", boundary_compacted_count=0)
+            return
+
+        changed = False
+        while len(conv) - task.boundary_compacted_count >= BOUNDARY_WINDOW_SIZE:
+            next_batch = conv[
+                task.boundary_compacted_count: task.boundary_compacted_count + BOUNDARY_WINDOW_SIZE
+            ]
+            if task.boundary_summary.strip():
+                user_content = (
+                    f"EXISTING TASK STATE SUMMARY:\n{task.boundary_summary.strip()}\n\n"
+                    f"NEW CONVERSATION MESSAGES:\n"
+                    + "\n".join(self._format_boundary_chunk(c) for c in next_batch)
+                )
+            else:
+                user_content = (
+                    "TASK CONVERSATION MESSAGES:\n"
+                    + "\n".join(self._format_boundary_chunk(c) for c in next_batch)
+                )
+            try:
+                new_summary = await self._llm_call(
+                    BOUNDARY_SUMMARY_PROMPT,
+                    user_content,
+                    max_tokens=512,
+                    temperature=0.1,
+                )
+            except Exception as e:
+                logger.warning("Boundary summary refresh failed for task %s: %s", task.id, e)
+                new_summary = self._fallback_boundary_summary(task.boundary_summary, next_batch)
+
+            task.boundary_summary = new_summary.strip() or self._fallback_boundary_summary(task.boundary_summary, next_batch)
+            task.boundary_compacted_count += len(next_batch)
+            changed = True
+
+        if changed:
+            self.store.update_task(
+                task.id,
+                boundary_summary=task.boundary_summary,
+                boundary_compacted_count=task.boundary_compacted_count,
+            )
+
+    async def _build_boundary_context(self, task: Task, chunks: list[Chunk]) -> str:
+        conv = self._boundary_chunks(chunks)
         if not conv:
             return ""
 
-        def _fmt(c: Chunk) -> str:
-            label = "User" if c.role == "user" else "Assistant"
-            max_len = 500 if c.role == "user" else 200
-            text = c.summary or c.content[:max_len]
-            return f"[{label}]: {text}"
+        await self._refresh_boundary_summary(task, chunks)
+        pending = conv[task.boundary_compacted_count:]
+        if not task.boundary_summary:
+            return "\n".join(self._format_boundary_chunk(c) for c in pending)
 
-        if len(conv) <= 10:
-            return "\n".join(_fmt(c) for c in conv)
-
-        opening = [_fmt(c) for c in conv[:6]]
-        recent = [_fmt(c) for c in conv[-4:]]
-        return "\n".join(["--- Task opening ---", *opening, "--- Recent exchanges ---", *recent])
+        sections = [f"--- Task state summary ---\n{task.boundary_summary.strip()}"]
+        if pending:
+            sections.append(
+                "--- Recent conversation ---\n"
+                + "\n".join(self._format_boundary_chunk(c) for c in pending)
+            )
+        return "\n\n".join(sections)
 
     # ------------------------------------------------------------------
     # Summary helpers
@@ -374,9 +451,19 @@ class MemTaskProcessor:
     # LLM calls
     # ------------------------------------------------------------------
 
-    async def _judge_new_topic(self, context: str, new_message: str) -> bool | None:
+    async def _judge_new_topic(
+        self,
+        context: str,
+        new_message: str,
+        *,
+        gap_ms: int | None = None,
+    ) -> bool | None:
+        gap_text = ""
+        if gap_ms is not None and gap_ms > 0:
+            gap_text = f"\nTIME GAP FROM CURRENT TASK: {gap_ms / 3600000:.1f} hours"
         user_content = (
-            f"CURRENT TASK CONTEXT:\n{context}\n\n"
+            f"CURRENT TASK CONTEXT:\n{context}"
+            f"{gap_text}\n\n"
             f"NEW USER MESSAGE:\n{new_message}"
         )
         try:
