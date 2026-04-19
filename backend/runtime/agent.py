@@ -24,7 +24,7 @@ from runtime.prompt_builder import prompt_builder
 from sessions.session_manager import session_manager
 from infra.run_tracker import run_tracker
 from infra.audit_log import audit_logger
-from infra.token_counter import count_messages_tokens
+from infra.token_counter import count_messages_tokens, count_tokens
 from sessions.session_pruning import prune_messages
 from runtime.command_parser import parse_command, execute_command
 from runtime.tool_call_parser import parse_text_tool_calls, strip_tool_call_patterns
@@ -162,6 +162,33 @@ class LifecycleHooks:
         pass
 
 
+@dataclass
+class PromptCacheEntry:
+    key: tuple[Any, ...]
+    system_prompt: str
+    prompt_report: Any
+    prompt_tokens: int
+
+
+@dataclass
+class SessionContextCacheEntry:
+    agent_id: str
+    session_id: str
+    session_file_mtime: float | None
+    summary_fingerprint: str | None
+    raw_history: list[dict[str, Any]]
+    summary_text: str
+    history_with_summary: list[dict[str, Any]]
+    pruned_history: list[dict[str, Any]]
+    summary_tokens: int
+    history_tokens: int
+
+
+@dataclass
+class ToolNameCacheEntry:
+    key: tuple[Any, ...]
+    tool_names: tuple[str, ...]
+
 
 
 from infra.event_bus import EventBus, Events, event_bus
@@ -184,6 +211,9 @@ class AgentManager:
         self.lifecycle_hooks: LifecycleHooks | None = None
         self._pending_tasks: set[asyncio.Task] = set()
         self._state_save_tasks: dict[str, asyncio.Task] = {}
+        self._prompt_cache: dict[tuple[Any, ...], PromptCacheEntry] = {}
+        self._session_context_cache: dict[tuple[str, str], SessionContextCacheEntry] = {}
+        self._tool_name_cache: dict[tuple[Any, ...], ToolNameCacheEntry] = {}
 
     def _get_state_persist_config(self, agent_id: str) -> tuple[bool, int]:
         """获取状态持久化配置 (enabled, interval_minutes)"""
@@ -383,7 +413,7 @@ class AgentManager:
             except Exception as e:
                 logger.warning(f"Failed to save state for {agent_id}: {e}")
 
-    def _build_tools(self, agent_id: str, session_id: str = "") -> list:
+    def _collect_tools(self, agent_id: str, session_id: str = "") -> list:
         workspace = str(resolve_agent_workspace(agent_id))
         agent_dir = str(resolve_agent_dir(agent_id))
 
@@ -405,22 +435,29 @@ class AgentManager:
         tools.extend(get_agent_tools(agent_id, self, session_id))
         tools.extend(get_cron_tools(agent_id))
         tools.extend(get_status_tools(agent_id, session_id))
+        return tools
 
-        tools = self._filter_tools_by_policy(agent_id, tools)
-
+    def _wrap_tools_for_session(self, agent_id: str, session_id: str, tools: list) -> list:
         from tools.persistence_wrapper import wrap_tools_for_persistence
-        tools = wrap_tools_for_persistence(
+
+        return wrap_tools_for_persistence(
             tools,
             data_dir=self.data_dir,
             agent_id=agent_id,
             session_id=session_id,
         )
 
+    def _build_tools(self, agent_id: str, session_id: str = "") -> list:
+        tools = self._collect_tools(agent_id, session_id)
+
+        tools = self._filter_tools_by_policy(agent_id, tools)
+        tools = self._wrap_tools_for_session(agent_id, session_id, tools)
         return tools
 
-    def _filter_tools_by_policy(self, agent_id: str, tools: list) -> list:
-        """按 agents.list[].tools.allow/deny 过滤工具"""
+    def _resolve_tool_policy(self, agent_id: str) -> tuple[list[str], list[str]]:
+        """解析 agent 的工具 allow/deny 策略。"""
         from config import get_config
+
         cfg = get_config()
         agent_entry = None
         for a in (cfg.get("agents", {}).get("list") or []):
@@ -431,6 +468,11 @@ class AgentManager:
         defaults_policy = (cfg.get("agents", {}).get("defaults", {}).get("tools")) or {}
         deny = list(policy.get("deny") or defaults_policy.get("deny") or [])
         allow = list(policy.get("allow") or defaults_policy.get("allow") or [])
+        return allow, deny
+
+    def _filter_tools_by_policy(self, agent_id: str, tools: list) -> list:
+        """按 agents.list[].tools.allow/deny 过滤工具"""
+        allow, deny = self._resolve_tool_policy(agent_id)
 
         def _normalize(name: str) -> str:
             return name.replace("-", "_").lower().strip()
@@ -472,6 +514,163 @@ class AgentManager:
                     messages.append(HumanMessage(content=content))
         messages.append(HumanMessage(content=new_message))
         return messages
+
+    @staticmethod
+    def _safe_mtime(path: Path) -> float | None:
+        try:
+            return path.stat().st_mtime if path.exists() else None
+        except Exception:
+            return None
+
+    def _project_context_signature(self, agent_id: str, prompt_mode: str) -> tuple[Any, ...]:
+        workspace = resolve_agent_workspace(agent_id)
+        files: list[Path] = [workspace / "AGENTS.md"]
+        if prompt_mode == "full":
+            files.extend([workspace / "IDENTITY.md", workspace / "USER.md"])
+        snapshot = resolve_agent_dir(agent_id) / "SKILLS_SNAPSHOT.md"
+        bootstrap = workspace / "BOOTSTRAP.md"
+        return (
+            tuple((str(p), self._safe_mtime(p)) for p in files),
+            self._safe_mtime(snapshot),
+            bootstrap.exists(),
+        )
+
+    def _tool_policy_signature(self, agent_id: str) -> tuple[Any, ...]:
+        allow_list, deny_list = self._resolve_tool_policy(agent_id)
+        allow = tuple(sorted(str(x) for x in allow_list))
+        deny = tuple(sorted(str(x) for x in deny_list))
+        return allow, deny
+
+    def _get_or_build_tool_names(self, agent_id: str) -> tuple[str, ...]:
+        cache_key = (agent_id, self._tool_policy_signature(agent_id))
+        cached = self._tool_name_cache.get(cache_key)
+        if cached is not None:
+            return cached.tool_names
+
+        tools = self._collect_tools(agent_id, session_id="")
+        tools = self._filter_tools_by_policy(agent_id, tools)
+        tool_names = tuple(sorted(t.name for t in tools))
+        self._tool_name_cache[cache_key] = ToolNameCacheEntry(
+            key=cache_key,
+            tool_names=tool_names,
+        )
+        return tool_names
+
+    def _get_or_build_prompt(
+        self,
+        *,
+        agent_id: str,
+        prompt_mode: str,
+        available_tool_names: list[str] | None,
+        extra_system_prompt: str | None,
+        locale: str,
+    ) -> tuple[str, Any, int]:
+        from runtime.prompt_builder import PromptParams
+        from infra.token_counter import count_tokens
+
+        tool_key = tuple(sorted(available_tool_names or []))
+        static_sig = self._project_context_signature(agent_id, prompt_mode)
+        cache_key = (
+            agent_id,
+            prompt_mode,
+            tool_key,
+            extra_system_prompt or "",
+            locale,
+            static_sig,
+        )
+        cached = self._prompt_cache.get(cache_key)
+        if cached is not None:
+            return cached.system_prompt, cached.prompt_report, cached.prompt_tokens
+
+        prompt_params = PromptParams(
+            agent_id=agent_id,
+            mode=prompt_mode,
+            available_tools=available_tool_names,
+            extra_system_prompt=extra_system_prompt or None,
+            locale=locale,
+        )
+        system_prompt, prompt_report = prompt_builder.build_system_prompt_with_report(prompt_params)
+        prompt_tokens = count_tokens(system_prompt)
+
+        self._prompt_cache[cache_key] = PromptCacheEntry(
+            key=cache_key,
+            system_prompt=system_prompt,
+            prompt_report=prompt_report,
+            prompt_tokens=prompt_tokens,
+        )
+        return system_prompt, prompt_report, prompt_tokens
+
+    @staticmethod
+    def _session_summary_fingerprint(summary: Any) -> str | None:
+        if not summary:
+            return None
+        try:
+            if isinstance(summary, dict):
+                payload = summary
+            else:
+                payload = {
+                    "goal": getattr(summary, "goal", None),
+                    "decisions": getattr(summary, "decisions", None),
+                    "progress": getattr(summary, "progress", None),
+                    "open_items": getattr(summary, "open_items", None),
+                    "entities": getattr(summary, "entities", None),
+                    "user_preferences": getattr(summary, "user_preferences", None),
+                    "raw_summary": getattr(summary, "raw_summary", None),
+                }
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return str(summary)
+
+    def _get_or_build_session_context(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+    ) -> SessionContextCacheEntry:
+        from infra.token_counter import count_tokens
+
+        cache_key = (agent_id, session_id)
+        session_path = resolve_agent_dir(agent_id) / "sessions" / f"{session_id}.json"
+        session_file_mtime = self._safe_mtime(session_path)
+
+        store = self.mem_stores.get(agent_id)
+        session_summary = store.get_session_summary(session_id, agent_id) if store else None
+        summary_fingerprint = self._session_summary_fingerprint(session_summary)
+
+        cached = self._session_context_cache.get(cache_key)
+        if (
+            cached is not None
+            and cached.session_file_mtime == session_file_mtime
+            and cached.summary_fingerprint == summary_fingerprint
+        ):
+            return cached
+
+        raw_history = session_manager.load_session_for_agent(session_id, agent_id)
+        summary_text = ""
+        history_with_summary = list(raw_history)
+        if session_summary:
+            summary_text = prompt_builder.format_session_summary(session_summary)
+            if summary_text:
+                history_with_summary = [{"role": "system", "content": summary_text}, *history_with_summary]
+
+        pruned_history = prune_messages(history_with_summary, agent_id=agent_id)
+        summary_tokens = count_tokens(summary_text) if summary_text else 0
+        history_tokens = count_messages_tokens(pruned_history)
+
+        entry = SessionContextCacheEntry(
+            agent_id=agent_id,
+            session_id=session_id,
+            session_file_mtime=session_file_mtime,
+            summary_fingerprint=summary_fingerprint,
+            raw_history=raw_history,
+            summary_text=summary_text,
+            history_with_summary=history_with_summary,
+            pruned_history=pruned_history,
+            summary_tokens=summary_tokens,
+            history_tokens=history_tokens,
+        )
+        self._session_context_cache[cache_key] = entry
+        return entry
 
     # ------------------------------------------------------------------
     # 核心流式方法
@@ -538,42 +737,27 @@ class AgentManager:
             except Exception:
                 pass
 
-        tools = self._build_tools(agent_id, session_id)
-        available_tool_names = [t.name for t in tools] if tools else None
+        available_tool_names = list(self._get_or_build_tool_names(agent_id))
 
-        from runtime.prompt_builder import PromptParams
         from config import get_config
         _locale = get_config().get("app", {}).get("locale", "zh-CN")
-        prompt_params = PromptParams(
+        system_prompt, prompt_report, _sp_tokens = self._get_or_build_prompt(
             agent_id=agent_id,
-            mode=prompt_mode,
-            available_tools=available_tool_names,
+            prompt_mode=prompt_mode,
+            available_tool_names=available_tool_names,
             extra_system_prompt=extra_prompt or None,
             locale=_locale,
         )
-        system_prompt, prompt_report = prompt_builder.build_system_prompt_with_report(prompt_params)
         logger.info(prompt_report.summary())
 
-        history = session_manager.load_session_for_agent(session_id, agent_id)
-
-        # 注入结构化会话摘要（压缩后的上下文续接）
-        store = self.mem_stores.get(agent_id)
-        if store:
-            session_summary = store.get_session_summary(session_id, agent_id)
-            if session_summary:
-                summary_text = prompt_builder.format_session_summary(session_summary)
-                if summary_text:
-                    history.insert(0, {"role": "system", "content": summary_text})
-
-        # 会话修剪
-        history = prune_messages(history, agent_id=agent_id)
+        context_entry = self._get_or_build_session_context(agent_id=agent_id, session_id=session_id)
+        history = context_entry.pruned_history
+        tools = self._build_tools(agent_id, session_id)
 
         from runtime.context_budget import resolve_budget
-        from infra.token_counter import count_tokens
         _budget = resolve_budget(agent_id)
-        _sp_tokens = count_tokens(system_prompt)
-        _summary_tokens = count_tokens(history[0].get("content", "")) if history and history[0].get("role") == "system" else 0
-        _history_tokens = count_messages_tokens(history)
+        _summary_tokens = context_entry.summary_tokens
+        _history_tokens = context_entry.history_tokens
 
         agent_cfg = resolve_agent_config(agent_id)
         recursion_limit = agent_cfg.get("recursion_limit", 50)
