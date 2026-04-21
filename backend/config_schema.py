@@ -209,6 +209,7 @@ class AgentsConfig(BaseModel):
 
 class FsToolsConfig(BaseModel):
     workspace_only: bool = True
+    readonly_dirs: List[str] = Field(default_factory=lambda: ["docs"])
 
 
 class ExecToolConfig(BaseModel):
@@ -404,12 +405,20 @@ class MemEmbeddingConfig(BaseModel):
     timeout: float = 60.0
 
 
+class MemLLMConfig(BaseModel):
+    model: str = "qwen-plus"
+    api_key: str = ""
+    base_url: str = ""
+
+
 class MemRecallConfig(BaseModel):
     max_task_results: int = 5
     min_task_hits: int = 3
     chunks_per_task: int = 3
     max_orphan_chunks: int = 5
+    max_skill_results: int = 0
     budget_chars: int = 20000
+    skill_budget_chars: int = 2000
     min_task_score: float = 0.3
     rrf_k: int = 60
     recency_half_life_days: float = 14
@@ -435,6 +444,7 @@ class MemSkillEvolutionConfig(BaseModel):
 class MemConfig(BaseModel):
     enabled: bool = True
     storage: MemStorageConfig = Field(default_factory=MemStorageConfig)
+    llm: MemLLMConfig = Field(default_factory=MemLLMConfig)
     embedding: MemEmbeddingConfig = Field(default_factory=MemEmbeddingConfig)
     recall: MemRecallConfig = Field(default_factory=MemRecallConfig)
     dedup: MemDedupConfig = Field(default_factory=MemDedupConfig)

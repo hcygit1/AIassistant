@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { PanelRightOpen } from "lucide-react";
 import * as api from "@/lib/api";
 import { useApp } from "@/lib/store";
 import Navbar from "@/components/layout/Navbar";
@@ -11,6 +10,7 @@ import ConfigModal from "@/components/layout/ConfigModal";
 import ApprovalModal from "@/components/layout/ApprovalModal";
 import MemoryModal from "@/components/memory/MemoryModal";
 import ResizeHandle from "@/components/layout/ResizeHandle";
+import WorkspaceRail from "@/components/layout/WorkspaceRail";
 
 export default function HomePage() {
   const {
@@ -77,52 +77,50 @@ export default function HomePage() {
       )}
 
       {/* Main workspace with glass inset */}
-      <div className="relative flex flex-1 overflow-hidden m-1.5 mt-0 gap-0 rounded-xl"
-        style={{ background: "var(--bg-inset)", border: "1px solid var(--border)" }}>
-        <div className="flex-1 min-w-0 rounded-l-xl overflow-hidden">
-          <ChatPanel />
-        </div>
+      <div
+        className="relative m-2 mt-1 flex flex-1 overflow-hidden rounded-[24px]"
+        style={{
+          background: "var(--bg-elevated)",
+          border: "1px solid var(--border)",
+          boxShadow: "var(--shadow-sm)",
+        }}
+      >
+        <WorkspaceRail />
+        <div
+          className="w-[1px] h-full flex-shrink-0"
+          style={{ background: "linear-gradient(to bottom, transparent, var(--border), transparent)" }}
+        />
         {inspectorPanelMode === "docked" && (
           <>
             <div
-              className="w-[1px] h-full flex-shrink-0"
-              style={{ background: "linear-gradient(to bottom, transparent, var(--border), transparent)" }}
-            />
-            <ResizeHandle onResize={(delta) => setInspectorWidth(Math.max(280, inspectorWidth - delta))} />
-            <div
-              style={{ width: inspectorWidth, minWidth: 280, borderLeft: "1px solid var(--border)" }}
-              className="flex-shrink-0 overflow-hidden flex flex-col rounded-r-xl bg-[var(--bg)]"
+              style={{ width: inspectorWidth, minWidth: 280, borderRight: "1px solid var(--border)" }}
+              className="flex-shrink-0 overflow-hidden flex flex-col bg-[var(--bg)]"
             >
               <InspectorPanel />
             </div>
+            <ResizeHandle onResize={(delta) => setInspectorWidth(Math.max(280, inspectorWidth + delta))} />
           </>
         )}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <ChatPanel />
+        </div>
         <div
-          className={`absolute inset-y-0 right-0 z-20 overflow-hidden flex flex-col rounded-r-xl transition-all duration-300 ease-out ${
+          className={`absolute inset-y-0 z-20 overflow-hidden flex flex-col transition-all duration-300 ease-out ${
             inspectorPanelMode === "overlay"
               ? "translate-x-0 opacity-100 pointer-events-auto"
-              : "translate-x-full opacity-0 pointer-events-none"
+              : "-translate-x-full opacity-0 pointer-events-none"
           }`}
           style={{
+            left: "4rem",
             width: inspectorWidth,
             minWidth: 280,
             background: "var(--bg)",
-            borderLeft: "1px solid var(--border)",
+            borderRight: "1px solid var(--border)",
             boxShadow: "var(--shadow-xl)",
           }}
         >
           <InspectorPanel />
         </div>
-        {inspectorPanelMode === "hidden" && (
-          <button
-            className="absolute right-2 top-1/2 -translate-y-1/2 z-30 btn-ghost p-1.5 rounded-full"
-            style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
-            title="展开侧栏（停靠）"
-            onClick={() => setInspectorPanelMode("docked")}
-          >
-            <PanelRightOpen className="w-4 h-4" />
-          </button>
-        )}
       </div>
     </div>
   );

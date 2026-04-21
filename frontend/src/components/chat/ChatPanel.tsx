@@ -6,6 +6,7 @@ import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
 import RetrievalCard from "./RetrievalCard";
 import { Bot, Activity } from "lucide-react";
+import PipixiaMark from "@/components/icons/PipixiaMark";
 
 export default function ChatPanel() {
   const {
@@ -22,22 +23,30 @@ export default function ChatPanel() {
 
   if (!currentSessionId || messages.length === 0) {
     return (
-      <div className="h-full flex flex-col" style={{ background: "var(--bg)" }} data-testid="chat-panel">
+      <div
+        className="flex h-full flex-col"
+        style={{
+          background: "linear-gradient(180deg, color-mix(in srgb, var(--bg) 92%, var(--bg-elevated) 8%) 0%, var(--bg) 100%)",
+        }}
+        data-testid="chat-panel"
+      >
         <div className="flex-1 flex items-center justify-center">
-          <div className="text-center px-6 max-w-md animate-fade-in-up">
-            <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-5"
-              style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}>
-              <Bot className="w-7 h-7" />
+          <div className="animate-fade-in-up px-8 text-center max-w-lg">
+            <div
+              className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-2xl"
+              style={{ background: "var(--accent-muted)", color: "var(--accent)" }}
+            >
+              <PipixiaMark className="h-5 w-5" strokeWidth={1.9} />
             </div>
-            <h2 className="text-xl font-semibold text-[var(--text)] mb-2">
+            <h2 className="mb-2 text-2xl font-semibold text-[var(--text)]">
               {currentAgent?.name || "Pipixia"}
             </h2>
-            <p className="text-sm text-[var(--text-secondary)] leading-relaxed mb-6">
+            <p className="mb-5 text-sm leading-relaxed text-[var(--text-secondary)]">
               {currentAgent?.description || t.agentDescription}
             </p>
             <div className="flex flex-wrap justify-center gap-2">
               {["记住这个", "查看今天的记忆", "帮我写代码", "搜索网页"].map((hint) => (
-                <span key={hint} className="chip">{hint}</span>
+                <span key={hint} className="chip" style={{ background: "transparent" }}>{hint}</span>
               ))}
             </div>
             {sessionError && (
@@ -61,7 +70,13 @@ export default function ChatPanel() {
   })();
 
   return (
-    <div className="h-full flex flex-col" style={{ background: "var(--bg)" }} data-testid="chat-panel">
+    <div
+      className="flex h-full flex-col"
+      style={{
+        background: "linear-gradient(180deg, color-mix(in srgb, var(--bg) 94%, var(--bg-elevated) 6%) 0%, var(--bg) 100%)",
+      }}
+      data-testid="chat-panel"
+    >
       {/* Subagent running banner */}
       {runningSubagents.length > 0 && (
         <div className="px-4 py-2 flex items-center gap-2 text-xs font-medium"
@@ -79,8 +94,8 @@ export default function ChatPanel() {
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="max-w-3xl mx-auto space-y-4">
+      <div className="flex-1 overflow-y-auto px-5 py-7">
+        <div className="mx-auto max-w-[860px] space-y-5">
           {messages.map((msg, i) => {
             const prev = i > 0 ? messages[i - 1] : null;
             const isContinuation = prev?.role === "assistant" && msg.role === "assistant";

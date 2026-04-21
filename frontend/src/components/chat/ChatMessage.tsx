@@ -8,6 +8,7 @@ import type { ChatMessage as ChatMsgType } from "@/lib/store";
 import { useApp } from "@/lib/store";
 import ThoughtChain from "./ThoughtChain";
 import SubagentInlineCard from "./SubagentInlineCard";
+import PipixiaMark from "@/components/icons/PipixiaMark";
 
 interface Props {
   message: ChatMsgType;
@@ -52,10 +53,6 @@ export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
       `- \`/status\` — ${t.cmdStatusDesc}`,
       `- \`/context\` — ${t.cmdContextDesc}`,
       `- \`/usage\` — ${t.cmdUsageDesc}`,
-      `- \`/stop\` — ${t.cmdStopDesc}`,
-      `- \`/think\` — ${t.cmdThinkDesc}`,
-      `- \`/verbose\` — ${t.cmdVerboseDesc}`,
-      `- \`/reasoning\` — ${t.cmdReasoningDesc}`,
       `- \`/model\` — ${t.cmdModelDesc}`,
       `- \`/subagents\` — ${t.cmdSubagentsDesc}`,
       `- \`/whoami\` — ${t.cmdWhoamiDesc}`,
@@ -181,21 +178,21 @@ export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
     <div className={`group flex gap-3 ${isUser ? "flex-row-reverse" : ""}`} data-testid="chat-message" data-role={message.role}>
       {/* Avatar */}
       {hideAvatar ? (
-        <div className="w-8 flex-shrink-0" />
+        <div className="w-7 flex-shrink-0" />
       ) : (
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
+        <div className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg"
           style={
             isUser
               ? { background: "var(--accent)", color: "var(--text-on-accent)" }
               : { background: "var(--hover)", color: "var(--text-secondary)" }
           }
         >
-          {isUser ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
+          {isUser ? <User className="w-3.5 h-3.5" /> : <PipixiaMark className="h-3.5 w-3.5" strokeWidth={1.9} />}
         </div>
       )}
 
       {/* Content */}
-      <div className={`min-w-0 max-w-[80%] ${isUser ? "text-right" : ""}`}>
+        <div className={`min-w-0 max-w-[82%] ${isUser ? "text-right" : ""}`}>
         {/* Tool calls (non-spawn) */}
         {nonSpawnCalls.length > 0 && <ThoughtChain toolCalls={nonSpawnCalls} />}
 
@@ -215,28 +212,31 @@ export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
 
         {isEmpty && (
           <div className="text-xs italic py-1" style={{ color: "var(--text-tertiary)" }}>
-            ({t.noReplyYet})
+            ({t.noReply})
           </div>
         )}
 
         {isTextToolCall && !hasToolCalls && (
           <div className="flex items-center gap-1.5 text-xs py-1" style={{ color: "var(--text-secondary)" }}>
             <Loader2 className="w-3 h-3 animate-spin" />
-            <span>{t.parsingToolCalls}</span>
+            <span>{t.parsingTools}</span>
           </div>
         )}
 
         {/* Message bubble */}
         {!isEmpty && !isTextToolCall && (message.content || (message.isStreaming && !hasToolCalls) || isUser) && (
           <div className="relative">
-            <div className={`inline-block rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${isUser ? "rounded-tr-md" : "rounded-tl-md"
-              }`}
+            <div
+              className={`text-sm leading-relaxed ${isUser
+                ? "inline-block rounded-2xl rounded-tr-md px-4 py-2.5"
+                : "block px-0.5 py-0.5"
+                }`}
               style={isUser ? {
                 background: "var(--accent)",
                 color: "var(--text-on-accent)",
+                boxShadow: "0 1px 2px rgba(15, 23, 42, 0.08)",
               } : {
-                background: "var(--bg-elevated)",
-                border: "1px solid var(--border)",
+                background: "transparent",
                 color: "var(--text)",
               }}
             >
@@ -259,9 +259,9 @@ export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
               {!isUser && message.content && !message.isStreaming && (
                 <button
                   onClick={handleCopy}
-                  className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 transition-all duration-200 p-1 rounded-md hover:bg-black/5"
+                  className="absolute -bottom-1 right-0 opacity-0 group-hover:opacity-100 transition-all duration-200 p-1 rounded-md hover:bg-black/5"
                   style={{ color: "var(--text-tertiary)" }}
-                  aria-label={t.copy}
+                  aria-label={copied ? "已复制" : "复制"}
                 >
                   {copied
                     ? <Check className="w-3 h-3" style={{ color: "var(--success)" }} />
@@ -274,7 +274,7 @@ export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
 
         {/* Metadata */}
         {!isUser && isLast && !message.isStreaming && (
-          <div className="mt-2 text-[10px] flex items-center gap-3" style={{ color: "var(--text-tertiary)" }}>
+          <div className="mt-1.5 text-[10px] flex items-center gap-3" style={{ color: "var(--text-tertiary)" }}>
             {timeLabel && <span>{timeLabel}</span>}
             {durationSeconds != null && <span>{durationSeconds.toFixed(1)}s</span>}
             {message.usage && (message.usage.input_tokens > 0 || message.usage.output_tokens > 0) && (

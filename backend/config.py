@@ -103,6 +103,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fs": {"workspace_only": True, "readonly_dirs": ["docs"]},
         "exec": {
             "apply_patch": {"enabled": False},
+            "approval": {
+                "security": "full",
+                "ask": "on_miss",
+                "ask_timeout_seconds": 60,
+                "pending_timeout_seconds": 300,
+                "allowlist": [],
+            },
         },
         "web": {
             "search": {
@@ -133,6 +140,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "theme": "system",
         "dataDir": None,
         "logLevel": "info",
+        "logFile": {
+            "enabled": True,
+            "maxBytes": 10 * 1024 * 1024,
+            "backupCount": 5,
+        },
+        "messageQueue": {
+            "debounceMs": 1000,
+        },
+        "systemEvents": {
+            "maxEvents": 20,
+        },
         "proxy": None,
     },
     "notifications": {
@@ -146,6 +164,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "snapshotBeforeExec": False,
         "undoStackSize": 50,
         "writeApproval": "on_overwrite",
+        "loopDetection": {
+            "warningThreshold": 10,
+            "criticalThreshold": 20,
+            "circuitBreaker": 30,
+            "historySize": 30,
+        },
     },
     "backup": {
         "autoBackup": False,
@@ -169,6 +193,52 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "headless": True,
         "viewport": "1280x720",
         "proxy": None,
+    },
+    "mem": {
+        "enabled": True,
+        "storage": {
+            "db_path": "{data_dir}/mem/mem.db",
+        },
+        "llm": {
+            "model": "qwen-plus",
+            "api_key": "",
+            "base_url": "",
+        },
+        "embedding": {
+            "provider": "openai",
+            "model": "text-embedding-3-small",
+            "api_key": "",
+            "base_url": "",
+            "dimensions": 1536,
+            "batch_size": 32,
+            "timeout": 60.0,
+        },
+        "recall": {
+            "max_task_results": 5,
+            "min_task_hits": 3,
+            "chunks_per_task": 3,
+            "max_orphan_chunks": 5,
+            "max_skill_results": 0,
+            "budget_chars": 20000,
+            "skill_budget_chars": 2000,
+            "min_task_score": 0.3,
+            "rrf_k": 60,
+            "recency_half_life_days": 14,
+            "min_inject_score": 0.015,
+        },
+        "dedup": {
+            "similarity_threshold": 0.60,
+        },
+        "task": {
+            "idle_timeout_hours": 2,
+        },
+        "skill_evolution": {
+            "enabled": True,
+            "auto_evaluate": True,
+            "min_chunks_for_eval": 6,
+            "min_confidence": 0.7,
+            "auto_install": False,
+        },
     },
 }
 

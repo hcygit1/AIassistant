@@ -69,40 +69,24 @@ export default function InspectorPanel() {
   };
 
   const activeTab = inspectorTab as TabId;
+  const activeDef = TAB_DEFS.find((tab) => tab.id === activeTab);
+  const activeLabel = activeDef ? ((t as any)[activeDef.labelKey] || activeDef.labelKey) : activeTab;
 
   return (
-    <div className="h-full flex flex-col" style={{ background: "var(--bg-elevated)" }} data-testid="inspector-panel">
-      {/* Tab bar */}
-      <div className="flex flex-shrink-0 items-stretch" style={{ borderBottom: "1px solid var(--border)" }}>
-        <div className="flex flex-1 min-w-0">
-          {TAB_DEFS.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            const label = (t as any)[tab.labelKey] || tab.labelKey;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setInspectorTab(tab.id)}
-                className="flex items-center justify-center px-2.5 py-2 transition-all duration-200 relative"
-                data-testid={`inspector-tab-${tab.id}`}
-                title={label}
-                style={{
-                  color: isActive ? "var(--accent)" : "var(--text-secondary)",
-                  background: isActive ? "var(--accent-muted)" : "transparent",
-                  borderRadius: "6px",
-                }}
-                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = "var(--hover)"; }}
-                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
-              >
-                <Icon className="w-4 h-4" />
-                {isActive && (
-                  <div className="absolute bottom-0 left-1.5 right-1.5 h-0.5 rounded-full" style={{ background: "var(--accent)" }} />
-                )}
-              </button>
-            );
-          })}
+    <div className="h-full flex flex-col" style={{ background: "color-mix(in srgb, var(--bg-elevated) 94%, var(--bg) 6%)" }} data-testid="inspector-panel">
+      <div
+        className="flex flex-shrink-0 items-center justify-between px-3 py-2"
+        style={{ borderBottom: "1px solid var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 90%, var(--bg) 10%)" }}
+      >
+        <div className="min-w-0">
+          <div className="text-[9px] uppercase tracking-[0.18em]" style={{ color: "var(--text-tertiary)" }}>
+            Workspace
+          </div>
+          <div className="truncate text-sm font-medium" style={{ color: "var(--text)" }}>
+            {activeLabel}
+          </div>
         </div>
-        <div className="flex items-center gap-0.5 px-1" style={{ borderLeft: "1px solid var(--border)" }}>
+        <div className="flex items-center gap-0.5">
           <button
             onClick={() => setInspectorPanelMode("hidden")}
             className="btn-ghost p-1 rounded-md opacity-70 hover:opacity-100 transition-opacity"
@@ -184,16 +168,16 @@ function FilesTab({
 }) {
   return (
     <div className="h-full flex flex-col">
-      <div className="p-3 overflow-y-auto flex-shrink-0" style={{ maxHeight: "40%", borderBottom: "1px solid var(--border)" }}>
+      <div className="p-3 overflow-y-auto flex-shrink-0" style={{ maxHeight: "38%", borderBottom: "1px solid var(--border)" }}>
         <div className="text-[10px] font-semibold uppercase tracking-wider mb-2 px-1" style={{ color: "var(--text-tertiary)" }}>
           {t.keyFiles}
         </div>
-        <div className="space-y-0.5">
+        <div className="space-y-1 rounded-2xl p-1" style={{ background: "color-mix(in srgb, var(--bg) 74%, transparent 26%)" }}>
           {WORKSPACE_FILES.map((f) => (
             <button
               key={f.path}
               onClick={() => openFile(f.path)}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 transition-all duration-150"
+              className="w-full text-left px-2.5 py-2 rounded-xl text-xs flex items-center gap-2 transition-all duration-150"
               style={{
                 background: inspectorFile?.path === f.path ? "var(--accent-muted)" : "transparent",
                 color: inspectorFile?.path === f.path ? "var(--accent)" : "var(--text-secondary)",
@@ -216,11 +200,11 @@ function FilesTab({
           </div>
         ) : inspectorFile ? (
           <>
-            <div className="flex items-center justify-between px-3 py-1.5 flex-shrink-0"
-              style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-inset)" }}>
+            <div className="flex items-center justify-between px-3 py-2 flex-shrink-0"
+              style={{ borderBottom: "1px solid var(--border)", background: "color-mix(in srgb, var(--bg) 80%, var(--bg-elevated) 20%)" }}>
               <span className="text-[11px] truncate font-mono" style={{ color: "var(--text-secondary)" }}>{inspectorFile.path}</span>
               {hasChanges && (
-                <button onClick={handleSave} className="btn-primary" style={{ padding: "3px 10px", fontSize: 11 }}>
+                <button onClick={handleSave} className="btn-primary" style={{ padding: "4px 10px", fontSize: 11 }}>
                   <Save className="w-3 h-3" />
                   {t.save}
                 </button>
@@ -320,14 +304,18 @@ function ToolsTab({ currentAgentId, t, onError }: { currentAgentId: string; t: M
       <div className="text-[10px] font-semibold uppercase tracking-wider mb-3 px-1" style={{ color: "var(--text-tertiary)" }}>
         {t.toolsTitle} ({tools.length})
       </div>
-      <div className="space-y-1">
+      <div className="space-y-2">
         {Object.entries(byCategory).map(([cat, list]) => {
           const isCollapsed = collapsed.has(cat);
           return (
-            <div key={cat}>
+            <div
+              key={cat}
+              className="rounded-2xl p-1"
+              style={{ background: "color-mix(in srgb, var(--bg) 76%, transparent 24%)", border: "1px solid color-mix(in srgb, var(--border) 70%, transparent 30%)" }}
+            >
               <button
                 onClick={() => toggleCategory(cat)}
-                className="w-full flex items-center gap-1.5 px-1 py-1 text-left rounded-lg transition-colors"
+                className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left rounded-xl transition-colors"
                 onMouseEnter={e => (e.currentTarget.style.background = "var(--hover)")}
                 onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
               >
@@ -339,9 +327,9 @@ function ToolsTab({ currentAgentId, t, onError }: { currentAgentId: string; t: M
               </button>
               <div className={`grid transition-all duration-200 ease-out ${isCollapsed ? "grid-rows-[0fr]" : "grid-rows-[1fr]"}`}>
                 <div className="overflow-hidden">
-                  <div className="space-y-0.5 pl-4 mt-0.5 mb-1.5">
+                  <div className="space-y-1 pl-4 pr-1 mt-0.5 mb-1">
                     {list.map((tool) => (
-                      <div key={tool.name} className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs group transition-colors"
+                      <div key={tool.name} className="flex items-center gap-1.5 px-2.5 py-2 rounded-xl text-xs group transition-colors"
                         onMouseEnter={e => (e.currentTarget.style.background = "var(--hover)")}
                         onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                       >
@@ -375,5 +363,3 @@ function ToolsTab({ currentAgentId, t, onError }: { currentAgentId: string; t: M
     </div>
   );
 }
-
-

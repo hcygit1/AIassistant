@@ -479,6 +479,7 @@ export default function ConfigModal() {
   }
 
   const defaults = config.agents?.defaults || {};
+  const mem = config.mem || {};
   const providers = config.models?.providers || {};
   const providerKeys = Object.keys(providers);
   const webSearch = config.tools?.web?.search || {};
@@ -649,6 +650,7 @@ export default function ConfigModal() {
                     影响所有未覆盖模型的 Agent。当前生效：{currentModel ? `${currentModel.name} (${currentModel.provider})` : "未设置"}
                   </p>
                 </div>
+                <Input label="用户时区" value={defaults.user_timezone || "Asia/Shanghai"} onChange={(v) => handleUpdate("agents.defaults.user_timezone", v)} placeholder="Asia/Shanghai" hint="影响时间理解、调度和相对日期解释" />
                 <Input label="递归限制" value={String(defaults.recursion_limit || 50)} onChange={(v) => handleUpdate("agents.defaults.recursion_limit", parseInt(v) || 50)} type="number" />
                 <Input label="Context Tokens" value={String(defaults.contextTokens || 200000)} onChange={(v) => handleUpdate("agents.defaults.contextTokens", parseInt(v) || 200000)} type="number" hint="模型上下文窗口 token 数" />
                 <Select label="Thinking 默认" value={defaults.thinkingDefault || "off"} options={[
@@ -706,6 +708,9 @@ export default function ConfigModal() {
                 <Input label="禁止 (deny)" value={(defaults.tools?.deny || []).join(", ")}
                   onChange={(v) => { const arr = v.split(",").map((s: string) => s.trim()).filter(Boolean); handleUpdate("agents.defaults.tools", { ...(defaults.tools || {}), deny: arr.length ? arr : undefined }); }}
                   placeholder="留空表示不禁止" hint="逗号分隔，优先于 allow" />
+                <Input label="文件只读目录" value={(config.tools?.fs?.readonly_dirs || []).join(", ")}
+                  onChange={(v) => { const arr = v.split(",").map((s: string) => s.trim()).filter(Boolean); handleUpdate("tools.fs.readonly_dirs", arr); }}
+                  placeholder="docs, reports" hint="这些目录中的文件默认禁止写入，逗号分隔" />
               </Section>
 
               {/* Heartbeat */}
@@ -726,21 +731,65 @@ export default function ConfigModal() {
                 <Input label="超时时间 (秒)" value={String(config.chat?.timeoutSeconds ?? 120)} onChange={(v) => handleUpdate("chat.timeoutSeconds", parseInt(v) || 120)} type="number" hint="0 表示无超时" />
               </Section>
 
-              {/* Memory Search */}
-              <Section title="记忆检索" icon={<Search className="w-3.5 h-3.5" style={{ color: "var(--text-secondary)" }} />} defaultOpen={false}>
-                <Toggle label="启用向量检索" value={defaults.memorySearch?.store?.vector?.enabled ?? false} onChange={(v) => handleUpdate("agents.defaults.memorySearch.store.vector.enabled", v)} />
-                <Select label="Embedding 来源" value={defaults.memorySearch?.provider || "local"} options={[
-                  { value: "local", label: "本地 (sentence-transformers)" },
-                  { value: "openai", label: "远程 OpenAI 兼容 API" },
-                ]} onChange={(v) => handleUpdate("agents.defaults.memorySearch.provider", v)} />
-                <Input label="RAG 上下文最大字符" value={String(defaults.memorySearch?.maxContextChars ?? 5000)} onChange={(v) => handleUpdate("agents.defaults.memorySearch.maxContextChars", parseInt(v) || 5000)} type="number" hint="检索结果上下文长度限制" />
-                {defaults.memorySearch?.provider === "openai" && (
-                  <>
-                    <Input label="API Base URL" value={defaults.memorySearch?.remote?.baseUrl || ""} onChange={(v) => handleUpdate("agents.defaults.memorySearch.remote.baseUrl", v)} placeholder="https://api.openai.com/v1" />
-                    <SecretInput label="API Key" value={defaults.memorySearch?.remote?.apiKey || ""} secretPath="agents.defaults.memorySearch.remote.apiKey" hint="可用 ${OPENAI_API_KEY} 引用环境变量" onSaved={handleSecretSaved} />
-                    <Input label="Model" value={defaults.memorySearch?.model || "text-embedding-3-small"} onChange={(v) => handleUpdate("agents.defaults.memorySearch.model", v)} />
-                  </>
-                )}
+              {/* Memory */}
+              <Section title="记忆系统" icon={<Search className="w-3.5 h-3.5" style={{ color: "var(--text-secondary)" }} />} defaultOpen={false}>
+                <Toggle label="启用记忆系统" value={mem.enabled !== false} onChange={(v) => handleUpdate("mem.enabled", v)} />
+                <div className="pt-2 border-t border-[var(--border)]">
+                  <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>记忆总结 LLM</p>
+                  <Input label="模型" value={mem.llm?.model || "qwen-plus"} onChange={(v) => handleUpdate("mem.llm.model", v)} placeholder="qwen-plus" />
+                  <Input label="API Base URL" value={mem.llm?.base_url || ""} onChange={(v) => handleUpdate("mem.llm.base_url", v)} placeholder="https://api.openai.com/v1" />
+                  <SecretInput label="API Key" value={mem.llm?.api_key || ""} secretPath="mem.llm.api_key" hint="可用 ${OPENAI_API_KEY} 引用环境变量" onSaved={handleSecretSaved} />
+                </div>
+                <div className="pt-2 border-t border-[var(--border)]">
+                  <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>Embedding</p>
+                  <Select label="向量来源" value={mem.embedding?.provider || "openai"} options={[
+                    { value: "openai", label: "OpenAI 兼容 API" },
+                    { value: "local", label: "本地 sentence-transformers" },
+                  ]} onChange={(v) => handleUpdate("mem.embedding.provider", v)} />
+                  <Input label="模型" value={mem.embedding?.model || "text-embedding-3-small"} onChange={(v) => handleUpdate("mem.embedding.model", v)} placeholder={mem.embedding?.provider === "local" ? "paraphrase-multilingual-MiniLM-L12-v2" : "text-embedding-3-small"} />
+                  {mem.embedding?.provider !== "local" && (
+                    <>
+                      <Input label="API Base URL" value={mem.embedding?.base_url || ""} onChange={(v) => handleUpdate("mem.embedding.base_url", v)} placeholder="https://api.openai.com/v1" />
+                      <SecretInput label="API Key" value={mem.embedding?.api_key || ""} secretPath="mem.embedding.api_key" hint="可用 ${OPENAI_API_KEY} 引用环境变量" onSaved={handleSecretSaved} />
+                    </>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input label="向量维度" value={String(mem.embedding?.dimensions ?? 1536)} onChange={(v) => handleUpdate("mem.embedding.dimensions", parseInt(v) || 1536)} type="number" />
+                    <Input label="批大小" value={String(mem.embedding?.batch_size ?? 32)} onChange={(v) => handleUpdate("mem.embedding.batch_size", parseInt(v) || 32)} type="number" />
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-[var(--border)]">
+                  <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>召回策略</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input label="任务结果数" value={String(mem.recall?.max_task_results ?? 5)} onChange={(v) => handleUpdate("mem.recall.max_task_results", parseInt(v) || 5)} type="number" />
+                    <Input label="最少 task 命中数" value={String(mem.recall?.min_task_hits ?? 3)} onChange={(v) => handleUpdate("mem.recall.min_task_hits", parseInt(v) || 3)} type="number" />
+                    <Input label="每个任务 chunk 数" value={String(mem.recall?.chunks_per_task ?? 3)} onChange={(v) => handleUpdate("mem.recall.chunks_per_task", parseInt(v) || 3)} type="number" />
+                    <Input label="孤立 chunk 上限" value={String(mem.recall?.max_orphan_chunks ?? 5)} onChange={(v) => handleUpdate("mem.recall.max_orphan_chunks", parseInt(v) || 5)} type="number" />
+                    <Input label="记忆预算字符" value={String(mem.recall?.budget_chars ?? 20000)} onChange={(v) => handleUpdate("mem.recall.budget_chars", parseInt(v) || 20000)} type="number" />
+                    <Input label="Skill 预算字符" value={String(mem.recall?.skill_budget_chars ?? 2000)} onChange={(v) => handleUpdate("mem.recall.skill_budget_chars", parseInt(v) || 2000)} type="number" />
+                    <Input label="Skill 结果数" value={String(mem.recall?.max_skill_results ?? 0)} onChange={(v) => handleUpdate("mem.recall.max_skill_results", parseInt(v) || 0)} type="number" />
+                    <Input label="最小 task 分数" value={String(mem.recall?.min_task_score ?? 0.3)} onChange={(v) => handleUpdate("mem.recall.min_task_score", parseFloat(v) || 0.3)} />
+                    <Input label="最小注入分数" value={String(mem.recall?.min_inject_score ?? 0.015)} onChange={(v) => handleUpdate("mem.recall.min_inject_score", parseFloat(v) || 0.015)} />
+                    <Input label="RRF k" value={String(mem.recall?.rrf_k ?? 60)} onChange={(v) => handleUpdate("mem.recall.rrf_k", parseInt(v) || 60)} type="number" />
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-[var(--border)]">
+                  <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>去重与任务切分</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input label="去重相似度阈值" value={String(mem.dedup?.similarity_threshold ?? 0.6)} onChange={(v) => handleUpdate("mem.dedup.similarity_threshold", parseFloat(v) || 0.6)} />
+                    <Input label="任务空闲超时（小时）" value={String(mem.task?.idle_timeout_hours ?? 2)} onChange={(v) => handleUpdate("mem.task.idle_timeout_hours", parseInt(v) || 2)} type="number" />
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-[var(--border)]">
+                  <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>Skill Evolution</p>
+                  <Toggle label="启用 Skill 提炼" value={mem.skill_evolution?.enabled !== false} onChange={(v) => handleUpdate("mem.skill_evolution.enabled", v)} />
+                  <Toggle label="自动评估" value={mem.skill_evolution?.auto_evaluate !== false} onChange={(v) => handleUpdate("mem.skill_evolution.auto_evaluate", v)} />
+                  <Toggle label="自动安装" value={mem.skill_evolution?.auto_install ?? false} onChange={(v) => handleUpdate("mem.skill_evolution.auto_install", v)} />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input label="最少评估 chunk 数" value={String(mem.skill_evolution?.min_chunks_for_eval ?? 6)} onChange={(v) => handleUpdate("mem.skill_evolution.min_chunks_for_eval", parseInt(v) || 6)} type="number" />
+                    <Input label="最小置信度" value={String(mem.skill_evolution?.min_confidence ?? 0.7)} onChange={(v) => handleUpdate("mem.skill_evolution.min_confidence", parseFloat(v) || 0.7)} />
+                  </div>
+                </div>
               </Section>
 
               {/* Agent State Persist */}
@@ -781,6 +830,7 @@ export default function ConfigModal() {
                   { value: "on_miss", label: t.execConfirmOnMiss },
                   { value: "always", label: t.execConfirmAlways },
                 ]} onChange={(v) => handleUpdate("tools.exec.approval", { ...(config.tools?.exec?.approval || {}), ask: v })} hint={t.execConfirmHint} />
+                <Input label="审批交互超时（秒）" value={String(config.tools?.exec?.approval?.ask_timeout_seconds ?? 60)} onChange={(v) => handleUpdate("tools.exec.approval", { ...(config.tools?.exec?.approval || {}), ask_timeout_seconds: parseInt(v) || 60 })} type="number" hint="用户在弹窗中响应审批的最长等待时间" />
                 <Input label={t.approvalTimeoutLabel} value={String(config.tools?.exec?.approval?.pending_timeout_seconds ?? 300)} onChange={(v) => handleUpdate("tools.exec.approval", { ...(config.tools?.exec?.approval || {}), pending_timeout_seconds: parseInt(v) || 300 })} type="number" hint={t.approvalTimeoutHint} />
                 <Select label="沙箱模式" value={config.sandbox?.mode || "soft"} options={[
                   { value: "off", label: "关闭 — 不做额外安全检查" },
@@ -863,7 +913,6 @@ export default function ConfigModal() {
                 <div className="pt-2 border-t border-[var(--border)]">
                   <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>消息队列配置</p>
                   <Input label="防抖时间 (ms)" value={String(config.app?.messageQueue?.debounceMs ?? 1000)} onChange={(v) => handleUpdate("app.messageQueue.debounceMs", parseInt(v) || 1000)} type="number" hint="默认 1000ms" />
-                  <Input label="Followup 队列上限" value={String(config.app?.messageQueue?.followupCap ?? 20)} onChange={(v) => handleUpdate("app.messageQueue.followupCap", parseInt(v) || 20)} type="number" hint="默认 20 条" />
                 </div>
                 <div className="pt-2 border-t border-[var(--border)]">
                   <p className="text-xs font-medium mb-2" style={{ color: "var(--text-secondary)" }}>系统事件配置</p>
@@ -875,14 +924,13 @@ export default function ConfigModal() {
               <Section title="高级：Compaction & Context Pruning" icon={<Clock className="w-3.5 h-3.5" style={{ color: "var(--text-secondary)" }} />} defaultOpen={false}>
                 <div className="text-[10px] uppercase font-semibold mb-1" style={{ color: "var(--text-secondary)" }}>Compaction 策略</div>
                 <Toggle label="启用" value={defaults.compaction?.enabled !== false} onChange={(v) => handleUpdate("agents.defaults.compaction.enabled", v)} />
-                <Input label="阈值比例" value={String(defaults.compaction?.threshold ?? 0.8)} onChange={(v) => handleUpdate("agents.defaults.compaction.threshold", parseFloat(v) || 0.8)} hint="0.8 = 80% context 使用时触发" />
+                <Input label="阈值比例" value={String(defaults.compaction?.threshold ?? 0.54)} onChange={(v) => handleUpdate("agents.defaults.compaction.threshold", parseFloat(v) || 0.54)} hint="默认 0.54，表示上下文使用达到 54% 时开始压缩" />
                 <Input label="保留 tokens" value={String(defaults.compaction?.reserveTokens ?? 20000)} onChange={(v) => handleUpdate("agents.defaults.compaction.reserveTokens", parseInt(v) || 20000)} type="number" />
                 <Input label="保留最近 tokens" value={String(defaults.compaction?.keepRecentTokens ?? 8000)} onChange={(v) => handleUpdate("agents.defaults.compaction.keepRecentTokens", parseInt(v) || 8000)} type="number" />
-                <Toggle label="Memory Flush" value={defaults.compaction?.memoryFlush !== false} onChange={(v) => handleUpdate("agents.defaults.compaction.memoryFlush", v)} />
                 <div className="pt-2 mt-2" style={{ borderTop: "1px solid var(--border)" }}>
                   <div className="text-[10px] uppercase font-semibold mb-1" style={{ color: "var(--text-secondary)" }}>Context Pruning</div>
                   <Toggle label="Soft Trim" value={defaults.contextPruning?.softTrim !== false} onChange={(v) => handleUpdate("agents.defaults.contextPruning.softTrim", v)} />
-                  <Input label="工具输出最大字符" value={String(defaults.contextPruning?.toolOutputMaxChars ?? 3000)} onChange={(v) => handleUpdate("agents.defaults.contextPruning.toolOutputMaxChars", parseInt(v) || 3000)} type="number" />
+                  <Input label="工具输出最大字符" value={String(defaults.contextPruning?.toolOutputMaxChars ?? 15000)} onChange={(v) => handleUpdate("agents.defaults.contextPruning.toolOutputMaxChars", parseInt(v) || 15000)} type="number" />
                   <Input label="保留最近消息数" value={String(defaults.contextPruning?.recentPreserve ?? 4)} onChange={(v) => handleUpdate("agents.defaults.contextPruning.recentPreserve", parseInt(v) || 4)} type="number" />
                 </div>
               </Section>

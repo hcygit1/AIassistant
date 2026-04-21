@@ -4,40 +4,17 @@ import { useState, useRef, useEffect } from "react";
 import { useApp } from "@/lib/store";
 import * as api from "@/lib/api";
 import {
-  Bot, Settings, ChevronDown, Sun, Moon, Monitor,
-  Activity, Zap, RefreshCw, Languages, BrainCircuit,
+  Bot, ChevronDown, Sun, Moon, Monitor,
+  Activity, RefreshCw, Languages,
 } from "lucide-react";
 import type { Locale } from "@/lib/i18n/locales";
-
-function ContextRing({ utilization }: { utilization: number }) {
-  const pct = Math.min(Math.round(utilization * 100), 100);
-  const r = 9;
-  const circumference = 2 * Math.PI * r;
-  const offset = circumference * (1 - utilization);
-  const color = pct >= 80 ? "var(--error)" : pct >= 60 ? "var(--warning, #f59e0b)" : "var(--accent)";
-
-  return (
-    <div className="flex items-center gap-1 cursor-default" title={`Context ${pct}%`}>
-      <svg width="22" height="22" viewBox="0 0 22 22" className="flex-shrink-0">
-        <circle cx="11" cy="11" r={r} fill="none" stroke="var(--border)" strokeWidth="2.5" />
-        <circle
-          cx="11" cy="11" r={r} fill="none"
-          stroke={color} strokeWidth="2.5" strokeLinecap="round"
-          strokeDasharray={circumference} strokeDashoffset={offset}
-          transform="rotate(-90 11 11)"
-          style={{ transition: "stroke-dashoffset 0.4s ease, stroke 0.3s ease" }}
-        />
-      </svg>
-      <span className="text-[10px] tabular-nums" style={{ color }}>{pct}%</span>
-    </div>
-  );
-}
+import PipixiaMark from "@/components/icons/PipixiaMark";
 
 export default function Navbar() {
   const {
-    agents, currentAgentId, switchAgent, currentModel,
-    setShowConfigModal, setShowMemoryModal, theme, setTheme,
-    isStreaming, runningSubagents, lastUsage, contextUtilization,
+    agents, currentAgentId, switchAgent,
+    theme, setTheme,
+    isStreaming, runningSubagents,
     locale, setLocale, t,
   } = useApp();
 
@@ -72,7 +49,7 @@ export default function Navbar() {
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
             style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}>
-            <Bot className="w-3.5 h-3.5" />
+            <PipixiaMark className="h-3.5 w-3.5" strokeWidth={2} />
           </div>
           <span className="font-semibold text-[var(--text)] text-[13px] tracking-tight hidden sm:inline">
             Pipixia
@@ -113,15 +90,8 @@ export default function Navbar() {
         </div>
       </div>
 
-      {/* ---- Center: Status Chips ---- */}
+      {/* ---- Center: Runtime Status ---- */}
       <div className="flex items-center gap-2">
-        {currentModel?.name && (
-          <button onClick={() => setShowConfigModal(true)} className="chip chip--accent" data-testid="model-chip">
-            <Zap className="w-3 h-3" />
-            <span>{currentModel.name}</span>
-          </button>
-        )}
-
         {isStreaming && (
           <div className="chip chip--accent">
             <RefreshCw className="w-3 h-3 animate-spin" />
@@ -135,32 +105,10 @@ export default function Navbar() {
             <span>{subagentCount} {t.subagentCount}</span>
           </div>
         )}
-
-        {!isStreaming && lastUsage && (
-          <span className="text-[10px] text-[var(--text-tertiary)] hidden md:inline tabular-nums">
-            {lastUsage.input_tokens ? `${(lastUsage.input_tokens / 1000).toFixed(1)}k in` : ""}
-            {lastUsage.output_tokens ? ` / ${(lastUsage.output_tokens / 1000).toFixed(1)}k out` : ""}
-            {lastUsage.duration_ms ? ` · ${(lastUsage.duration_ms / 1000).toFixed(1)}s` : ""}
-          </span>
-        )}
-
-        {!isStreaming && contextUtilization != null && (
-          <ContextRing utilization={contextUtilization} />
-        )}
       </div>
 
-      {/* ---- Right: Memory + Theme + Settings ---- */}
+      {/* ---- Right: Global Appearance ---- */}
       <div className="flex items-center gap-0.5">
-        <button
-          type="button"
-          onClick={() => setShowMemoryModal(true)}
-          className="btn-ghost p-2"
-          aria-label="记忆看板"
-          title="记忆看板"
-        >
-          <BrainCircuit className="w-4 h-4" />
-        </button>
-
         <div className="relative" ref={themeRef}>
           <button
             type="button"
@@ -221,16 +169,6 @@ export default function Navbar() {
             </div>
           )}
         </div>
-
-        <button
-          type="button"
-          onClick={() => setShowConfigModal(true)}
-          className="btn-ghost p-2"
-          aria-label="设置"
-          data-testid="config-btn"
-        >
-          <Settings className="w-4 h-4" />
-        </button>
       </div>
     </nav>
   );

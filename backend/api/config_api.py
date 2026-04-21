@@ -127,10 +127,10 @@ async def update_config(req: ConfigUpdateRequest):
     if not result.ok:
         raise HTTPException(400, detail=f"配置校验失败: {'; '.join(result.errors)}")
 
-    save_config(cfg)
+    save_config(result.config or cfg)
     _reload_subsystems(req.updates)
 
-    return {"status": "ok", "config": sanitize_config_for_client(cfg)}
+    return {"status": "ok", "config": sanitize_config_for_client(get_config())}
 
 
 @router.put("/config/tools-policy")
@@ -187,8 +187,9 @@ async def replace_config(req: ConfigReplaceRequest):
     if not result.ok:
         raise HTTPException(400, detail=f"配置校验失败: {'; '.join(result.errors)}")
 
-    save_config(merged)
-    _reload_subsystems(merged)
+    normalized = result.config or merged
+    save_config(normalized)
+    _reload_subsystems(normalized)
     return {"status": "ok", "config": sanitize_config_for_client(get_config())}
 
 

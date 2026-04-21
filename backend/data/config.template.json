@@ -7,26 +7,25 @@
       "contextTokens": 200000,
       "thinkingDefault": "off",
       "contextBudget": {
-        "thinking_reserve": 0.30,
-        "active_ratio": 0.70,
-        "session_summary_ratio": 0.03,
+        "thinking_reserve": 0.2,
+        "active_ratio": 0.8,
+        "session_summary_ratio": 0.05,
         "memory_injection_ratio": 0.05,
-        "jit_tool_output_ratio": 0.10,
-        "sliding_ratio": 0.77,
-        "forced_ratio": 1.0
+        "jit_tool_output_ratio": 0.036,
+        "sliding_ratio": 0.8,
+        "forced_ratio": 0.95
       },
       "compaction": {
         "enabled": true,
         "threshold": 0.54,
         "slidingThreshold": 0.54,
-        "forcedThreshold": 0.70,
+        "forcedThreshold": 0.7,
         "reserveTokens": 20000,
         "keepRecentTokens": 8000,
         "keepRecentTurns": 12,
         "forcedKeepRecentTurns": 4,
         "summaryMaxTokens": 3000,
         "maxHistoryShare": 0.5,
-        "memoryFlush": true,
         "softThresholdTokens": 4000
       },
       "contextPruning": {
@@ -46,15 +45,15 @@
         "enabled": false,
         "every": "30m",
         "ackMaxChars": 300,
-        "activeHours": { "start": "08:00", "end": "24:00" },
+        "activeHours": {
+          "start": "08:00",
+          "end": "24:00"
+        },
         "target": "webchat"
       },
-      "memorySearch": {
-        "store": { "vector": { "enabled": false } },
-        "query": { "hybrid": { "enabled": false, "vectorWeight": 0.5, "textWeight": 0.5 } },
-        "provider": "local",
-        "model": "text-embedding-3-small",
-        "remote": { "baseUrl": "", "apiKey": "" }
+      "statePersist": {
+        "enabled": true,
+        "autoSaveIntervalMinutes": 5
       }
     },
     "list": [
@@ -69,13 +68,19 @@
     "providers": {}
   },
   "tools": {
-    "fs": { "workspace_only": true, "readonly_dirs": ["docs"] },
+    "fs": {
+      "workspace_only": true,
+      "readonly_dirs": ["docs"]
+    },
     "exec": {
-      "apply_patch": { "enabled": false },
+      "apply_patch": {
+        "enabled": false
+      },
       "approval": {
         "security": "full",
         "ask": "on_miss",
         "ask_timeout_seconds": 60,
+        "pending_timeout_seconds": 300,
         "allowlist": []
       }
     },
@@ -87,34 +92,61 @@
       }
     }
   },
-  "chat": { "timeoutSeconds": 120 },
+  "chat": {
+    "timeoutSeconds": 120
+  },
   "session": {
     "maintenance": {
       "mode": "warn",
       "pruneAfter": "30d",
-      "maxEntries": 500
-    }
+      "maxEntries": 500,
+      "maxDiskBytes": null,
+      "highWaterBytes": null
+    },
+    "titleMaxLen": 60
   },
-  "cron": { "enabled": false },
-  "rag_mode": false,
+  "cron": {
+    "enabled": false,
+    "store": null
+  },
   "app": {
     "locale": "zh-CN",
     "theme": "system",
     "dataDir": null,
     "logLevel": "info",
+    "logFile": {
+      "enabled": true,
+      "maxBytes": 10485760,
+      "backupCount": 5
+    },
+    "messageQueue": {
+      "debounceMs": 1000
+    },
+    "systemEvents": {
+      "maxEvents": 20
+    },
     "proxy": null
   },
   "notifications": {
     "enabled": true,
     "sound": true,
     "badge": true,
-    "quietHours": { "start": "23:00", "end": "08:00" }
+    "quietHours": {
+      "start": "23:00",
+      "end": "08:00"
+    }
   },
   "sandbox": {
     "mode": "soft",
     "snapshotBeforeExec": false,
     "undoStackSize": 50,
-    "writeApproval": "on_overwrite"
+    "writeApproval": "on_overwrite",
+    "loopDetection": {
+      "warningThreshold": 10,
+      "criticalThreshold": 20,
+      "circuitBreaker": 30,
+      "historySize": 30
+    }
   },
   "backup": {
     "autoBackup": false,
@@ -138,5 +170,51 @@
     "headless": true,
     "viewport": "1280x720",
     "proxy": null
+  },
+  "mem": {
+    "enabled": true,
+    "storage": {
+      "db_path": "{data_dir}/mem/mem.db"
+    },
+    "llm": {
+      "model": "qwen-plus",
+      "api_key": "",
+      "base_url": ""
+    },
+    "embedding": {
+      "provider": "openai",
+      "model": "text-embedding-3-small",
+      "api_key": "",
+      "base_url": "",
+      "dimensions": 1536,
+      "batch_size": 32,
+      "timeout": 60.0
+    },
+    "recall": {
+      "max_task_results": 5,
+      "min_task_hits": 3,
+      "chunks_per_task": 3,
+      "max_orphan_chunks": 5,
+      "max_skill_results": 0,
+      "budget_chars": 20000,
+      "skill_budget_chars": 2000,
+      "min_task_score": 0.3,
+      "rrf_k": 60,
+      "recency_half_life_days": 14,
+      "min_inject_score": 0.015
+    },
+    "dedup": {
+      "similarity_threshold": 0.6
+    },
+    "task": {
+      "idle_timeout_hours": 2
+    },
+    "skill_evolution": {
+      "enabled": true,
+      "auto_evaluate": true,
+      "min_chunks_for_eval": 6,
+      "min_confidence": 0.7,
+      "auto_install": false
+    }
   }
 }
