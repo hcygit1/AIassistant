@@ -6,7 +6,7 @@ ThinkLevel 分级: off → minimal → low → medium → high → xhigh
 - medium: 标准思考
 - high/xhigh: 深度思考
 
-运行时通过 /think 命令切换。
+由 Agent 配置决定默认 thinking level。
 """
 
 from __future__ import annotations

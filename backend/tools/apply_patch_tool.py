@@ -9,6 +9,8 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from sandbox.exec_approval import needs_dangerous_tool_approval
+from sandbox.tool_approval_gate import run_tool_with_approval_gate
 from sandbox.fs_policy import validate_path, PathSecurityError
 from tools.error_utils import format_tool_error
 
@@ -240,8 +242,9 @@ class ApplyPatchTool(BaseTool):
     )
     args_schema: type[BaseModel] = ApplyPatchInput
     root_dir: str = ""
+    agent_id: str = "main"
 
-    def _run(self, input: str = "") -> str:
+    def _do_apply_patch(self, input: str = "") -> str:
         if not (input or "").strip():
             return format_tool_error("apply_patch", "Please provide patch content")
         try:
@@ -319,9 +322,27 @@ class ApplyPatchTool(BaseTool):
             lines.append(f"D {f}")
         return "\n".join(lines)
 
+    def _run(self, input: str = "") -> str:
+        return self._do_apply_patch(input)
 
-def get_apply_patch_tool(root_dir: str, enabled: bool = False) -> list[BaseTool]:
+    async def _arun(self, input: str = "") -> str:
+        input_preview = (input or "").splitlines()[0][:300] if (input or "").strip() else ""
+        needs_approval, deny_reason = needs_dangerous_tool_approval(
+            self.agent_id, "apply_patch", input_preview
+        )
+        return await run_tool_with_approval_gate(
+            agent_id=self.agent_id,
+            tool_name="apply_patch",
+            input_preview=input_preview,
+            locale="zh-CN",
+            base_needs_approval=needs_approval,
+            deny_reason=deny_reason,
+            execute_fn=lambda: self._do_apply_patch(input),
+        )
+
+
+def get_apply_patch_tool(root_dir: str, enabled: bool = False, agent_id: str = "main") -> list[BaseTool]:
     """Returns apply_patch tool if tools.exec.apply_patch.enabled is true"""
     if not enabled:
         return []
-    return [ApplyPatchTool(root_dir=root_dir)]
+    return [ApplyPatchTool(root_dir=root_dir, agent_id=agent_id)]

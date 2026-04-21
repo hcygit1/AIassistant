@@ -17,6 +17,9 @@ from sandbox.fs_policy import (
 )
 from sandbox.undo_stack import undo_stack
 from tools.error_utils import format_tool_error
+from runtime.source_sink_guard import wrap_untrusted_content
+from sandbox.exec_approval import needs_dangerous_tool_approval
+from sandbox.tool_approval_gate import run_tool_with_approval_gate
 
 
 # 全局文件锁管理器，防止并发写操作同一文件
@@ -100,10 +103,18 @@ class ReadTool(BaseTool):
             end = start + (limit or len(lines)) if limit else len(lines)
             selected = lines[start:end]
             numbered = [f"{start + i + 1:>6}|{line}" for i, line in enumerate(selected)]
-            return "\n".join(numbered)
+            return wrap_untrusted_content(
+                "\n".join(numbered),
+                source_type="file_read",
+                source_name=path,
+            )
 
         numbered = [f"{i + 1:>6}|{line}" for i, line in enumerate(lines)]
-        return "\n".join(numbered)
+        return wrap_untrusted_content(
+            "\n".join(numbered),
+            source_type="file_read",
+            source_name=path,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +133,7 @@ class WriteTool(BaseTool):
     root_dir: str = ""
     agent_id: str = "main"
 
-    def _run(self, path: str, content: str) -> str:
+    def _do_write(self, path: str, content: str) -> str:
         try:
             readonly_dirs, project_root = _get_fs_readonly_config()
             if readonly_dirs and project_root is not None:
@@ -161,6 +172,34 @@ class WriteTool(BaseTool):
             except Exception as e:
                 return format_tool_error("write", f"写入失败 — {e}")
 
+    def _run(self, path: str, content: str) -> str:
+        return self._do_write(path, content)
+
+    async def _arun(self, path: str, content: str) -> str:
+        input_preview = path
+        try:
+            readonly_dirs, project_root = _get_fs_readonly_config()
+            if readonly_dirs and project_root is not None:
+                safe_path = validate_path_for_fs(path, self.root_dir, readonly_dirs, project_root, is_write=True)
+            else:
+                safe_path = validate_path_relaxed(path, self.root_dir)
+            is_overwrite = safe_path.exists()
+        except PathSecurityError as e:
+            return format_tool_error("write", e)
+
+        needs_approval, deny_reason = needs_dangerous_tool_approval(
+            self.agent_id, "write", input_preview if is_overwrite else ""
+        )
+        return await run_tool_with_approval_gate(
+            agent_id=self.agent_id,
+            tool_name="write",
+            input_preview=input_preview,
+            locale="zh-CN",
+            base_needs_approval=needs_approval,
+            deny_reason=deny_reason,
+            execute_fn=lambda: self._do_write(path, content),
+        )
+
 
 # ---------------------------------------------------------------------------
 # edit — 精确查找替换
@@ -179,7 +218,7 @@ class EditTool(BaseTool):
     root_dir: str = ""
     agent_id: str = "main"
 
-    def _run(self, path: str, old_text: str, new_text: str) -> str:
+    def _do_edit(self, path: str, old_text: str, new_text: str) -> str:
         try:
             readonly_dirs, project_root = _get_fs_readonly_config()
             if readonly_dirs and project_root is not None:
@@ -217,6 +256,23 @@ class EditTool(BaseTool):
             )
 
             return f"已编辑 {path}（替换了 1 处匹配）"
+
+    def _run(self, path: str, old_text: str, new_text: str) -> str:
+        return self._do_edit(path, old_text, new_text)
+
+    async def _arun(self, path: str, old_text: str, new_text: str) -> str:
+        needs_approval, deny_reason = needs_dangerous_tool_approval(
+            self.agent_id, "edit", path
+        )
+        return await run_tool_with_approval_gate(
+            agent_id=self.agent_id,
+            tool_name="edit",
+            input_preview=path,
+            locale="zh-CN",
+            base_needs_approval=needs_approval,
+            deny_reason=deny_reason,
+            execute_fn=lambda: self._do_edit(path, old_text, new_text),
+        )
 
 
 # ---------------------------------------------------------------------------

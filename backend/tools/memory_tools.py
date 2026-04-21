@@ -11,6 +11,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
+from runtime.source_sink_guard import wrap_untrusted_content
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,11 @@ class MemSearchTool(BaseTool):
             if h.content_excerpt:
                 lines.append(h.content_excerpt)
             lines.append("")
-        return "\n".join(lines)
+        return wrap_untrusted_content(
+            "\n".join(lines),
+            source_type="memory_recall",
+            source_name=query,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +118,11 @@ class MemGetTool(BaseTool):
             parts.append(f"[summary] {chunk.summary}")
         parts.append("")
         parts.append(chunk.content)
-        return "\n".join(parts)
+        return wrap_untrusted_content(
+            "\n".join(parts),
+            source_type="memory_recall",
+            source_name=chunk_id,
+        )
 
 
 # ---------------------------------------------------------------------------

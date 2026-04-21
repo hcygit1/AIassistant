@@ -10,6 +10,8 @@ def _should_skip_auto_title(message: str) -> bool:
     text = (message or "").strip().lower()
     if not text:
         return True
+    if text.startswith("/"):
+        return True
     return text.startswith("a new session was started via /new or /reset")
 
 

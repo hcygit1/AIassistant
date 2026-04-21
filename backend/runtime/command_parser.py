@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,18 +77,17 @@ _T: dict[str, dict[str, str]] = {
 
 COMMAND_KEYS = [
     "/new", "/reset", "/compact", "/help", "/status", "/context",
-    "/usage", "/stop", "/think", "/verbose", "/reasoning",
-    "/model", "/subagents", "/whoami",
+    "/usage", "/model", "/subagents", "/whoami",
 ]
 
 _CMD_KEY_MAP = {
     "/new": "cmd_new", "/reset": "cmd_reset", "/compact": "cmd_compact",
     "/help": "cmd_help", "/status": "cmd_status", "/context": "cmd_context",
-    "/usage": "cmd_usage", "/stop": "cmd_stop", "/think": "cmd_think",
-    "/verbose": "cmd_verbose", "/reasoning": "cmd_reasoning",
-    "/model": "cmd_model", "/subagents": "cmd_subagents",
-    "/whoami": "cmd_whoami",
+    "/usage": "cmd_usage", "/model": "cmd_model",
+    "/subagents": "cmd_subagents", "/whoami": "cmd_whoami",
 }
+
+_SLASH_COMMAND_RE = re.compile(r"^/[A-Za-z][A-Za-z0-9_-]*$")
 
 
 def t(key: str, locale: str = "zh-CN", **kwargs: str) -> str:
@@ -112,8 +112,7 @@ def parse_command(text: str) -> ParsedCommand | None:
 
     parts = stripped.split(None, 1)
     cmd = parts[0].lower()
-
-    if cmd not in _CMD_KEY_MAP:
+    if not _SLASH_COMMAND_RE.match(cmd):
         return None
 
     args = parts[1].split() if len(parts) > 1 else []
@@ -159,18 +158,6 @@ async def execute_command(
     if cmd == "/compact":
         return {"handled": True, "response": "", "action": "compact"}
 
-    if cmd == "/stop":
-        return {"handled": True, "response": t("stopped", locale), "action": "stop"}
-
-    if cmd == "/think":
-        return _cmd_think(agent_state, parsed.args, locale)
-
-    if cmd == "/verbose":
-        return _cmd_toggle_setting(agent_state, "verbose", parsed.args, locale)
-
-    if cmd == "/reasoning":
-        return _cmd_toggle_setting(agent_state, "reasoning", parsed.args, locale)
-
     if cmd == "/model":
         return _cmd_model(agent_id, parsed.args, locale)
 
@@ -180,7 +167,7 @@ async def execute_command(
     if cmd == "/whoami":
         return _cmd_whoami(agent_id, locale)
 
-    return {"handled": False, "response": t("unknown_cmd", locale, cmd=cmd), "action": "none"}
+    return {"handled": True, "response": t("unknown_cmd", locale, cmd=cmd), "action": "info"}
 
 
 async def _cmd_status(agent_id: str, session_id: str, agent_state: Any, locale: str) -> dict[str, Any]:
@@ -193,12 +180,8 @@ async def _cmd_status(agent_id: str, session_id: str, agent_state: Any, locale: 
 
     state_info = ""
     if agent_state:
-        on = t("on", locale)
-        off = t("off", locale)
         state_info = (
             f"\n- {t('compaction_count', locale)}: {getattr(agent_state, 'compaction_count', 0)}"
-            f"\n- Thinking: {on if getattr(agent_state, 'thinking', False) else off}"
-            f"\n- Verbose: {on if getattr(agent_state, 'verbose', False) else off}"
         )
 
     response = (
@@ -264,49 +247,6 @@ def _cmd_usage(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
         f"- {t('turns_label', locale)}: {usage['turns']}"
     )
     return {"handled": True, "response": response, "action": "info"}
-
-
-def _cmd_think(agent_state: Any, args: list[str], locale: str) -> dict[str, Any]:
-    if agent_state is None:
-        return {"handled": True, "response": t("state_unavail", locale), "action": "info"}
-
-    from llm.thinking import (
-        ThinkLevel, parse_think_level, think_level_name,
-        cycle_think_level, THINK_LEVELS,
-    )
-
-    current = ThinkLevel(getattr(agent_state, "think_level", 0))
-
-    if args:
-        new_level = parse_think_level(args[0])
-    else:
-        new_level = cycle_think_level(current)
-
-    agent_state.think_level = new_level.value
-    name = think_level_name(new_level)
-    levels_str = " → ".join(
-        f"**{l}**" if l == name else l for l in THINK_LEVELS
-    )
-    response = f"{t('thinking_mode', locale, name=name)}\n\n{levels_str}"
-    return {"handled": True, "response": response, "action": "setting"}
-
-
-def _cmd_toggle_setting(agent_state: Any, setting: str, args: list[str], locale: str) -> dict[str, Any]:
-    if agent_state is None:
-        return {"handled": True, "response": t("state_unavail", locale), "action": "info"}
-
-    current = getattr(agent_state, setting, False)
-
-    if args:
-        val = args[0].lower()
-        new_val = val in ("on", "true", "1", "是")
-    else:
-        new_val = not current
-
-    setattr(agent_state, setting, new_val)
-    status = t("on", locale) if new_val else t("off", locale)
-    response = t("setting_toggled", locale, setting=setting, status=status)
-    return {"handled": True, "response": response, "action": "setting"}
 
 
 def _cmd_model(agent_id: str, args: list[str], locale: str) -> dict[str, Any]:

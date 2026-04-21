@@ -41,6 +41,11 @@ from llm.model_selection import (
 )
 from llm.models_config import ModelRef
 from llm.llm_factory import create_llm
+from runtime.source_sink_guard import (
+    contains_untrusted_marker,
+    is_untrusted_source_tool,
+)
+from runtime.security_context import mark_recent_untrusted_content, runtime_security_context
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,10 @@ BARE_SESSION_RESET_PROMPT = (
     "If the runtime model differs from default_model in the system prompt, mention the default model. "
     "Do not mention internal files, tools, memory status, or reasoning."
 )
+
+
+def _should_persist_input_message(persist_input_role: str) -> bool:
+    return bool((persist_input_role or "").strip())
 
 
 # ---------------------------------------------------------------------------
@@ -702,11 +711,13 @@ class AgentManager:
                         session_id, agent_id, model_override=model_override
                     ):
                         yield evt
+                    persist_input_role = ""
                     message = BARE_SESSION_RESET_PROMPT
                 elif action == "reset_noflush":
                     # /reset：不写入 session-memory 的轻量重置，再注入 BARE_SESSION_RESET_PROMPT 跑一轮问候
                     async for evt in self._handle_reset_noflush(session_id, agent_id):
                         yield evt
+                    persist_input_role = ""
                     message = BARE_SESSION_RESET_PROMPT
                 else:
                     if action == "compact":
@@ -798,108 +809,123 @@ class AgentManager:
             _streaming_model_run_id: str | None = None
             step_count = 0
             _content_refresh_sent = False
+            recent_untrusted_content = any(
+                contains_untrusted_marker(str(msg.get("content", ""))) for msg in history[-4:]
+            )
 
             try:
-                async for event in agent.astream_events(
-                    {"messages": lc_messages},
-                    version="v2",
-                    config={"recursion_limit": recursion_limit},
+                with runtime_security_context(
+                    message,
+                    recent_untrusted_content=recent_untrusted_content,
                 ):
-                    kind = event.get("event", "")
+                    async for event in agent.astream_events(
+                        {"messages": lc_messages},
+                        version="v2",
+                        config={"recursion_limit": recursion_limit},
+                    ):
+                        kind = event.get("event", "")
 
-                    if kind == "on_chat_model_stream":
-                        evt_run_id = event.get("run_id", "")
-                        if _streaming_model_run_id is None:
-                            _streaming_model_run_id = evt_run_id
-                        elif evt_run_id != _streaming_model_run_id:
-                            continue
+                        if kind == "on_chat_model_stream":
+                            evt_run_id = event.get("run_id", "")
+                            if _streaming_model_run_id is None:
+                                _streaming_model_run_id = evt_run_id
+                            elif evt_run_id != _streaming_model_run_id:
+                                continue
 
-                        chunk = event.get("data", {}).get("chunk")
-                        if chunk and hasattr(chunk, "content") and chunk.content:
-                            content = chunk.content
-                            if isinstance(content, str):
-                                full_response += content
-                                yield {"type": "token", "content": content}
-                            elif isinstance(content, list):
-                                for block in content:
-                                    if isinstance(block, dict) and block.get("type") == "text":
-                                        text = block.get("text", "")
-                                        if text:
-                                            full_response += text
-                                            yield {"type": "token", "content": text}
+                            chunk = event.get("data", {}).get("chunk")
+                            if chunk and hasattr(chunk, "content") and chunk.content:
+                                content = chunk.content
+                                if isinstance(content, str):
+                                    full_response += content
+                                    yield {"type": "token", "content": content}
+                                elif isinstance(content, list):
+                                    for block in content:
+                                        if isinstance(block, dict) and block.get("type") == "text":
+                                            text = block.get("text", "")
+                                            if text:
+                                                full_response += text
+                                                yield {"type": "token", "content": text}
 
-                        if chunk and hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-                            usage = chunk.usage_metadata
-                            run_tracker.record_tokens(
-                                turn.run_id,
-                                input_tokens=getattr(usage, "input_tokens", 0),
-                                output_tokens=getattr(usage, "output_tokens", 0),
-                                cache_read=getattr(usage, "input_token_details", {}).get("cache_read", 0) if hasattr(usage, "input_token_details") else 0,
-                            )
+                            if chunk and hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                                usage = chunk.usage_metadata
+                                run_tracker.record_tokens(
+                                    turn.run_id,
+                                    input_tokens=getattr(usage, "input_tokens", 0),
+                                    output_tokens=getattr(usage, "output_tokens", 0),
+                                    cache_read=getattr(usage, "input_token_details", {}).get("cache_read", 0) if hasattr(usage, "input_token_details") else 0,
+                                )
 
-                    elif kind == "on_chat_model_end":
-                        if event.get("run_id") == _streaming_model_run_id:
-                            _streaming_model_run_id = None
+                        elif kind == "on_chat_model_end":
+                            if event.get("run_id") == _streaming_model_run_id:
+                                _streaming_model_run_id = None
 
-                    elif kind == "on_tool_start":
-                        # 若 full_response 含文本形式工具调用，首次 tool_start 时刷新前端
-                        if not _content_refresh_sent and full_response and parse_text_tool_calls(full_response):
-                            cleaned = strip_tool_call_patterns(full_response)
-                            yield {"type": "content_refresh", "content": cleaned}
-                            _content_refresh_sent = True
-                        tool_name = event.get("name", "")
-                        tool_input = event.get("data", {}).get("input") or {}
-                        if not isinstance(tool_input, dict):
-                            tool_input = {}
-                        if self.lifecycle_hooks:
-                            await self.lifecycle_hooks.on_before_tool_call(
-                                agent_id, turn.run_id, tool_name, tool_input
-                            )
-                        step_count += 1
-                        evt_run_id = str(event.get("run_id", ""))
-                        if evt_run_id:
-                            tool_input_by_run_id[evt_run_id] = tool_input
-                        run_tracker.record_tool_start(turn.run_id, tool_name, tool_input)
-                        yield {
-                            "type": "tool_start", "tool": tool_name, "input": tool_input,
-                            "step": step_count, "max_steps": recursion_limit,
-                        }
+                        elif kind == "on_tool_start":
+                            if not _content_refresh_sent and full_response and parse_text_tool_calls(full_response):
+                                cleaned = strip_tool_call_patterns(full_response)
+                                yield {"type": "content_refresh", "content": cleaned}
+                                _content_refresh_sent = True
 
-                    elif kind == "on_tool_end":
-                        tool_output = event.get("data", {}).get("output", "")
-                        if isinstance(tool_output, str):
-                            output_str = tool_output
-                        elif hasattr(tool_output, "content") and tool_output.content is not None:
-                            output_str = str(tool_output.content)
-                        else:
-                            output_str = str(tool_output)
+                            tool_name = event.get("name", "")
+                            tool_input = event.get("data", {}).get("input") or {}
+                            if not isinstance(tool_input, dict):
+                                tool_input = {}
+                            if self.lifecycle_hooks:
+                                await self.lifecycle_hooks.on_before_tool_call(
+                                    agent_id, turn.run_id, tool_name, tool_input
+                                )
+                            step_count += 1
+                            evt_run_id = str(event.get("run_id", ""))
+                            if evt_run_id:
+                                tool_input_by_run_id[evt_run_id] = tool_input
+                            run_tracker.record_tool_start(turn.run_id, tool_name, tool_input)
+                            yield {
+                                "type": "tool_start",
+                                "tool": tool_name,
+                                "input": tool_input,
+                                "step": step_count,
+                                "max_steps": recursion_limit,
+                            }
 
-                        evt_run_id = str(event.get("run_id", ""))
-                        tool_input = tool_input_by_run_id.pop(evt_run_id, None)
-                        tool_input_for_log = tool_input if tool_input is not None else ""
-                        tool_name = event.get("name", "")
-                        run_tracker.record_tool_end(turn.run_id, tool_name, output_str)
-                        audit_logger.log_tool_call(
-                            agent_id, turn.run_id, tool_name,
-                            tool_input_for_log,
-                            output_str,
-                        )
+                        elif kind == "on_tool_end":
+                            tool_output = event.get("data", {}).get("output", "")
+                            if isinstance(tool_output, str):
+                                output_str = tool_output
+                            elif hasattr(tool_output, "content") and tool_output.content is not None:
+                                output_str = str(tool_output.content)
+                            else:
+                                output_str = str(tool_output)
 
-                        tool_calls_log.append({
-                            "tool": tool_name,
-                            "input": tool_input_for_log,
-                            "output": output_str,
-                        })
-                        if self.lifecycle_hooks:
-                            await self.lifecycle_hooks.on_after_tool_call(
+                            evt_run_id = str(event.get("run_id", ""))
+                            tool_input = tool_input_by_run_id.pop(evt_run_id, None)
+                            tool_input_for_log = tool_input if tool_input is not None else ""
+                            tool_name = event.get("name", "")
+                            run_tracker.record_tool_end(turn.run_id, tool_name, output_str)
+                            audit_logger.log_tool_call(
                                 agent_id, turn.run_id, tool_name, tool_input_for_log, output_str
                             )
-                        yield {"type": "tool_end", "tool": tool_name, "output": output_str[:2000]}
 
-                        # 危险工具执行后通知前端（用于审计/确认提示）
-                        if tool_name in ("exec", "process_kill"):
-                            safe_input = str(tool_input_for_log)[:200] if tool_input_for_log else ""
-                            event_bus.emit(agent_id, Events.tool_dangerous_executed(tool=tool_name, input_preview=safe_input))
+                            tool_calls_log.append(
+                                {
+                                    "tool": tool_name,
+                                    "input": tool_input_for_log,
+                                    "output": output_str,
+                                }
+                            )
+                            if self.lifecycle_hooks:
+                                await self.lifecycle_hooks.on_after_tool_call(
+                                    agent_id, turn.run_id, tool_name, tool_input_for_log, output_str
+                                )
+                            if is_untrusted_source_tool(tool_name):
+                                recent_untrusted_content = True
+                                mark_recent_untrusted_content(True)
+                            yield {"type": "tool_end", "tool": tool_name, "output": output_str[:2000]}
+
+                            if tool_name in ("exec", "process_kill"):
+                                safe_input = str(tool_input_for_log)[:200] if tool_input_for_log else ""
+                                event_bus.emit(
+                                    agent_id,
+                                    Events.tool_dangerous_executed(tool=tool_name, input_preview=safe_input),
+                                )
 
             except Exception as e:
                 error_str = str(e)
@@ -966,7 +992,8 @@ class AgentManager:
                 full_response = strip_tool_call_patterns(full_response)
 
             # 保存消息（若含文本形式工具调用则保存清理后的 content）
-            session_manager.save_message(session_id, agent_id, persist_input_role, message)
+            if _should_persist_input_message(persist_input_role):
+                session_manager.save_message(session_id, agent_id, persist_input_role, message)
             content_to_save = strip_tool_call_patterns(full_response) if parse_text_tool_calls(full_response) else full_response
             session_manager.save_message(
                 session_id, agent_id, "assistant", content_to_save,
@@ -1004,9 +1031,10 @@ class AgentManager:
             }
 
             # 每轮异步入库 (非阻塞, hash 去重保证幂等)
+            ingested_user_content = message if persist_input_role == "user" else ""
             task = asyncio.create_task(
                 self._incremental_ingest(
-                    agent_id, session_id, message, done_content,
+                    agent_id, session_id, ingested_user_content, done_content,
                 )
             )
             self._pending_tasks.add(task)

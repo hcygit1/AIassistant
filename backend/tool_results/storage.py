@@ -7,6 +7,7 @@ from pathlib import Path
 
 from tool_results.constants import PREVIEW_SIZE_CHARS, TOOL_RESULTS_SUBDIR
 from tool_results.models import PersistedToolResult, PersistToolResultError, PersistOutcome
+from runtime.source_sink_guard import wrap_untrusted_content
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ def persist_tool_result(
 # ---------------------------------------------------------------------------
 
 def build_persisted_output_message(result: PersistedToolResult) -> str:
-    lines = [
+    body_lines = [
         PERSISTED_OUTPUT_OPEN,
         (
             f"Output too large ({_human_size(result.original_size)}). "
@@ -106,9 +107,13 @@ def build_persisted_output_message(result: PersistedToolResult) -> str:
         result.preview,
     ]
     if result.has_more:
-        lines.extend(["", "..."])
-    lines.append(PERSISTED_OUTPUT_CLOSE)
-    return "\n".join(lines)
+        body_lines.extend(["", "..."])
+    body_lines.append(PERSISTED_OUTPUT_CLOSE)
+    body = "\n".join(body_lines)
+    return wrap_untrusted_content(
+        body,
+        source_type="persisted_tool_output",
+    )
 
 
 def is_already_persisted(text: str) -> bool:

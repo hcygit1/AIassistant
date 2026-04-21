@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from config import get_exec_approval_config
 from sandbox.exec_policy import check_command, get_safe_env
 from sandbox.exec_approval import needs_exec_approval, needs_dangerous_tool_approval
+from sandbox.tool_approval_gate import run_tool_with_approval_gate
 
 
 # ---------------------------------------------------------------------------
@@ -78,32 +79,16 @@ class ExecTool(BaseTool):
         needs_approval, deny_reason = needs_dangerous_tool_approval(
             self.agent_id, "exec", command
         )
-        if deny_reason:
-            return f"命令被拒绝: {deny_reason}" if locale == "zh-CN" else f"Command rejected: {deny_reason}"
-
-        if needs_approval:
-            from infra.approval_store import approval_store
-            from infra.event_bus import Events, event_bus
-
-            cfg = get_exec_approval_config()
-            timeout_sec = cfg.get("ask_timeout_seconds", 60)
-            input_preview = str(command)[:300] if command else ""
-
-            approval_id = approval_store.create(
-                self.agent_id, "exec", input_preview
-            )
-            event_bus.emit(self.agent_id, Events.approval_required(approval_id=approval_id, tool="exec", input_preview=input_preview))
-
-            decision = await approval_store.wait(approval_id, timeout_sec)
-            if decision != "approved":
-                if locale == "zh-CN":
-                    reason = "用户拒绝" if decision == "denied" else "确认超时，已自动拒绝"
-                    return f"命令被拒绝: {reason}"
-                else:
-                    reason = "User denied" if decision == "denied" else "Confirmation timed out, automatically rejected"
-                    return f"Command rejected: {reason}"
-
-        return self._do_exec(command, min(timeout, 120))
+        input_preview = str(command)[:300] if command else ""
+        return await run_tool_with_approval_gate(
+            agent_id=self.agent_id,
+            tool_name="exec",
+            input_preview=input_preview,
+            locale=locale,
+            base_needs_approval=needs_approval,
+            deny_reason=deny_reason,
+            execute_fn=lambda: self._do_exec(command, min(timeout, 120)),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -210,27 +195,15 @@ class ProcessKillTool(BaseTool):
         needs_approval, deny_reason = needs_dangerous_tool_approval(
             self.agent_id, "process_kill", input_preview
         )
-        if deny_reason:
-            return f"命令被拒绝: {deny_reason}"
-
-        if needs_approval:
-            from infra.approval_store import approval_store
-            from infra.event_bus import Events, event_bus
-
-            cfg = get_exec_approval_config()
-            timeout_sec = cfg.get("ask_timeout_seconds", 60)
-
-            approval_id = approval_store.create(
-                self.agent_id, "process_kill", input_preview
-            )
-            event_bus.emit(self.agent_id, Events.approval_required(approval_id=approval_id, tool="process_kill", input_preview=input_preview))
-
-            decision = await approval_store.wait(approval_id, timeout_sec)
-            if decision != "approved":
-                reason = "用户拒绝" if decision == "denied" else "确认超时，已自动拒绝"
-                return f"命令被拒绝: {reason}"
-
-        return self._do_kill(pid, signal)
+        return await run_tool_with_approval_gate(
+            agent_id=self.agent_id,
+            tool_name="process_kill",
+            input_preview=input_preview,
+            locale="zh-CN",
+            base_needs_approval=needs_approval,
+            deny_reason=deny_reason,
+            execute_fn=lambda: self._do_kill(pid, signal),
+        )
 
 
 # ---------------------------------------------------------------------------

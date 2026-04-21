@@ -6,6 +6,7 @@ import logging
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
+from runtime.source_sink_guard import wrap_untrusted_content
 
 logger = logging.getLogger(__name__)
 
@@ -113,19 +114,31 @@ class WebSearchTool(BaseTool):
         if provider == "brave" and api_key:
             result = _search_brave(query, max_results, api_key)
             if isinstance(result, list):
-                return _format_results(result, query)
+                return wrap_untrusted_content(
+                    _format_results(result, query),
+                    source_type="web_search",
+                    source_name=query,
+                )
             errors.append(result)
 
         elif provider == "searxng" and base_url:
             result = _search_searxng(query, max_results, base_url)
             if isinstance(result, list):
-                return _format_results(result, query)
+                return wrap_untrusted_content(
+                    _format_results(result, query),
+                    source_type="web_search",
+                    source_name=query,
+                )
             errors.append(result)
 
         else:
             result = _search_duckduckgo(query, max_results)
             if isinstance(result, list):
-                return _format_results(result, query)
+                return wrap_untrusted_content(
+                    _format_results(result, query),
+                    source_type="web_search",
+                    source_name=query,
+                )
             errors.append(result)
 
         # 回退: 如果主后端失败，尝试 DuckDuckGo（非 DuckDuckGo 时）
@@ -133,7 +146,11 @@ class WebSearchTool(BaseTool):
             logger.info(f"Primary search backend {provider} failed, falling back to DuckDuckGo")
             result = _search_duckduckgo(query, max_results)
             if isinstance(result, list):
-                return _format_results(result, query)
+                return wrap_untrusted_content(
+                    _format_results(result, query),
+                    source_type="web_search",
+                    source_name=query,
+                )
             errors.append(result)
 
         return f"All search backends failed:\n" + "\n".join(f"- {e}" for e in errors)
@@ -189,7 +206,7 @@ class WebFetchTool(BaseTool):
 
         if len(text) > self.max_output:
             text = text[: self.max_output] + f"\n... [Content truncated, exceeded {self.max_output} chars]"
-        return text
+        return wrap_untrusted_content(text, source_type="web_fetch", source_name=url)
 
 
 # ---------------------------------------------------------------------------

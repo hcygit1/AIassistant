@@ -23,9 +23,16 @@ from infra import token_counter as _token_counter
 from infra.token_counter import detect_compaction_level
 from runtime.agent import AgentManager
 from runtime.prompt_builder import PromptParams, prompt_builder
+from runtime.security_context import runtime_security_context
+from runtime.source_sink_guard import (
+    UNTRUSTED_CONTENT_OPEN,
+    evaluate_source_to_sink,
+)
 from sessions.session_pruning import prune_messages
+from sandbox.tool_approval_gate import run_tool_with_approval_gate
 from tool_results.pipeline import maybe_persist_tool_output
 from tool_results.storage import PERSISTED_OUTPUT_OPEN, generate_preview
+from tools.file_tools import ReadTool
 
 _token_counter._encoding = "fallback"
 
@@ -96,6 +103,7 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("## 心跳配置", prompt)
         self.assertIn("heartbeat here", prompt)
         self.assertIn("## 技能快照", prompt)
+        self.assertIn("## 不可信内容边界", prompt)
         self.assertEqual(report.mode, "full")
 
     def test_minimal_prompt_keeps_execution_context_and_excludes_identity_user(self) -> None:
@@ -126,6 +134,7 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertNotIn("## 其他", prompt)
         self.assertIn("## 工作区", prompt)
         self.assertIn("## 运行时信息", prompt)
+        self.assertIn("## 不可信内容边界", prompt)
         self.assertEqual(report.mode, "minimal")
 
     def test_none_prompt_returns_minimal_identity_only(self) -> None:
@@ -401,7 +410,8 @@ class ToolPersistenceTests(unittest.TestCase):
             )
             persisted_path = Path(tmp) / "main" / "sessions" / "s1" / "tool-results" / "read_test.txt"
 
-            self.assertTrue(result.startswith(PERSISTED_OUTPUT_OPEN))
+            self.assertIn(UNTRUSTED_CONTENT_OPEN, result)
+            self.assertIn(PERSISTED_OUTPUT_OPEN, result)
             self.assertTrue(persisted_path.exists())
             self.assertEqual(persisted_path.read_text(encoding="utf-8"), text)
 
@@ -423,6 +433,16 @@ class ToolPersistenceTests(unittest.TestCase):
         self.assertTrue(has_more)
         self.assertEqual(len(preview), 120)
         self.assertLessEqual(len(preview), 200)
+
+    def test_read_tool_wraps_file_content_as_untrusted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "note.txt").write_text("hello\nworld", encoding="utf-8")
+            tool = ReadTool(root_dir=str(root))
+            result = tool._run("note.txt")
+        self.assertIn(UNTRUSTED_CONTENT_OPEN, result)
+        self.assertIn("Source: file_read", result)
+        self.assertIn("hello", result)
 
 
 class CompressSessionTests(unittest.IsolatedAsyncioTestCase):
@@ -641,6 +661,61 @@ class RuntimeCacheTests(unittest.TestCase):
         self.assertEqual(first, ("read",))
         self.assertEqual(second, ("grep", "read"))
         self.assertEqual(collect_mock.call_count, 2)
+
+
+class SourceSinkGuardTests(unittest.IsolatedAsyncioTestCase):
+    def test_evaluate_source_to_sink_blocks_obviously_malicious_sink(self) -> None:
+        decision = evaluate_source_to_sink(
+            has_recent_untrusted_content=True,
+            tool_name="exec",
+            tool_input={"input_preview": "rm -rf logs"},
+            user_message="帮我看看这个文件",
+        )
+
+        self.assertEqual(decision.action, "block")
+        self.assertIn("obviously dangerous", decision.reason or "")
+
+    def test_evaluate_source_to_sink_confirms_when_source_is_suspicious_but_not_obviously_malicious(self) -> None:
+        decision = evaluate_source_to_sink(
+            has_recent_untrusted_content=True,
+            tool_name="exec",
+            tool_input={"input_preview": "pytest"},
+            user_message="帮我看看这个文件",
+        )
+
+        self.assertEqual(decision.action, "confirm")
+        self.assertIn("approval", decision.reason or "")
+
+    def test_evaluate_source_to_sink_allows_explicit_user_request(self) -> None:
+        decision = evaluate_source_to_sink(
+            has_recent_untrusted_content=True,
+            tool_name="exec",
+            tool_input={"input_preview": "pytest"},
+            user_message="运行 pytest 看看失败原因",
+        )
+
+        self.assertEqual(decision.action, "allow")
+
+    async def test_approval_gate_escalates_confirm_to_human_in_the_loop(self) -> None:
+        with (
+            runtime_security_context("帮我看看这个文件", recent_untrusted_content=True),
+            patch("sandbox.tool_approval_gate.approval_store.create", return_value="a1"),
+            patch("sandbox.tool_approval_gate.approval_store.wait", new=AsyncMock(return_value="approved")) as wait_mock,
+            patch("sandbox.tool_approval_gate.event_bus.emit") as emit_mock,
+        ):
+            result = await run_tool_with_approval_gate(
+                agent_id="main",
+                tool_name="exec",
+                input_preview="pytest",
+                locale="zh-CN",
+                base_needs_approval=False,
+                deny_reason=None,
+                execute_fn=lambda: "ok",
+            )
+
+        self.assertEqual(result, "ok")
+        emit_mock.assert_called_once()
+        wait_mock.assert_awaited_once()
 
 
 if __name__ == "__main__":

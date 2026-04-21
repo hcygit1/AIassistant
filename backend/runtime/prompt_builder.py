@@ -20,6 +20,7 @@ from config import (
     resolve_agent_workspace,
 )
 from runtime.context_budget import resolve_budget
+from runtime.source_sink_guard import build_trust_boundary_policy
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +138,8 @@ class PromptBuilder:
         )
         if context_text:
             _add("project_context", context_text)
+
+        _add("trust_boundary", build_trust_boundary_policy())
 
         # ── 动态 section ──
         if mode == "full":
