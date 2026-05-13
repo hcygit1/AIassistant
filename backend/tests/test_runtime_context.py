@@ -104,6 +104,11 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("heartbeat here", prompt)
         self.assertIn("## 技能快照", prompt)
         self.assertIn("## 不可信内容边界", prompt)
+        self.assertIn("## 任务完成纪律", prompt)
+        self.assertIn("不得声称“测试通过”", prompt)
+        self.assertLess(prompt.index("## 可用工具"), prompt.index("## 工作区"))
+        self.assertLess(prompt.index("## 运行时信息"), prompt.index("## 技能快照"))
+        self.assertLess(prompt.index("## 心跳配置"), prompt.index("## 当前时间"))
         self.assertEqual(report.mode, "full")
 
     def test_minimal_prompt_keeps_execution_context_and_excludes_identity_user(self) -> None:
@@ -135,6 +140,10 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("## 工作区", prompt)
         self.assertIn("## 运行时信息", prompt)
         self.assertIn("## 不可信内容边界", prompt)
+        self.assertIn("## 任务完成纪律", prompt)
+        self.assertLess(prompt.index("## 可用工具"), prompt.index("## 工作区"))
+        self.assertLess(prompt.index("## 运行时信息"), prompt.index("## 技能快照"))
+        self.assertLess(prompt.index("## 技能快照"), prompt.index("## 当前时间"))
         self.assertEqual(report.mode, "minimal")
 
     def test_none_prompt_returns_minimal_identity_only(self) -> None:

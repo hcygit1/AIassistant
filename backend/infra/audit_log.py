@@ -71,14 +71,41 @@ class AuditLogger:
         tool_input: Any,
         output: str,
         duration_ms: int = 0,
+        tool_call_id: str | None = None,
+        status: str | None = None,
+        error: str | None = None,
     ) -> None:
-        self.log(agent_id, "tool_call", {
+        data = {
             "run_id": run_id,
             "tool": tool,
             "input": str(tool_input)[:500],
             "output": output[:500],
             "duration_ms": duration_ms,
-        })
+        }
+        if tool_call_id:
+            data["tool_call_id"] = tool_call_id
+        if status:
+            data["status"] = status
+        if error:
+            data["error"] = error[:500]
+        self.log(agent_id, "tool_call", data)
+
+    def log_tool_loop_warning(
+        self,
+        agent_id: str,
+        run_id: str,
+        tool: str,
+        warning: str,
+        tool_call_id: str | None = None,
+    ) -> None:
+        data = {
+            "run_id": run_id,
+            "tool": tool,
+            "warning": warning[:1000],
+        }
+        if tool_call_id:
+            data["tool_call_id"] = tool_call_id
+        self.log(agent_id, "tool_loop_warning", data)
 
     def log_compress(
         self, agent_id: str, session_id: str, archived: int, remaining: int

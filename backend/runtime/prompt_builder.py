@@ -2,7 +2,7 @@
 
 静态指令全部在 AGENTS.md 中维护，本模块只负责：
   1. 按序加载静态文件（AGENTS.md → IDENTITY.md → USER.md）—— KV cache 前缀可复用
-  2. 拼接动态 section（工具列表、技能快照、心跳配置、时间、工作区、运行时）
+  2. 拼接动态 section：稳定内容靠前，高频变化内容靠后，尽量扩大 API prompt cache 命中前缀
   3. 生成 PromptReport 供调试
 """
 
@@ -140,21 +140,24 @@ class PromptBuilder:
             _add("project_context", context_text)
 
         _add("trust_boundary", build_trust_boundary_policy())
+        _add("completion_discipline", self._build_completion_discipline())
 
         # ── 动态 section ──
+        # Prompt caching 只复用完全一致的前缀。先放相对稳定的内容，
+        # 再放技能/心跳这类偶发变化内容，最后放时间和额外上下文。
         if mode == "full":
             _add("tooling", self._build_tooling(params.available_tools))
+            _add("workspace", self._build_workspace(agent_id))
+            _add("runtime", self._build_runtime(agent_id))
             _add("skills", self._build_skills(agent_id))
             _add("heartbeat_config", self._build_heartbeat_config(params))
             _add("time", self._build_time(agent_id))
-            _add("workspace", self._build_workspace(agent_id))
-            _add("runtime", self._build_runtime(agent_id))
         elif mode == "minimal":
             _add("tooling", self._build_tooling(params.available_tools))
-            _add("skills", self._build_skills(agent_id))
-            _add("time", self._build_time(agent_id))
             _add("workspace", self._build_workspace(agent_id))
             _add("runtime", self._build_runtime(agent_id))
+            _add("skills", self._build_skills(agent_id))
+            _add("time", self._build_time(agent_id))
 
         if params.extra_system_prompt:
             header = "## 子 Agent 上下文" if mode == "minimal" else "## 额外上下文"
@@ -356,6 +359,21 @@ class PromptBuilder:
             "## 运行时信息\n\n"
             f"Runtime: agent={agent_id} | 系统={os_info} | "
             f"模型={model} | 通道=webchat | thinking={thinking}"
+        )
+
+    @staticmethod
+    def _build_completion_discipline() -> str:
+        return (
+            "## 任务完成纪律\n\n"
+            "你是任务完成判断的负责人。不要把“没有更多工具调用”当作任务已经完成。\n\n"
+            "在报告任务完成前，必须确认：\n"
+            "1. 用户的核心诉求已经被直接满足。\n"
+            "2. 如果修改了代码、配置或文件，必须基于实际证据验证结果，例如运行测试、执行脚本、读取文件或检查输出。\n"
+            "3. 如果工具输出显示错误、测试失败、权限拒绝、子任务失败或结果不确定，不能声称完成。\n"
+            "4. 不得声称“测试通过”“功能正常”“已修复”，除非你实际看到了对应输出。\n"
+            "5. 如果无法验证，必须明确说明“未验证”以及原因。\n"
+            "6. 如果只是部分完成，必须说明已完成部分、未完成部分和下一步。\n"
+            "7. 最终汇报要真实反映验证结果，不要把 partial、blocked、failed 描述成 done。"
         )
 
     # ------------------------------------------------------------------

@@ -12,6 +12,7 @@ from typing import Any
 class ToolCallRecord:
     tool: str
     input: Any
+    tool_call_id: str = ""
     output: str = ""
     started_at: float = 0.0
     ended_at: float = 0.0
@@ -76,27 +77,55 @@ class RunTracker:
         self._emit("turn_start", record)
         return record
 
-    def record_tool_start(self, run_id: str, tool: str, tool_input: Any) -> None:
+    def record_tool_start(
+        self,
+        run_id: str,
+        tool: str,
+        tool_input: Any,
+        tool_call_id: str | None = None,
+    ) -> None:
         record = self._active.get(run_id)
         if not record:
             return
-        tc = ToolCallRecord(tool=tool, input=tool_input, started_at=time.time())
+        tc = ToolCallRecord(
+            tool=tool,
+            input=tool_input,
+            tool_call_id=tool_call_id or "",
+            started_at=time.time(),
+        )
         record.tool_calls.append(tc)
-        self._emit("tool_start", record, {"tool": tool, "input": tool_input})
+        self._emit(
+            "tool_start",
+            record,
+            {"tool": tool, "input": tool_input, "tool_call_id": tool_call_id or ""},
+        )
 
     def record_tool_end(
-        self, run_id: str, tool: str, output: str, error: str | None = None
+        self,
+        run_id: str,
+        tool: str,
+        output: str,
+        error: str | None = None,
+        tool_call_id: str | None = None,
     ) -> None:
         record = self._active.get(run_id)
         if not record:
             return
         for tc in reversed(record.tool_calls):
-            if tc.tool == tool and not tc.ended_at:
+            if tc.tool == tool and not tc.ended_at and (
+                not tool_call_id or not tc.tool_call_id or tc.tool_call_id == tool_call_id
+            ):
                 tc.output = output[:2000]
                 tc.ended_at = time.time()
                 tc.error = error
+                if tool_call_id and not tc.tool_call_id:
+                    tc.tool_call_id = tool_call_id
                 break
-        self._emit("tool_end", record, {"tool": tool, "output": output[:500]})
+        self._emit(
+            "tool_end",
+            record,
+            {"tool": tool, "output": output[:500], "tool_call_id": tool_call_id or ""},
+        )
 
     def record_tokens(
         self,

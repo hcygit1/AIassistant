@@ -79,6 +79,23 @@ class Events:
     def approval_required(*, approval_id: str, tool: str, input_preview: str = "") -> dict[str, Any]:
         return {"type": "lifecycle", "event": "approval_required", "approval_id": approval_id, "tool": tool, "input_preview": input_preview}
 
+    @staticmethod
+    def tool_loop_warning(
+        *,
+        run_id: str,
+        tool: str,
+        warning: str,
+        tool_call_id: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "type": "lifecycle",
+            "event": "tool_loop_warning",
+            "run_id": run_id,
+            "tool": tool,
+            "warning": warning,
+            "tool_call_id": tool_call_id,
+        }
+
     # ── 上下文压缩 ──
 
     @staticmethod

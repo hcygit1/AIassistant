@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -64,6 +65,34 @@ BARE_SESSION_RESET_PROMPT = (
 
 def _should_persist_input_message(persist_input_role: str) -> bool:
     return bool((persist_input_role or "").strip())
+
+
+def _new_tool_call_id() -> str:
+    return f"tc_{uuid.uuid4().hex[:12]}"
+
+
+def _infer_tool_result_status(output: str) -> tuple[str, str | None]:
+    text = output or ""
+    lowered = text.lower()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            status = str(parsed.get("status") or "").lower()
+            if status == "error":
+                return "error", str(parsed.get("error") or "")[:500] or None
+    except Exception:
+        pass
+    if "命令被拒绝" in text or "command rejected" in lowered or "已拒绝" in text:
+        return "denied", text[:500]
+    if "timed out" in lowered or "超时" in text:
+        return "timeout", text[:500]
+    if "execution error" in lowered or "执行错误" in text or "执行出错" in text:
+        return "error", text[:500]
+    return "success", None
+
+
+def _loop_warning_is_breaker(warning: str) -> bool:
+    return "全局熔断" in warning or "circuit" in warning.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -806,12 +835,15 @@ class AgentManager:
             full_response = ""
             tool_calls_log: list[dict[str, Any]] = []
             tool_input_by_run_id: dict[str, Any] = {}
+            tool_call_id_by_run_id: dict[str, str] = {}
             _streaming_model_run_id: str | None = None
             step_count = 0
             _content_refresh_sent = False
             recent_untrusted_content = any(
                 contains_untrusted_marker(str(msg.get("content", ""))) for msg in history[-4:]
             )
+            from sandbox.loop_detection import LoopDetector
+            loop_detector = LoopDetector()
 
             try:
                 with runtime_security_context(
@@ -875,11 +907,19 @@ class AgentManager:
                                 )
                             step_count += 1
                             evt_run_id = str(event.get("run_id", ""))
+                            tool_call_id = _new_tool_call_id()
                             if evt_run_id:
                                 tool_input_by_run_id[evt_run_id] = tool_input
-                            run_tracker.record_tool_start(turn.run_id, tool_name, tool_input)
+                                tool_call_id_by_run_id[evt_run_id] = tool_call_id
+                            run_tracker.record_tool_start(
+                                turn.run_id,
+                                tool_name,
+                                tool_input,
+                                tool_call_id=tool_call_id,
+                            )
                             yield {
                                 "type": "tool_start",
+                                "tool_call_id": tool_call_id,
                                 "tool": tool_name,
                                 "input": tool_input,
                                 "step": step_count,
@@ -897,18 +937,36 @@ class AgentManager:
 
                             evt_run_id = str(event.get("run_id", ""))
                             tool_input = tool_input_by_run_id.pop(evt_run_id, None)
+                            tool_call_id = tool_call_id_by_run_id.pop(evt_run_id, None) or _new_tool_call_id()
                             tool_input_for_log = tool_input if tool_input is not None else ""
                             tool_name = event.get("name", "")
-                            run_tracker.record_tool_end(turn.run_id, tool_name, output_str)
+                            status, error = _infer_tool_result_status(output_str)
+                            run_tracker.record_tool_end(
+                                turn.run_id,
+                                tool_name,
+                                output_str,
+                                error=error,
+                                tool_call_id=tool_call_id,
+                            )
                             audit_logger.log_tool_call(
-                                agent_id, turn.run_id, tool_name, tool_input_for_log, output_str
+                                agent_id,
+                                turn.run_id,
+                                tool_name,
+                                tool_input_for_log,
+                                output_str,
+                                tool_call_id=tool_call_id,
+                                status=status,
+                                error=error,
                             )
 
                             tool_calls_log.append(
                                 {
+                                    "tool_call_id": tool_call_id,
                                     "tool": tool_name,
+                                    "status": status,
                                     "input": tool_input_for_log,
                                     "output": output_str,
+                                    "error": error,
                                 }
                             )
                             if self.lifecycle_hooks:
@@ -918,7 +976,38 @@ class AgentManager:
                             if is_untrusted_source_tool(tool_name):
                                 recent_untrusted_content = True
                                 mark_recent_untrusted_content(True)
-                            yield {"type": "tool_end", "tool": tool_name, "output": output_str[:2000]}
+                            yield {
+                                "type": "tool_end",
+                                "tool_call_id": tool_call_id,
+                                "tool": tool_name,
+                                "status": status,
+                                "error": error,
+                                "output": output_str[:2000],
+                            }
+
+                            loop_warning = loop_detector.record(
+                                tool_name,
+                                tool_input_for_log,
+                                output_str,
+                            )
+                            if loop_warning:
+                                audit_logger.log_tool_loop_warning(
+                                    agent_id,
+                                    turn.run_id,
+                                    tool_name,
+                                    loop_warning,
+                                    tool_call_id=tool_call_id,
+                                )
+                                loop_event = Events.tool_loop_warning(
+                                    run_id=turn.run_id,
+                                    tool=tool_name,
+                                    warning=loop_warning,
+                                    tool_call_id=tool_call_id,
+                                )
+                                event_bus.emit(agent_id, loop_event)
+                                yield loop_event
+                                if _loop_warning_is_breaker(loop_warning):
+                                    raise RuntimeError(loop_warning)
 
                             if tool_name in ("exec", "process_kill"):
                                 safe_input = str(tool_input_for_log)[:200] if tool_input_for_log else ""
@@ -970,10 +1059,19 @@ class AgentManager:
                         if fallback_tool_name == "read" and not args_to_use.get("path"):
                             args_to_use["path"] = "IDENTITY.md"
                             logger.info(f"Fallback read: 无 path 参数，使用默认 IDENTITY.md")
-                        run_tracker.record_tool_start(turn.run_id, fallback_tool_name, args_to_use)
+                        tool_call_id = _new_tool_call_id()
+                        run_tracker.record_tool_start(
+                            turn.run_id,
+                            fallback_tool_name,
+                            args_to_use,
+                            tool_call_id=tool_call_id,
+                        )
                         logger.info(f"Fallback tool call: {fallback_tool_name}({args_to_use})")
                         yield {
-                            "type": "tool_start", "tool": fallback_tool_name, "input": args_to_use,
+                            "type": "tool_start",
+                            "tool_call_id": tool_call_id,
+                            "tool": fallback_tool_name,
+                            "input": args_to_use,
                             "step": step_count, "max_steps": recursion_limit,
                         }
                         try:
@@ -981,14 +1079,65 @@ class AgentManager:
                         except Exception as te:
                             from tools.error_utils import format_tool_error
                             result_str = format_tool_error(fallback_tool_name, te)
-                        run_tracker.record_tool_end(turn.run_id, fallback_tool_name, result_str)
-                        audit_logger.log_tool_call(agent_id, turn.run_id, fallback_tool_name, args_to_use, result_str)
-                        yield {"type": "tool_end", "tool": fallback_tool_name, "output": result_str}
-                        tool_calls_log.append({
+                        status, error = _infer_tool_result_status(result_str)
+                        run_tracker.record_tool_end(
+                            turn.run_id,
+                            fallback_tool_name,
+                            result_str,
+                            error=error,
+                            tool_call_id=tool_call_id,
+                        )
+                        audit_logger.log_tool_call(
+                            agent_id,
+                            turn.run_id,
+                            fallback_tool_name,
+                            args_to_use,
+                            result_str,
+                            tool_call_id=tool_call_id,
+                            status=status,
+                            error=error,
+                        )
+                        yield {
+                            "type": "tool_end",
+                            "tool_call_id": tool_call_id,
                             "tool": fallback_tool_name,
+                            "status": status,
+                            "error": error,
+                            "output": result_str,
+                        }
+                        tool_calls_log.append({
+                            "tool_call_id": tool_call_id,
+                            "tool": fallback_tool_name,
+                            "status": status,
                             "input": args_to_use,
                             "output": result_str,
+                            "error": error,
                         })
+                        loop_warning = loop_detector.record(
+                            fallback_tool_name,
+                            args_to_use,
+                            result_str,
+                        )
+                        if loop_warning:
+                            audit_logger.log_tool_loop_warning(
+                                agent_id,
+                                turn.run_id,
+                                fallback_tool_name,
+                                loop_warning,
+                                tool_call_id=tool_call_id,
+                            )
+                            loop_event = Events.tool_loop_warning(
+                                run_id=turn.run_id,
+                                tool=fallback_tool_name,
+                                warning=loop_warning,
+                                tool_call_id=tool_call_id,
+                            )
+                            event_bus.emit(agent_id, loop_event)
+                            yield loop_event
+                            if _loop_warning_is_breaker(loop_warning):
+                                yield Events.turn_error(error=loop_warning)
+                                yield {"type": "error", "error": loop_warning}
+                                return
                 full_response = strip_tool_call_patterns(full_response)
 
             # 保存消息（若含文本形式工具调用则保存清理后的 content）
