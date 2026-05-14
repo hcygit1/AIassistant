@@ -18,7 +18,7 @@
 ## Architecture
 
 <p align="center">
-  <img src="images/pipixia_arch.png" alt="Pipixia Architecture" width="800">
+  <img src="images/pipixia_arch.svg" alt="Pipixia Architecture" width="800">
 </p>
 
 | Layer | Technology |
@@ -30,20 +30,15 @@
 
 ---
 
-## UI Showcase
+## Capabilities
 
-<table align="center">
-  <tr align="center">
-    <th><p align="center">Agent Self-Intro</p></th>
-    <th><p align="center">Sub-Agent Collaboration</p></th>
-    <th><p align="center">Structured Report</p></th>
-  </tr>
-  <tr>
-    <td align="center"><p align="center"><img src="images/screenshot-agent-intro.png" width="280" alt="Agent intro"></p></td>
-    <td align="center"><p align="center"><img src="images/screenshot-subagents.png" width="280" alt="Sub-agents"></p></td>
-    <td align="center"><p align="center"><img src="images/screenshot-report.png" width="280" alt="Report"></p></td>
-  </tr>
-</table>
+| Capability | What it does |
+|---|---|
+| Agent runtime | LangGraph-based ReAct loop for prompts, tool events, context compaction, and completion discipline |
+| Tool execution contract | `tool_call_id` connects tool_start / tool_end / audit / session records; failures are returned as structured results |
+| Long-term memory | SQLite FTS5 + sqlite-vec dual indexing, task-first waterfall recall, and skill evolution |
+| Sub-agent collaboration | Isolated child sessions, explicit run state, delivery state, restart recovery, and archiving |
+| Local-first storage | Sessions, memory, persisted tool output, and audit logs stay in the local workspace by default |
 
 ---
 
@@ -62,7 +57,7 @@ Pipixia implements a **write-index-recall** three-phase memory architecture for 
 The system also supports **Skill Evolution**: `MemSkillEvolver` extracts reusable operational skills from conversation history through a multi-stage LLM pipeline (evaluate → generate → quality score), writing them as SKILL.md files that are automatically injected into the Agent's system prompt.
 
 <p align="center">
-  <img src="images/pipixia_memory_mechanism.png" alt="Memory mechanism" width="700">
+  <img src="images/pipixia_memory_mechanism.svg" alt="Memory mechanism" width="700">
 </p>
 
 ### Context Management
@@ -85,16 +80,16 @@ The main Agent spawns sub-agents via `sessions_spawn`, each with an isolated ses
 Result delivery uses a separate announce state machine (`pending → queued → delivering → delivered`) with timeout retry and fallback write. All events flow through a **standardized event bus** with 23 event types built by the `Events` factory class.
 
 <p align="center">
-  <img src="images/pipixia_subagent_mechanism.png" alt="Sub-agent mechanism" width="700">
+  <img src="images/pipixia_subagent_mechanism.svg" alt="Sub-agent mechanism" width="700">
 </p>
 
 ### Interrupt and Queuing
 
 <p align="center">
-  <img src="images/pipixia_interrupt_queue_mechanism.png" alt="Interrupt and queuing" width="700">
+  <img src="images/pipixia_interrupt_queue_mechanism.svg" alt="Interrupt and queuing" width="700">
 </p>
 
-New messages queue as followups when a session is busy. Stop requests abort the current run, save partial results, and return a terminal state.
+Each session allows only one active user turn. System work items (announce / heartbeat / cron) enter the unified dispatcher queue and execute serially by priority plus aging. Stop requests abort the current run, preserve partial results when possible, and return a terminal state.
 
 ---
 
@@ -102,7 +97,10 @@ New messages queue as followups when a session is busy. Stop requests abort the 
 
 ```
 backend/
-├── graph/          # Agent runtime core (sessions, prompts, sub-agents, heartbeat)
+├── runtime/        # Agent runtime core (prompts, tool events, context compaction)
+├── turns/          # User turn lifecycle and streaming output
+├── sessions/       # Session storage, queue dispatching, system work delivery
+├── subagents/      # Sub-agent registry, result delivery, resume, archive
 ├── infra/          # Cross-cutting concerns (event bus, state machine, audit, token counting)
 ├── llm/            # LLM layer (model config, selection, failover, retry)
 ├── mem/            # Memory system (storage, indexing, recall, skill evolution)

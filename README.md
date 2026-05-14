@@ -18,7 +18,7 @@
 ## 架构总览
 
 <p align="center">
-  <img src="images/pipixia_arch.png" alt="Pipixia 架构" width="800">
+  <img src="images/pipixia_arch.svg" alt="Pipixia 架构" width="800">
 </p>
 
 | 层 | 技术 |
@@ -30,20 +30,15 @@
 
 ---
 
-## 界面展示
+## 能力概览
 
-<table align="center">
-  <tr align="center">
-    <th><p align="center">Agent 自我介绍</p></th>
-    <th><p align="center">子 Agent 并行协作</p></th>
-    <th><p align="center">结构化报告输出</p></th>
-  </tr>
-  <tr>
-    <td align="center"><p align="center"><img src="images/screenshot-agent-intro.png" width="280" alt="Agent 自我介绍"></p></td>
-    <td align="center"><p align="center"><img src="images/screenshot-subagents.png" width="280" alt="子 Agent 协作"></p></td>
-    <td align="center"><p align="center"><img src="images/screenshot-report.png" width="280" alt="报告输出"></p></td>
-  </tr>
-</table>
+| 能力 | 说明 |
+|---|---|
+| Agent 运行时 | 基于 LangGraph 的 ReAct 循环，统一管理提示词、工具事件、上下文压缩与完成纪律 |
+| 工具执行闭环 | `tool_call_id` 串联 tool_start / tool_end / audit / session 记录，失败也结构化回传 |
+| 长期记忆 | SQLite FTS5 + sqlite-vec 双索引，Task-first 瀑布式召回，支持技能演化 |
+| 子 Agent 协作 | 独立会话、显式状态机、结果投递状态机、重启恢复与归档 |
+| 本地优先 | 会话、记忆、工具输出、审计日志默认落在本地工作区 |
 
 ---
 
@@ -62,7 +57,7 @@ Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现�
 此外，系统支持 **技能演化**（Skill Evolution）：`MemSkillEvolver` 通过多阶段 LLM 流水线（评估 → 生成 → 质量评分）从历史对话中提炼可复用的操作技能，写入 SKILL.md 文件后自动注入 Agent 的系统提示词。
 
 <p align="center">
-  <img src="images/pipixia_memory_mechanism.png" alt="记忆机制" width="700">
+  <img src="images/pipixia_memory_mechanism.svg" alt="记忆机制" width="700">
 </p>
 
 ### 上下文管理
@@ -85,16 +80,16 @@ Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现�
 结果投递采用独立的投递状态机（`pending → queued → delivering → delivered`），支持超时重试和降级写入。所有事件通过 **标准化事件总线** 发送，23 种事件类型由 `Events` 工厂类统一构建，消除裸 dict 拼写风险。
 
 <p align="center">
-  <img src="images/pipixia_subagent_mechanism.png" alt="子 Agent 机制" width="700">
+  <img src="images/pipixia_subagent_mechanism.svg" alt="子 Agent 机制" width="700">
 </p>
 
 ### 中断与排队
 
 <p align="center">
-  <img src="images/pipixia_interrupt_queue_mechanism.png" alt="中断与排队机制" width="700">
+  <img src="images/pipixia_interrupt_queue_mechanism.svg" alt="中断与排队机制" width="700">
 </p>
 
-会话 busy 时新消息进入 followup 队列；用户点击 stop 时调用 abort 取消当前 run，保存 partial 结果并返回终态。
+同一会话只允许一个活跃用户 turn；系统类工作项（announce / heartbeat / cron）进入统一 dispatcher 队列，按优先级和 aging 串行执行。用户点击 stop 时调用 abort 取消当前 run，尽量保存 partial 结果并返回终态。
 
 ---
 
@@ -102,7 +97,10 @@ Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现�
 
 ```
 backend/
-├── graph/          # Agent 运行时核心（会话、提示词、子 Agent、心跳）
+├── runtime/        # Agent 运行时核心（提示词、工具事件、上下文压缩）
+├── turns/          # 用户 turn 生命周期与流式输出
+├── sessions/       # 会话存储、队列调度、系统工作项投递
+├── subagents/      # 子 Agent 注册表、结果投递、恢复与归档
 ├── infra/          # 横切关注点（事件总线、状态机、审计、token 计数）
 ├── llm/            # LLM 调用层（模型配置、选择、failover、重试）
 ├── mem/            # 记忆系统（存储、索引、召回、技能演化）
