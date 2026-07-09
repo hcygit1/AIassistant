@@ -1,7 +1,7 @@
 """工具调用文本解析 — 支持 Kimi K2 等模型以文本形式输出 functions.TOOL:N{args}
 
-ClawChain 从模型文本输出解析工具调用；部分模型依赖 API 返回结构化 tool_calls。
-ClawChain 需兼容将工具调用写在 content 中的模型。
+PIPIXIA 从模型文本输出解析工具调用；部分模型依赖 API 返回结构化 tool_calls。
+PIPIXIA 需兼容将工具调用写在 content 中的模型。
 """
 
 from __future__ import annotations

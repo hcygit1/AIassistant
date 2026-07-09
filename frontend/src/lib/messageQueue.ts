@@ -10,7 +10,7 @@ export interface QueuedMessage {
   timestamp: number;
 }
 
-const STORAGE_KEY = "clawchain_msg_queue";
+const STORAGE_KEY = "pipixia_msg_queue";
 
 let queue: QueuedMessage[] = [];
 

@@ -236,7 +236,7 @@ export interface Messages {
 }
 
 export const zhCN: Messages = {
-  appName: "Pipixia",
+  appName: "PIPIXIA",
   settings: "配置中心",
   close: "关闭",
   save: "保存",
@@ -453,7 +453,7 @@ export const zhCN: Messages = {
 };
 
 export const enUS: Messages = {
-  appName: "Pipixia",
+  appName: "PIPIXIA",
   settings: "Settings",
   close: "Close",
   save: "Save",

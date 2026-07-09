@@ -111,7 +111,7 @@ class PromptBuilder:
         mode = params.mode
 
         if mode == "none":
-            prompt = "你是一个运行在 ClawChain 中的个人助手。"
+            prompt = "你是一个运行在 PIPIXIA 中的个人助手。"
             report = PromptReport(
                 mode="none",
                 total_chars=len(prompt),

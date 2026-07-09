@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="images/Pipixia.png" alt="Pipixia" width="400">
-  <h1>Pipixia</h1>
+  <img src="images/PIPIXIA.png" alt="PIPIXIA" width="400">
+  <h1>PIPIXIA</h1>
   <p>
     <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
@@ -9,7 +9,7 @@
 
 ---
 
-**Pipixia** is a local-first AI Agent system built with Python + LangChain/LangGraph, featuring multi-agent collaboration, persistent memory, automatic context management, and desktop integration.
+**PIPIXIA** is a local-first AI Agent system built with Python + LangChain/LangGraph, featuring multi-agent collaboration, persistent memory, automatic context management, and a web interface.
 
 [中文](README.md) | [中文简洁版](README.zh-CN.md)
 
@@ -18,14 +18,13 @@
 ## Architecture
 
 <p align="center">
-  <img src="images/pipixia_arch.svg" alt="Pipixia Architecture" width="800">
+  <img src="images/PIPIXIA_arch.svg" alt="PIPIXIA Architecture" width="800">
 </p>
 
 | Layer | Technology |
 |---|---|
 | Backend | Python 3.11+ · FastAPI · LangChain / LangGraph |
 | Frontend | Next.js · React · TypeScript |
-| Desktop | Tauri 2.0 · Rust (tray/window shell) |
 | Storage | SQLite (FTS5 full-text + sqlite-vec vector) · Local filesystem |
 
 ---
@@ -46,7 +45,7 @@
 
 ### Memory System
 
-Pipixia implements a **write-index-recall** three-phase memory architecture for persistent knowledge accumulation and precise retrieval.
+PIPIXIA implements a **write-index-recall** three-phase memory architecture for persistent knowledge accumulation and precise retrieval.
 
 **Write phase**: After each conversation turn, `MemWorker` asynchronously processes messages. An LLM generates structured summaries (≤120 chars) while SHA-256 hashing prevents duplicate entries. Summarization and deduplication use lightweight models (e.g. qwen-plus) for high-frequency, low-cost operation.
 
@@ -57,7 +56,7 @@ Pipixia implements a **write-index-recall** three-phase memory architecture for 
 The system also supports **Skill Evolution**: `MemSkillEvolver` extracts reusable operational skills from conversation history through a multi-stage LLM pipeline (evaluate → generate → quality score), writing them as SKILL.md files that are automatically injected into the Agent's system prompt.
 
 <p align="center">
-  <img src="images/pipixia_memory_mechanism.svg" alt="Memory mechanism" width="700">
+  <img src="images/PIPIXIA_memory_mechanism.svg" alt="Memory mechanism" width="700">
 </p>
 
 ### Context Management
@@ -80,13 +79,13 @@ The main Agent spawns sub-agents via `sessions_spawn`, each with an isolated ses
 Result delivery uses a separate announce state machine (`pending → queued → delivering → delivered`) with timeout retry and fallback write. All events flow through a **standardized event bus** with 23 event types built by the `Events` factory class.
 
 <p align="center">
-  <img src="images/pipixia_subagent_mechanism.svg" alt="Sub-agent mechanism" width="700">
+  <img src="images/PIPIXIA_subagent_mechanism.svg" alt="Sub-agent mechanism" width="700">
 </p>
 
 ### Interrupt and Queuing
 
 <p align="center">
-  <img src="images/pipixia_interrupt_queue_mechanism.svg" alt="Interrupt and queuing" width="700">
+  <img src="images/PIPIXIA_interrupt_queue_mechanism.svg" alt="Interrupt and queuing" width="700">
 </p>
 
 Each session allows only one active user turn. System work items (announce / heartbeat / cron) enter the unified dispatcher queue and execute serially by priority plus aging. Stop requests abort the current run, preserve partial results when possible, and return a terminal state.
@@ -140,21 +139,6 @@ npm run dev
 ```
 
 Open: <http://localhost:3000>
-
----
-
-## Desktop (macOS Alpha)
-
-```bash
-cd desktop
-npm install
-npm run doctor
-npm run dev
-```
-
-Tray-resident, hide-on-close, sidecar dual-path startup, backend health check and readiness probe.
-
----
 
 ## License
 

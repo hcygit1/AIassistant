@@ -1,4 +1,4 @@
-"""ClawChain CLI — setup / onboard / config / doctor / serve / start
+"""PIPIXIA CLI — setup / onboard / config / doctor / serve / start
 
 Usage:
     python cli.py setup          从模板创建数据目录与配置文件
@@ -155,7 +155,7 @@ def _is_config_ready(cfg: dict) -> bool:
 def cmd_setup(args: argparse.Namespace) -> None:
     from config import DATA_DIR, _config_path, TEMPLATE_PATH
 
-    _print_title("ClawChain Setup")
+    _print_title("PIPIXIA Setup")
     _print_status("INFO", f"数据目录: {DATA_DIR}")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -203,7 +203,7 @@ def cmd_onboard(args: argparse.Namespace) -> None:
 
     load_config()
     cfg = get_raw_config()
-    _print_title("ClawChain Onboard Wizard")
+    _print_title("PIPIXIA Onboard Wizard")
 
     # 1. Provider / Model
     _print_section("1/3 Provider 配置")
@@ -344,7 +344,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     from config import load_config, _config_path, DATA_DIR, TEMPLATE_PATH, is_initialized
     from config_schema import validate_config
 
-    _print_title("ClawChain Doctor")
+    _print_title("PIPIXIA Doctor")
     issues = []
 
     # 1. 初始化状态
@@ -486,14 +486,9 @@ def cmd_serve(args: argparse.Namespace) -> None:
     host = args.host or "0.0.0.0"
     port = args.port or 8002
 
-    if args.sidecar:
-        host = "127.0.0.1"
-        port = 3716
-        print(f"[serve] Sidecar 模式: http://{host}:{port}")
-    else:
-        print(f"[serve] 启动 ClawChain 后端: http://{host}:{port}")
+    print(f"[serve] 启动 PIPIXIA 后端: http://{host}:{port}")
 
-    uvicorn.run("app:app", host=host, port=port, reload=args.reload and not args.sidecar)
+    uvicorn.run("app:app", host=host, port=port, reload=args.reload)
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -578,7 +573,6 @@ def cmd_start(args: argparse.Namespace) -> None:
             port=args.port,
             reload=args.reload,
             require_init=False,
-            sidecar=args.sidecar,
         )
     )
 
@@ -603,8 +597,6 @@ def cmd_clean(args: argparse.Namespace) -> None:
     # Always-safe runtime/cache cleanup.
     _rm(backend_dir / ".pytest_cache")
     _rm(backend_dir / "__pycache__")
-    _rm(root_dir / "desktop" / "node_modules")
-    _rm(root_dir / "desktop" / "src-tauri" / "target")
     _rm(root_dir / "frontend" / ".next")
     _rm(root_dir / "frontend" / "out")
 
@@ -624,7 +616,7 @@ def cmd_clean(args: argparse.Namespace) -> None:
             pass
 
     mode = "deep" if args.clean else "runtime"
-    _print_title("ClawChain Clean")
+    _print_title("PIPIXIA Clean")
     _print_status("INFO", f"清理模式: {mode}")
     if removed:
         _print_status("OK", f"已清理 {len(removed)} 项")
@@ -644,8 +636,8 @@ def cmd_clean(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="clawchain",
-        description="ClawChain CLI",
+        prog="pipixia",
+        description="PIPIXIA CLI",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -684,12 +676,6 @@ def main() -> None:
         action="store_true",
         help="强制要求先执行 setup/onboard（未初始化时拒绝启动）",
     )
-    serve_parser.add_argument(
-        "--sidecar",
-        action="store_true",
-        help="Sidecar 模式（由 Tauri 桌面应用启动，使用 localhost:3716）",
-    )
-
     start_parser = sub.add_parser("start", help="一键启动（自动 setup + 快速配置 + serve）")
     start_parser.add_argument("--host", default="0.0.0.0")
     start_parser.add_argument("--port", type=int, default=8002)
@@ -707,7 +693,6 @@ def main() -> None:
     start_parser.add_argument("--heartbeat-every", dest="heartbeat_every", default=None, help="心跳间隔（例如 30m）")
     start_parser.add_argument("--onboard", action="store_true", help="使用完整 onboard 向导而不是快速配置")
     start_parser.add_argument("--doctor", action="store_true", help="启动前执行 doctor 检查")
-    start_parser.add_argument("--sidecar", action="store_true", help="Sidecar 模式（127.0.0.1:3716）")
 
     clean_parser = sub.add_parser("clean", help="清理运行产物/缓存")
     clean_parser.add_argument(

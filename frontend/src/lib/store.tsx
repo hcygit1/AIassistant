@@ -109,21 +109,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      const saved = window.localStorage.getItem("clawchain.locale");
+      const saved = window.localStorage.getItem("pipixia.locale");
       if (saved === "zh-CN" || saved === "en-US") setLocaleState(saved);
     } catch {}
   }, []);
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);
-    try { window.localStorage.setItem("clawchain.locale", l); } catch {}
+    try { window.localStorage.setItem("pipixia.locale", l); } catch {}
   }, []);
 
   // 持久化 currentAgentId（Hydration 安全：初始 "main"，useEffect 恢复）
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      const saved = window.localStorage.getItem("clawchain.agent");
+      const saved = window.localStorage.getItem("pipixia.agent");
       if (saved && typeof saved === "string" && saved.trim()) {
         setCurrentAgentId(saved.trim());
       }
@@ -136,11 +136,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      const savedMode = window.localStorage.getItem("clawchain.inspector.mode");
+      const savedMode = window.localStorage.getItem("pipixia.inspector.mode");
       if (savedMode === "docked" || savedMode === "overlay" || savedMode === "hidden") {
         setInspectorPanelMode(savedMode);
       }
-      const savedWidth = Number(window.localStorage.getItem("clawchain.inspector.width") || "");
+      const savedWidth = Number(window.localStorage.getItem("pipixia.inspector.width") || "");
       if (Number.isFinite(savedWidth) && savedWidth >= 280 && savedWidth <= 720) {
         setInspectorWidth(savedWidth);
       }
@@ -152,7 +152,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      window.localStorage.setItem("clawchain.inspector.mode", inspectorPanelMode);
+      window.localStorage.setItem("pipixia.inspector.mode", inspectorPanelMode);
     } catch {
       // ignore localStorage errors
     }
@@ -161,7 +161,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      window.localStorage.setItem("clawchain.inspector.width", String(inspectorWidth));
+      window.localStorage.setItem("pipixia.inspector.width", String(inspectorWidth));
     } catch {
       // ignore localStorage errors
     }
@@ -314,7 +314,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const switchAgent = useCallback(async (agentId: string) => {
     // 保存当前 Agent 的状态（不要清空，只是切换）
     setCurrentAgentId(agentId);
-    try { window.localStorage.setItem("clawchain.agent", agentId); } catch {}
+    try { window.localStorage.setItem("pipixia.agent", agentId); } catch {}
     setCurrentSessionId(null);
     setInspectorFile(null);
     setInspectorFileLoading(false);

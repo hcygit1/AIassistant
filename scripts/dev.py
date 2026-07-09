@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified local development launcher for ClawChain.
+"""Unified local development launcher for PIPIXIA.
 
 Usage:
   python scripts/dev.py
@@ -45,7 +45,7 @@ def _terminate_all(processes: list[subprocess.Popen]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="ClawChain one-command development launcher",
+        description="PIPIXIA one-command development launcher",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -71,7 +71,7 @@ def main() -> int:
     run_frontend = not args.backend_only
 
     print("\n================================================")
-    print("ClawChain Dev Launcher")
+    print("PIPIXIA Dev Launcher")
     print("================================================")
     print(f"[INFO] Root: {ROOT}")
     print(f"[INFO] Backend: {'ON' if run_backend else 'OFF'}")

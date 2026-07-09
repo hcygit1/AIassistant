@@ -5,7 +5,7 @@ import { useState, useCallback, useEffect } from "react";
 export type ThemeMode = "system" | "light" | "dark";
 export type EffectiveTheme = "light" | "dark";
 
-const STORAGE_KEY = "clawchain-theme";
+const STORAGE_KEY = "pipixia-theme";
 
 export function useTheme() {
   const [theme, setThemeState] = useState<ThemeMode>("system");

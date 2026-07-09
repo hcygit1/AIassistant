@@ -1,5 +1,5 @@
 # ============================================================
-# ClawChain Backend Dependencies
+# PIPIXIA Backend Dependencies
 # ============================================================
 # Note: Versions are upper-bounded to avoid breaking changes.
 # Adjust if you encounter compatibility issues.

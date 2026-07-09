@@ -1,14 +1,14 @@
 "use client";
 
-type PipixiaMarkProps = {
+type PIPIXIAMarkProps = {
   className?: string;
   strokeWidth?: number;
 };
 
-export default function PipixiaMark({
+export default function PIPIXIAMark({
   className = "h-4 w-4",
   strokeWidth = 1.8,
-}: PipixiaMarkProps) {
+}: PIPIXIAMarkProps) {
   return (
     <svg
       viewBox="0 0 24 24"

@@ -179,7 +179,7 @@ class WebFetchTool(BaseTool):
         try:
             with httpx.Client(timeout=15.0, follow_redirects=True) as client:
                 resp = client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; ClawChain/1.0)"
+                    "User-Agent": "Mozilla/5.0 (compatible; PIPIXIA/1.0)"
                 })
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "")

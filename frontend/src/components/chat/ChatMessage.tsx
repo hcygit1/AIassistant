@@ -8,7 +8,7 @@ import type { ChatMessage as ChatMsgType } from "@/lib/store";
 import { useApp } from "@/lib/store";
 import ThoughtChain from "./ThoughtChain";
 import SubagentInlineCard from "./SubagentInlineCard";
-import PipixiaMark from "@/components/icons/PipixiaMark";
+import PIPIXIAMark from "@/components/icons/PipixiaMark";
 
 interface Props {
   message: ChatMsgType;
@@ -187,7 +187,7 @@ export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
               : { background: "var(--hover)", color: "var(--text-secondary)" }
           }
         >
-          {isUser ? <User className="w-3.5 h-3.5" /> : <PipixiaMark className="h-3.5 w-3.5" strokeWidth={1.9} />}
+          {isUser ? <User className="w-3.5 h-3.5" /> : <PIPIXIAMark className="h-3.5 w-3.5" strokeWidth={1.9} />}
         </div>
       )}
 

@@ -8,7 +8,7 @@ import {
   Activity, RefreshCw, Languages,
 } from "lucide-react";
 import type { Locale } from "@/lib/i18n/locales";
-import PipixiaMark from "@/components/icons/PipixiaMark";
+import PIPIXIAMark from "@/components/icons/PipixiaMark";
 
 export default function Navbar() {
   const {
@@ -49,10 +49,10 @@ export default function Navbar() {
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
             style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}>
-            <PipixiaMark className="h-3.5 w-3.5" strokeWidth={2} />
+            <PIPIXIAMark className="h-3.5 w-3.5" strokeWidth={2} />
           </div>
           <span className="font-semibold text-[var(--text)] text-[13px] tracking-tight hidden sm:inline">
-            Pipixia
+            PIPIXIA
           </span>
         </div>
 

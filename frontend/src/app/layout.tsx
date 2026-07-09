@@ -3,7 +3,7 @@ import "./globals.css";
 import { AppProvider } from "@/lib/store";
 
 export const metadata: Metadata = {
-  title: "Pipixia",
+  title: "PIPIXIA",
   description: "Local-first AI Agent with persistent memory and context management",
 };
 

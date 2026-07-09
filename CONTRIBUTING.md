@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for contributing to Pipixia.
+Thank you for contributing to PIPIXIA.
 
 ## Development setup
 

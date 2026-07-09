@@ -6,7 +6,7 @@ import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
 import RetrievalCard from "./RetrievalCard";
 import { Bot, Activity } from "lucide-react";
-import PipixiaMark from "@/components/icons/PipixiaMark";
+import PIPIXIAMark from "@/components/icons/PipixiaMark";
 
 export default function ChatPanel() {
   const {
@@ -36,10 +36,10 @@ export default function ChatPanel() {
               className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-2xl"
               style={{ background: "var(--accent-muted)", color: "var(--accent)" }}
             >
-              <PipixiaMark className="h-5 w-5" strokeWidth={1.9} />
+              <PIPIXIAMark className="h-5 w-5" strokeWidth={1.9} />
             </div>
             <h2 className="mb-2 text-2xl font-semibold text-[var(--text)]">
-              {currentAgent?.name || "Pipixia"}
+              {currentAgent?.name || "PIPIXIA"}
             </h2>
             <p className="mb-5 text-sm leading-relaxed text-[var(--text-secondary)]">
               {currentAgent?.description || t.agentDescription}

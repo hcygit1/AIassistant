@@ -34,7 +34,9 @@ def _debug_log(location: str, message: str, data: dict[str, Any], hypothesis_id:
             "data": data,
             "timestamp": int(_time.time() * 1000),
         }
-        with open("/Users/hcy/Desktop/clawchain/.cursor/debug-e404f0.log", "a", encoding="utf-8") as f:
+        log_path = Path(__file__).resolve().parents[2] / ".cursor" / "debug-e404f0.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
     except Exception:
         pass

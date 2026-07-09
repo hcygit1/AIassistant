@@ -1,6 +1,6 @@
-# Pipixia（中文简洁版）
+# PIPIXIA（中文简洁版）
 
-Pipixia 是一个本地优先的 AI Agent 系统，基于 Python + LangChain/LangGraph 构建。
+PIPIXIA 是一个本地优先的 AI Agent 系统，基于 Python + LangChain/LangGraph 构建。
 
 ---
 
@@ -10,7 +10,6 @@ Pipixia 是一个本地优先的 AI Agent 系统，基于 Python + LangChain/Lan
 |---|---|
 | 后端 | Python 3.11+ · FastAPI · LangChain / LangGraph |
 | 前端 | Next.js · React · TypeScript |
-| 桌面端 | Tauri 2.0 · Rust（托盘/窗口壳） |
 | 存储 | SQLite（FTS5 + sqlite-vec）· 本地文件系统 |
 
 ---
@@ -58,16 +57,6 @@ cd frontend && npm install && npm run dev
 - Heartbeat 后台巡检与 Cron 定时任务
 - 会话命令系统（`/new`、`/compact`、`/status`）
 - SSE 事件流 + REST API 可观测
-
----
-
-## Desktop（macOS Alpha）
-
-```bash
-cd desktop && npm install && npm run dev
-```
-
----
 
 ## License
 

@@ -1,4 +1,4 @@
-"""ClawChain 后端入口 — FastAPI + Uvicorn"""
+"""PIPIXIA 后端入口 — FastAPI + Uvicorn"""
 
 from __future__ import annotations
 
@@ -116,9 +116,9 @@ async def lifespan(application: FastAPI):
     logger.info("Heartbeat stopped")
 
 
-app = FastAPI(title="ClawChain", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="PIPIXIA", version="0.2.0", lifespan=lifespan)
 
-_cors_origins_env = os.getenv("CLAWCHAIN_CORS_ORIGINS", "").strip()
+_cors_origins_env = os.getenv("PIPIXIA_CORS_ORIGINS", "").strip()
 if _cors_origins_env:
     _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 else:
@@ -163,7 +163,7 @@ app.include_router(mem_router, prefix="/api")
 
 @app.get("/api/health")
 async def health() -> dict[str, str]:
-    """Desktop sidecar liveness/readiness probe."""
+    """Service liveness/readiness probe."""
     return {"status": "ok"}
 
 

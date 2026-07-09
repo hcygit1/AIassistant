@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="images/Pipixia.png" alt="Pipixia" width="400">
-  <h1>Pipixia</h1>
+  <img src="images/PIPIXIA.png" alt="PIPIXIA" width="400">
+  <h1>PIPIXIA</h1>
   <p>
     <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
@@ -9,7 +9,7 @@
 
 ---
 
-**Pipixia** 是一个本地优先的 AI Agent 系统，基于 Python + LangChain/LangGraph 构建，支持多 Agent 协作、持久化记忆、自动上下文管理和桌面端集成。
+**PIPIXIA** 是一个本地优先的 AI Agent 系统，基于 Python + LangChain/LangGraph 构建，支持多 Agent 协作、持久化记忆、自动上下文管理和 Web 端交互。
 
 [English](README.en.md) | [中文简洁版](README.zh-CN.md)
 
@@ -18,14 +18,13 @@
 ## 架构总览
 
 <p align="center">
-  <img src="images/pipixia_arch.svg" alt="Pipixia 架构" width="800">
+  <img src="images/PIPIXIA_arch.svg" alt="PIPIXIA 架构" width="800">
 </p>
 
 | 层 | 技术 |
 |---|---|
 | 后端 | Python 3.11+ · FastAPI · LangChain / LangGraph |
 | 前端 | Next.js · React · TypeScript |
-| 桌面端 | Tauri 2.0 · Rust（托盘/窗口壳） |
 | 存储 | SQLite（FTS5 全文 + sqlite-vec 向量）· 本地文件系统 |
 
 ---
@@ -46,7 +45,7 @@
 
 ### 记忆系统
 
-Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现对话知识的持久化积累和精准检索。
+PIPIXIA 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现对话知识的持久化积累和精准检索。
 
 **写入阶段**：每轮对话结束后，`MemWorker` 异步处理消息入库。通过 LLM 对原始对话生成 120 字符以内的结构化摘要，同时进行 SHA-256 哈希去重，避免重复写入。摘要和去重判断使用小模型（如 qwen-plus）执行，保证高频低成本。
 
@@ -57,7 +56,7 @@ Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现�
 此外，系统支持 **技能演化**（Skill Evolution）：`MemSkillEvolver` 通过多阶段 LLM 流水线（评估 → 生成 → 质量评分）从历史对话中提炼可复用的操作技能，写入 SKILL.md 文件后自动注入 Agent 的系统提示词。
 
 <p align="center">
-  <img src="images/pipixia_memory_mechanism.svg" alt="记忆机制" width="700">
+  <img src="images/PIPIXIA_memory_mechanism.svg" alt="记忆机制" width="700">
 </p>
 
 ### 上下文管理
@@ -80,13 +79,13 @@ Pipixia 的记忆系统采用 **写入-索引-召回** 三阶段架构，实现�
 结果投递采用独立的投递状态机（`pending → queued → delivering → delivered`），支持超时重试和降级写入。所有事件通过 **标准化事件总线** 发送，23 种事件类型由 `Events` 工厂类统一构建，消除裸 dict 拼写风险。
 
 <p align="center">
-  <img src="images/pipixia_subagent_mechanism.svg" alt="子 Agent 机制" width="700">
+  <img src="images/PIPIXIA_subagent_mechanism.svg" alt="子 Agent 机制" width="700">
 </p>
 
 ### 中断与排队
 
 <p align="center">
-  <img src="images/pipixia_interrupt_queue_mechanism.svg" alt="中断与排队机制" width="700">
+  <img src="images/PIPIXIA_interrupt_queue_mechanism.svg" alt="中断与排队机制" width="700">
 </p>
 
 同一会话只允许一个活跃用户 turn；系统类工作项（announce / heartbeat / cron）进入统一 dispatcher 队列，按优先级和 aging 串行执行。用户点击 stop 时调用 abort 取消当前 run，尽量保存 partial 结果并返回终态。
@@ -140,21 +139,6 @@ npm run dev
 ```
 
 浏览器打开：<http://localhost:3000>
-
----
-
-## Desktop（macOS Alpha）
-
-```bash
-cd desktop
-npm install
-npm run doctor
-npm run dev
-```
-
-托盘常驻、关闭窗口隐藏到后台、sidecar 双路径启动、后端健康检查与就绪等待。
-
----
 
 ## License
 

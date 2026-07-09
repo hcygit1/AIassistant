@@ -57,7 +57,7 @@ async def get_full_config():
 @router.get("/config/raw")
 async def get_raw_config_endpoint(request: Request):
     """Return full raw configuration (for JSON editor, includes secrets)"""
-    allow_remote = os.getenv("CLAWCHAIN_ALLOW_REMOTE_RAW_CONFIG", "").strip().lower() in ("1", "true", "yes")
+    allow_remote = os.getenv("PIPIXIA_ALLOW_REMOTE_RAW_CONFIG", "").strip().lower() in ("1", "true", "yes")
     client_host = (request.client.host if request.client else "") or ""
     if not allow_remote and client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(403, detail="Raw config access is restricted to localhost")

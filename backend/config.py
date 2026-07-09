@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = BASE_DIR.parent  # clawchain 项目根目录
-_DATA_DIR_OVERRIDE = os.getenv("CLAWCHAIN_DATA_DIR", "").strip()
+PROJECT_ROOT = BASE_DIR.parent  # pipixia 项目根目录
+_DATA_DIR_OVERRIDE = os.getenv("PIPIXIA_DATA_DIR", "").strip()
 DATA_DIR = Path(_DATA_DIR_OVERRIDE or str(BASE_DIR / "data")).resolve()
 TEMPLATE_PATH = BASE_DIR / "data" / "config.template.json"
 
@@ -247,8 +247,8 @@ _raw_config: dict[str, Any] | None = None
 
 
 def _config_path() -> Path:
-    """配置文件路径。可通过 CLAWCHAIN_CONFIG_PATH 覆盖，否则为 data/config.json"""
-    override = os.getenv("CLAWCHAIN_CONFIG_PATH", "").strip()
+    """配置文件路径。可通过 PIPIXIA_CONFIG_PATH 覆盖，否则为 data/config.json"""
+    override = os.getenv("PIPIXIA_CONFIG_PATH", "").strip()
     if override:
         return Path(override).resolve()
     return DATA_DIR / "config.json"

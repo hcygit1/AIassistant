@@ -149,7 +149,7 @@ class PromptBuilderTests(unittest.TestCase):
     def test_none_prompt_returns_minimal_identity_only(self) -> None:
         params = PromptParams(agent_id="main", mode="none")
         prompt, report = prompt_builder.build_system_prompt_with_report(params)
-        self.assertEqual(prompt, "你是一个运行在 ClawChain 中的个人助手。")
+        self.assertEqual(prompt, "你是一个运行在 PIPIXIA 中的个人助手。")
         self.assertEqual(report.mode, "none")
         self.assertEqual(report.tool_count, 0)
 
