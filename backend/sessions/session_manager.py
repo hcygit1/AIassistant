@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import stat
+import tempfile
 import threading
 import time
 import uuid
@@ -16,6 +19,51 @@ from typing import Any
 from config import get_config, resolve_agent_sessions_dir
 
 logger = logging.getLogger(__name__)
+
+
+class SessionDataCorruptionError(ValueError):
+    """会话文件存在，但内容无法解析。"""
+
+    def __init__(self, path: Path):
+        self.path = path
+        super().__init__(f"会话文件损坏，无法解析: {path}")
+
+
+def _write_json_atomic(path: Path, data: Any) -> None:
+    """在同一目录写入临时文件，再原子替换目标 JSON。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        existing_mode = None
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            json.dump(data, temp_file, ensure_ascii=False, indent=2)
+            temp_file.flush()
+            if existing_mode is not None:
+                fchmod = getattr(os, "fchmod", None)
+                if callable(fchmod):
+                    fchmod(temp_file.fileno(), existing_mode)
+                else:
+                    os.chmod(temp_path, existing_mode)
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
 
 
 class _SessionCache:
@@ -56,6 +104,8 @@ class _SessionCache:
 class SessionManager:
     _locks: dict[str, threading.Lock] = {}
     _locks_guard = threading.Lock()
+    _store_locks: dict[str, threading.RLock] = {}
+    _store_locks_guard = threading.Lock()
     _cache = _SessionCache(max_size=30)
     _SESSION_BOOTSTRAP_PREFIXES = (
         "a new session was started via /new or /reset",
@@ -75,6 +125,12 @@ class SessionManager:
             if key not in self._locks:
                 self._locks[key] = threading.Lock()
             return self._locks[key]
+
+    def _get_store_lock(self, agent_id: str) -> threading.RLock:
+        with self._store_locks_guard:
+            if agent_id not in self._store_locks:
+                self._store_locks[agent_id] = threading.RLock()
+            return self._store_locks[agent_id]
 
     @staticmethod
     def _emit_lifecycle(event_name: str, agent_id: str, session_id: str, **extra: Any) -> None:
@@ -139,27 +195,32 @@ class SessionManager:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, list):
-                data = {
-                    "label": "未命名",
-                    "agent_id": agent_id,
-                    "created_at": time.time(),
-                    "updated_at": time.time(),
-                    "messages": data,
-                }
-            if isinstance(data, dict):
-                current_label = str(data.get("label", "")).strip()
-                if current_label and self._is_bootstrap_text(current_label):
-                    data.pop("label", None)
-                if not data.get("label") and data.get("title"):
-                    candidate = str(data.get("title", "")).strip()
-                    if candidate and not self._is_bootstrap_text(candidate):
-                        data["label"] = candidate
-
-            self._cache.put(cache_key, data)
-            return data
-        except Exception:
+        except FileNotFoundError:
             return None
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise SessionDataCorruptionError(path) from exc
+
+        if isinstance(data, list):
+            data = {
+                "label": "未命名",
+                "agent_id": agent_id,
+                "created_at": time.time(),
+                "updated_at": time.time(),
+                "messages": data,
+            }
+        if not isinstance(data, dict):
+            raise SessionDataCorruptionError(path)
+
+        current_label = str(data.get("label", "")).strip()
+        if current_label and self._is_bootstrap_text(current_label):
+            data.pop("label", None)
+        if not data.get("label") and data.get("title"):
+            candidate = str(data.get("title", "")).strip()
+            if candidate and not self._is_bootstrap_text(candidate):
+                data["label"] = candidate
+
+        self._cache.put(cache_key, data)
+        return data
 
     def load_session_for_agent(
         self, session_id: str, agent_id: str
@@ -271,24 +332,30 @@ class SessionManager:
 
     def _load_session_store(self, agent_id: str) -> dict[str, dict[str, Any]]:
         """加载 sessions.json 索引"""
-        path = self._session_store_path(agent_id)
-        if not path.exists():
-            return {}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
+        lock = self._get_store_lock(agent_id)
+        with lock:
+            path = self._session_store_path(agent_id)
+            if not path.exists():
+                return {}
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                return {}
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise SessionDataCorruptionError(path) from exc
+            if not isinstance(data, dict):
+                raise SessionDataCorruptionError(path)
+            return data
 
     def _save_session_store(
         self, agent_id: str, store: dict[str, dict[str, Any]]
     ) -> None:
         """持久化 sessions.json"""
-        path = self._session_store_path(agent_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(store, f, ensure_ascii=False, indent=2)
+        lock = self._get_store_lock(agent_id)
+        with lock:
+            path = self._session_store_path(agent_id)
+            _write_json_atomic(path, store)
 
     def _update_session_store_entry(
         self,
@@ -300,27 +367,35 @@ class SessionManager:
         spawned_by: str | None = None,
     ) -> None:
         """更新 sessions.json 中的会话条目，并在 mode=enforce 时执行 maintenance"""
-        store = self._load_session_store(agent_id)
-        entry = store.get(session_key, {})
-        entry["sessionId"] = session_id
-        entry["updatedAt"] = int(updated_at * 1000)
-        if label:
-            entry["label"] = label
-        elif "label" in entry:
-            entry.pop("label", None)
-        if "title" in entry:
-            entry.pop("title", None)
-        if spawned_by:
-            entry["spawnedBy"] = spawned_by
-        store[session_key] = entry
-        store, _ = self._run_session_maintenance(agent_id, store=store, enforce=False)
-        self._save_session_store(agent_id, store)
+        lock = self._get_store_lock(agent_id)
+        with lock:
+            store = self._load_session_store(agent_id)
+            entry = store.get(session_key, {})
+            entry["sessionId"] = session_id
+            entry["updatedAt"] = int(updated_at * 1000)
+            if label:
+                entry["label"] = label
+            elif "label" in entry:
+                entry.pop("label", None)
+            if "title" in entry:
+                entry.pop("title", None)
+            if spawned_by:
+                entry["spawnedBy"] = spawned_by
+            store[session_key] = entry
+            store, _ = self._run_session_maintenance(
+                agent_id,
+                store=store,
+                enforce=False,
+            )
+            self._save_session_store(agent_id, store)
 
     def _remove_session_store_entry(self, agent_id: str, session_key: str) -> None:
         """从 sessions.json 移除会话"""
-        store = self._load_session_store(agent_id)
-        store.pop(session_key, None)
-        self._save_session_store(agent_id, store)
+        lock = self._get_store_lock(agent_id)
+        with lock:
+            store = self._load_session_store(agent_id)
+            store.pop(session_key, None)
+            self._save_session_store(agent_id, store)
 
     def _parse_byte_size(self, raw: str | int | float | None, default_unit: str = "b") -> int | None:
         """解析字节大小，如 '500mb'、'1gb'。支持 b/kb/mb/gb。返回 None 表示无效或未设置。"""
@@ -504,6 +579,18 @@ class SessionManager:
         self, agent_id: str, store: dict | None = None, enforce: bool = False, dry_run: bool = False
     ) -> tuple[dict, dict[str, Any]]:
         """prune 过期 + cap 超限 + 磁盘预算。返回 (store, report)"""
+        lock = self._get_store_lock(agent_id)
+        with lock:
+            return self._run_session_maintenance_unlocked(
+                agent_id,
+                store=store,
+                enforce=enforce,
+                dry_run=dry_run,
+            )
+
+    def _run_session_maintenance_unlocked(
+        self, agent_id: str, store: dict | None = None, enforce: bool = False, dry_run: bool = False
+    ) -> tuple[dict, dict[str, Any]]:
         if store is None:
             store = self._load_session_store(agent_id)
         cfg = get_config()
@@ -570,9 +657,7 @@ class SessionManager:
         lock = self._get_lock(session_id, agent_id)
         with lock:
             path = self._session_path(session_id, agent_id)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            _write_json_atomic(path, data)
             cache_key = f"{agent_id}:{session_id}"
             self._cache.put(cache_key, data)
             session_key = self.session_key_from_session_id(agent_id, session_id)
