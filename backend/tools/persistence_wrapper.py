@@ -11,9 +11,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
 
+from runtime.tool_execution import (
+    ensure_async_execution_safe,
+    ensure_sync_execution_allowed,
+)
 from tool_results.pipeline import maybe_persist_tool_output
 
 logger = logging.getLogger(__name__)
@@ -38,6 +44,9 @@ class _PersistenceWrapper(BaseTool):
             name=inner.name,
             description=inner.description,
             args_schema=inner.args_schema,
+            return_direct=inner.return_direct,
+            tags=inner.tags,
+            metadata=inner.metadata,
         )
         self._inner = inner
         self._data_dir = data_dir
@@ -48,8 +57,14 @@ class _PersistenceWrapper(BaseTool):
     # Helpers
     # ------------------------------------------------------------------
 
+    @property
+    def wrapped_tool(self) -> BaseTool:
+        return self._inner
+
     def _persist(self, raw: Any) -> str:
         text = raw if isinstance(raw, str) else str(raw)
+        if not self._data_dir or getattr(self._inner, "no_persist", False):
+            return text
         return maybe_persist_tool_output(
             text,
             tool_name=self._inner.name,
@@ -58,21 +73,59 @@ class _PersistenceWrapper(BaseTool):
             session_id=self._session_id,
         )
 
+    def _persist_result(self, raw: Any) -> Any:
+        if isinstance(raw, str):
+            return self._persist(raw)
+        if isinstance(raw, ToolMessage) and isinstance(raw.content, str):
+            persisted_content = self._persist(raw.content)
+            if persisted_content == raw.content:
+                return raw
+            return raw.model_copy(update={"content": persisted_content})
+        return raw
+
+    @staticmethod
+    def _rebuild_tool_input(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        if args and kwargs:
+            raise TypeError("Tool invocation cannot mix positional and keyword inputs")
+        if len(args) > 1:
+            raise TypeError("Tool invocation accepts at most one positional input")
+        if args:
+            return args[0]
+        return kwargs
+
     # ------------------------------------------------------------------
-    # Sync / async delegation
+    # Public delegation keeps validation, callbacks, config and artifacts.
     # ------------------------------------------------------------------
 
-    def _run(self, *args: Any, **kwargs: Any) -> str:
-        result = self._inner._run(*args, **kwargs)
-        return self._persist(result)
+    def invoke(
+        self,
+        input: Any,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        ensure_sync_execution_allowed(self)
+        result = self._inner.invoke(input, config=config, **kwargs)
+        return self._persist_result(result)
 
-    async def _arun(self, *args: Any, **kwargs: Any) -> str:
-        try:
-            result = await self._inner._arun(*args, **kwargs)
-            return self._persist(result)
-        except NotImplementedError:
-            result = self._inner._run(*args, **kwargs)
-            return self._persist(result)
+    async def ainvoke(
+        self,
+        input: Any,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        ensure_async_execution_safe(self)
+        result = await self._inner.ainvoke(input, config=config, **kwargs)
+        return self._persist_result(result)
+
+    def _run(self, *args: Any, **kwargs: Any) -> Any:
+        ensure_sync_execution_allowed(self)
+        tool_input = self._rebuild_tool_input(args, kwargs)
+        return self._persist_result(self._inner.invoke(tool_input))
+
+    async def _arun(self, *args: Any, **kwargs: Any) -> Any:
+        ensure_async_execution_safe(self)
+        tool_input = self._rebuild_tool_input(args, kwargs)
+        return self._persist_result(await self._inner.ainvoke(tool_input))
 
 
 def wrap_tools_for_persistence(
@@ -83,26 +136,20 @@ def wrap_tools_for_persistence(
 ) -> list[BaseTool]:
     """Return a new list where every tool is wrapped with persistence logic.
 
-    If *data_dir* is empty (e.g. AgentManager not yet initialised) the list
-    is returned unchanged so startup is not broken.
+    If *data_dir* is empty, persistence is skipped but the wrapper remains so
+    approval-sensitive tools still use the guarded public async path.
 
-    Tools that define ``no_persist = True`` as a class attribute are left
-    unwrapped (useful for structural / tiny-output tools if needed).
+    Tools that define ``no_persist = True`` skip storage only; the safety
+    wrapper remains active.
     """
-    if not data_dir:
-        return tools
-
     wrapped: list[BaseTool] = []
     for tool in tools:
-        if getattr(tool, "no_persist", False):
-            wrapped.append(tool)
-        else:
-            wrapped.append(
-                _PersistenceWrapper(
-                    inner=tool,
-                    data_dir=data_dir,
-                    agent_id=agent_id,
-                    session_id=session_id,
-                )
+        wrapped.append(
+            _PersistenceWrapper(
+                inner=tool,
+                data_dir=data_dir,
+                agent_id=agent_id,
+                session_id=session_id,
             )
+        )
     return wrapped

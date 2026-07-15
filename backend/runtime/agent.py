@@ -47,6 +47,7 @@ from runtime.source_sink_guard import (
     is_untrusted_source_tool,
 )
 from runtime.security_context import mark_recent_untrusted_content, runtime_security_context
+from runtime.tool_execution import invoke_tool_async
 
 logger = logging.getLogger(__name__)
 
@@ -1106,10 +1107,19 @@ class AgentManager:
                             "step": step_count, "max_steps": recursion_limit,
                         }
                         try:
-                            result_str = str(matched_tool._run(**args_to_use))[:2000]
+                            result_str = (
+                                await invoke_tool_async(
+                                    matched_tool,
+                                    args_to_use,
+                                    user_message=message,
+                                    recent_untrusted_content=recent_untrusted_content,
+                                )
+                            )[:2000]
                         except Exception as te:
                             from tools.error_utils import format_tool_error
                             result_str = format_tool_error(fallback_tool_name, te)
+                        if is_untrusted_source_tool(fallback_tool_name):
+                            recent_untrusted_content = True
                         status, error = _infer_tool_result_status(result_str)
                         run_tracker.record_tool_end(
                             turn.run_id,
