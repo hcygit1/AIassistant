@@ -5,12 +5,9 @@ import {
   Clock, Play, XCircle, RefreshCw, Filter,
   CheckCircle2, AlertCircle, Loader2, Timer, Bell, Zap,
 } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 import { useApp } from "@/lib/store";
 import type { Messages } from "@/lib/i18n/locales";
-
-const API_BASE = typeof window !== "undefined"
-  ? `http://${window.location.hostname}:8002/api`
-  : "http://localhost:8002/api";
 
 interface TaskItem {
   id: string;

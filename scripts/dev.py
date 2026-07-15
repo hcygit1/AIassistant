@@ -15,12 +15,58 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = ROOT / "backend"
 FRONTEND_DIR = ROOT / "frontend"
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8002",
+    "http://127.0.0.1:8002",
+)
+
+
+def build_frontend_env(
+    base_env: Mapping[str, str],
+    *,
+    backend_port: int,
+    frontend_port: int,
+) -> dict[str, str]:
+    env = dict(base_env)
+    env["PORT"] = str(frontend_port)
+    env["NEXT_PUBLIC_API_URL"] = f"http://localhost:{backend_port}/api"
+    return env
+
+
+def build_backend_env(
+    base_env: Mapping[str, str],
+    *,
+    frontend_port: int,
+) -> dict[str, str]:
+    env = dict(base_env)
+    configured_origins = env.get("PIPIXIA_CORS_ORIGINS", "").strip()
+    if configured_origins:
+        origins = [
+            origin.strip()
+            for origin in configured_origins.split(",")
+            if origin.strip()
+        ]
+    else:
+        origins = list(DEFAULT_CORS_ORIGINS)
+
+    for origin in (
+        f"http://localhost:{frontend_port}",
+        f"http://127.0.0.1:{frontend_port}",
+    ):
+        if origin not in origins:
+            origins.append(origin)
+
+    env["PIPIXIA_CORS_ORIGINS"] = ",".join(origins)
+    return env
 
 
 def _run(command: list[str], cwd: Path) -> int:
@@ -98,13 +144,22 @@ def main() -> int:
             # Use serve (not start) to avoid interactive prompts mixing with frontend output.
             # First-time config: use Web UI at localhost or run `cd backend && python cli.py onboard` separately.
             backend_cmd = [args.python, "cli.py", "serve", "--port", str(args.backend_port)]
-            processes.append(_start(backend_cmd, BACKEND_DIR))
+            backend_env = build_backend_env(
+                os.environ,
+                frontend_port=args.frontend_port,
+            )
+            processes.append(_start(backend_cmd, BACKEND_DIR, env=backend_env))
 
         if run_frontend:
             print(f"[INFO] Starting frontend on :{args.frontend_port}")
-            env = os.environ.copy()
-            env["PORT"] = str(args.frontend_port)
-            processes.append(_start(["npm", "run", "dev"], FRONTEND_DIR, env=env))
+            frontend_env = build_frontend_env(
+                os.environ,
+                backend_port=args.backend_port,
+                frontend_port=args.frontend_port,
+            )
+            processes.append(
+                _start(["npm", "run", "dev"], FRONTEND_DIR, env=frontend_env)
+            )
 
         print("[OK] Services are running. Press Ctrl+C to stop.")
         while True:
@@ -123,4 +178,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

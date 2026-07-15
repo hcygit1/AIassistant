@@ -1,6 +1,17 @@
-const API_BASE = typeof window !== "undefined"
-  ? `http://${window.location.hostname}:8002/api`
-  : "http://localhost:8002/api";
+export function resolveApiBase(
+  publicApiUrl: string | undefined,
+  hostname?: string,
+): string {
+  const configuredUrl = publicApiUrl?.trim().replace(/\/+$/, "");
+  if (configuredUrl) return configuredUrl;
+
+  return `http://${hostname || "localhost"}:8002/api`;
+}
+
+export const API_BASE = resolveApiBase(
+  process.env.NEXT_PUBLIC_API_URL,
+  typeof window !== "undefined" ? window.location.hostname : undefined,
+);
 
 export interface SSEEvent {
   type: string;

@@ -1,14 +1,28 @@
-import { afterEach, describe, expect, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
-import { getTurnStatus } from "../src/lib/api";
+import { getTurnStatus, resolveApiBase } from "../src/lib/api";
 
 const originalFetch = globalThis.fetch;
 
-afterEach(() => {
+test.afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-describe("getTurnStatus", () => {
+test.describe("resolveApiBase", () => {
+  test("prefers and normalizes the public API URL", () => {
+    expect(
+      resolveApiBase("  http://localhost:9123/api/  ", "ignored-host"),
+    ).toBe("http://localhost:9123/api");
+  });
+
+  test("falls back to the browser hostname on port 8002", () => {
+    expect(resolveApiBase(undefined, "devbox.local")).toBe(
+      "http://devbox.local:8002/api",
+    );
+  });
+});
+
+test.describe("getTurnStatus", () => {
   test("returns a terminal status reported by the backend", async () => {
     globalThis.fetch = async () =>
       new Response(
