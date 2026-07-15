@@ -10,7 +10,16 @@ from typing import Any
 
 import copy
 
-from config import get_config, get_raw_config, save_config, get_config_path, is_initialized, resolve_chat_timeout_seconds
+from config import (
+    get_config,
+    get_config_path,
+    get_raw_config,
+    is_initialized,
+    normalize_tool_name,
+    resolve_chat_timeout_seconds,
+    resolve_tool_policy_from_config,
+    save_config,
+)
 from config_schema import validate_config, sanitize_config_for_client, SENSITIVE_KEYS
 
 router = APIRouter()
@@ -141,27 +150,35 @@ async def update_tool_policy(req: ToolPolicyUpdateRequest):
     agent_entry = next((a for a in agents_list if a.get("id") == req.agent_id), None)
     if not agent_entry:
         raise HTTPException(404, f"Agent '{req.agent_id}' 不存在")
-    defaults = cfg.get("agents", {}).get("defaults", {})
-    tools_defaults = defaults.get("tools") or {}
-    tools_agent = agent_entry.get("tools") or {}
-    deny = list(tools_agent.get("deny") or tools_defaults.get("deny") or [])
-    allow = list(tools_agent.get("allow") or tools_defaults.get("allow") or [])
-
-    def _norm(n: str) -> str:
-        return n.replace("-", "_").lower().strip()
-
-    name_norm = _norm(req.tool_name)
-    allow_set = {_norm(a) for a in allow if a} if allow else None
+    allow, deny = resolve_tool_policy_from_config(cfg, req.agent_id)
+    name_norm = normalize_tool_name(req.tool_name)
+    allow_set = (
+        {normalize_tool_name(name) for name in allow if name}
+        if allow
+        else None
+    )
 
     if req.allowed:
-        deny = [x for x in deny if _norm(x) != name_norm]
+        deny = [
+            item
+            for item in deny
+            if normalize_tool_name(item) != name_norm
+        ]
         if allow_set is not None and name_norm not in allow_set:
             allow = allow + [req.tool_name]
     else:
-        if name_norm not in {_norm(d) for d in deny if d}:
+        if name_norm not in {
+            normalize_tool_name(item)
+            for item in deny
+            if item
+        }:
             deny = deny + [req.tool_name]
         if allow_set is not None and name_norm in allow_set:
-            allow = [x for x in allow if _norm(x) != name_norm]
+            allow = [
+                item
+                for item in allow
+                if normalize_tool_name(item) != name_norm
+            ]
 
     agent_entry.setdefault("tools", {})
     agent_entry["tools"]["deny"] = deny if deny else None

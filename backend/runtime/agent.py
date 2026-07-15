@@ -49,6 +49,7 @@ from runtime.security_context import mark_recent_untrusted_content, runtime_secu
 from runtime.tool_execution import invoke_tool_async
 from runtime.agent_state import AgentState
 from runtime.memory_runtime import MemoryRuntime
+from runtime.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -140,13 +141,6 @@ class SessionContextCacheEntry:
     history_tokens: int
 
 
-@dataclass
-class ToolNameCacheEntry:
-    key: tuple[Any, ...]
-    tool_names: tuple[str, ...]
-
-
-
 from infra.event_bus import EventBus, Events, event_bus
 
 
@@ -190,6 +184,7 @@ class AgentManager:
     def __init__(self):
         self.data_dir: str = ""
         self._memory_runtime = MemoryRuntime()
+        self._tool_registry = ToolRegistry(self)
         self._states: dict[str, AgentState] = {}
         self._initialized = False
         self.lifecycle_hooks: LifecycleHooks | None = None
@@ -197,7 +192,7 @@ class AgentManager:
         self._state_save_tasks: dict[str, asyncio.Task] = {}
         self._prompt_cache: dict[tuple[Any, ...], PromptCacheEntry] = {}
         self._session_context_cache: dict[tuple[str, str], SessionContextCacheEntry] = {}
-        self._tool_name_cache: dict[tuple[Any, ...], ToolNameCacheEntry] = {}
+        self._tool_name_cache = self._tool_registry.name_cache
 
     def _get_state_persist_config(self, agent_id: str) -> tuple[bool, int]:
         """获取状态持久化配置 (enabled, interval_minutes)"""
@@ -364,85 +359,35 @@ class AgentManager:
                 logger.warning(f"Failed to save state for {agent_id}: {e}")
 
     def _collect_tools(self, agent_id: str, session_id: str = "") -> list:
-        workspace = str(resolve_agent_workspace(agent_id))
-        agent_dir = str(resolve_agent_dir(agent_id))
-
-        from tools.file_tools import get_file_tools
-        from tools.exec_tools import get_exec_tools
-        from tools.web_tools import get_web_tools
-        from tools.memory_tools import get_memory_tools
-        from tools.knowledge_tool import get_knowledge_tools
-        from tools.agent_tools import get_agent_tools
-        from tools.cron_tools import get_cron_tools
-        from tools.status_tool import get_status_tools
-
-        tools = []
-        tools.extend(get_file_tools(workspace, agent_id=agent_id))
-        tools.extend(get_exec_tools(workspace, agent_id))
-        tools.extend(get_web_tools())
-        tools.extend(get_memory_tools(agent_id=agent_id))
-        tools.extend(get_knowledge_tools(agent_dir))
-        tools.extend(get_agent_tools(agent_id, self, session_id))
-        tools.extend(get_cron_tools(agent_id))
-        tools.extend(get_status_tools(agent_id, session_id))
-        return tools
+        return self._tool_registry.collect_tools(agent_id, session_id)
 
     def _wrap_tools_for_session(self, agent_id: str, session_id: str, tools: list) -> list:
-        from tools.persistence_wrapper import wrap_tools_for_persistence
-
-        return wrap_tools_for_persistence(
+        return self._tool_registry.wrap_tools(
+            self.data_dir,
+            agent_id,
+            session_id,
             tools,
-            data_dir=self.data_dir,
-            agent_id=agent_id,
-            session_id=session_id,
         )
 
     def _build_tools(self, agent_id: str, session_id: str = "") -> list:
-        tools = self._collect_tools(agent_id, session_id)
-
-        tools = self._filter_tools_by_policy(agent_id, tools)
-        tools = self._wrap_tools_for_session(agent_id, session_id, tools)
-        return tools
+        return self._tool_registry.build_tools(
+            self.data_dir,
+            agent_id,
+            session_id,
+            collect_tools=self._collect_tools,
+            filter_tools=self._filter_tools_by_policy,
+            wrap_tools=self._wrap_tools_for_session,
+        )
 
     def _resolve_tool_policy(self, agent_id: str) -> tuple[list[str], list[str]]:
-        """解析 agent 的工具 allow/deny 策略。"""
-        from config import get_config
-
-        cfg = get_config()
-        agent_entry = None
-        for a in (cfg.get("agents", {}).get("list") or []):
-            if a.get("id") == agent_id:
-                agent_entry = a
-                break
-        policy = (agent_entry or {}).get("tools") or {}
-        defaults_policy = (cfg.get("agents", {}).get("defaults", {}).get("tools")) or {}
-        deny = list(policy.get("deny") or defaults_policy.get("deny") or [])
-        allow = list(policy.get("allow") or defaults_policy.get("allow") or [])
-        return allow, deny
+        return self._tool_registry.resolve_policy(agent_id)
 
     def _filter_tools_by_policy(self, agent_id: str, tools: list) -> list:
-        """按 agents.list[].tools.allow/deny 过滤工具"""
-        allow, deny = self._resolve_tool_policy(agent_id)
-
-        def _normalize(name: str) -> str:
-            return name.replace("-", "_").lower().strip()
-
-        deny_set = {_normalize(d) for d in deny if d}
-        allow_set = {_normalize(a) for a in allow if a} if allow else None
-
-        def _is_allowed(tool_name: str) -> bool:
-            n = _normalize(tool_name)
-            if n in deny_set:
-                return False
-            if allow_set is None:
-                return True
-            if n in allow_set:
-                return True
-            if n == "apply_patch" and "exec" in allow_set:
-                return True
-            return False
-
-        return [t for t in tools if _is_allowed(t.name)]
+        return self._tool_registry.filter_tools(
+            agent_id,
+            tools,
+            resolve_policy=self._resolve_tool_policy,
+        )
 
     def _build_messages(
         self, history: list[dict[str, Any]], new_message: str
@@ -486,25 +431,18 @@ class AgentManager:
         )
 
     def _tool_policy_signature(self, agent_id: str) -> tuple[Any, ...]:
-        allow_list, deny_list = self._resolve_tool_policy(agent_id)
-        allow = tuple(sorted(str(x) for x in allow_list))
-        deny = tuple(sorted(str(x) for x in deny_list))
-        return allow, deny
+        return self._tool_registry.policy_signature(
+            agent_id,
+            resolve_policy=self._resolve_tool_policy,
+        )
 
     def _get_or_build_tool_names(self, agent_id: str) -> tuple[str, ...]:
-        cache_key = (agent_id, self._tool_policy_signature(agent_id))
-        cached = self._tool_name_cache.get(cache_key)
-        if cached is not None:
-            return cached.tool_names
-
-        tools = self._collect_tools(agent_id, session_id="")
-        tools = self._filter_tools_by_policy(agent_id, tools)
-        tool_names = tuple(sorted(t.name for t in tools))
-        self._tool_name_cache[cache_key] = ToolNameCacheEntry(
-            key=cache_key,
-            tool_names=tool_names,
+        return self._tool_registry.get_or_build_tool_names(
+            agent_id,
+            collect_tools=self._collect_tools,
+            filter_tools=self._filter_tools_by_policy,
+            policy_signature=self._tool_policy_signature,
         )
-        return tool_names
 
     def _get_or_build_prompt(
         self,

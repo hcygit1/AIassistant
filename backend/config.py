@@ -441,9 +441,11 @@ def resolve_agent_config(agent_id: str) -> dict[str, Any]:
     return defaults
 
 
-def is_tool_allowed_by_policy(agent_id: str, tool_name: str) -> bool:
-    """判断工具是否被 allow/deny 策略允许（与 agent._filter_tools_by_policy 一致）"""
-    cfg = get_config()
+def resolve_tool_policy_from_config(
+    cfg: dict[str, Any],
+    agent_id: str,
+) -> tuple[list[str], list[str]]:
+    """从指定配置解析 Agent 的工具 allow/deny 策略。"""
     agent_entry = None
     for a in (cfg.get("agents", {}).get("list") or []):
         if a.get("id") == agent_id:
@@ -453,23 +455,61 @@ def is_tool_allowed_by_policy(agent_id: str, tool_name: str) -> bool:
     defaults_policy = (cfg.get("agents", {}).get("defaults", {}).get("tools")) or {}
     deny = list(policy.get("deny") or defaults_policy.get("deny") or [])
     allow = list(policy.get("allow") or defaults_policy.get("allow") or [])
+    return allow, deny
 
-    def _normalize(name: str) -> str:
-        return name.replace("-", "_").lower().strip()
 
-    n = _normalize(tool_name)
-    deny_set = {_normalize(d) for d in deny if d}
-    allow_set = {_normalize(a) for a in allow if a} if allow else None
+def resolve_tool_policy(agent_id: str) -> tuple[list[str], list[str]]:
+    """解析当前配置中的 Agent 工具 allow/deny 策略。"""
+    return resolve_tool_policy_from_config(get_config(), agent_id)
 
-    if n in deny_set:
+
+def normalize_tool_name(name: str) -> str:
+    return name.replace("-", "_").lower().strip()
+
+
+def is_tool_name_allowed(
+    tool_name: str,
+    allow: list[str],
+    deny: list[str],
+) -> bool:
+    """判断工具名是否满足已解析的 allow/deny 策略。"""
+
+    normalized = normalize_tool_name(tool_name)
+    deny_set = {normalize_tool_name(name) for name in deny if name}
+    allow_set = (
+        {normalize_tool_name(name) for name in allow if name}
+        if allow
+        else None
+    )
+
+    if normalized in deny_set:
+        return False
+    if normalized == "apply_patch" and "exec" in deny_set:
         return False
     if allow_set is None:
         return True
-    if n in allow_set:
+    if normalized in allow_set:
         return True
-    if n == "apply_patch" and "exec" in allow_set:
+    if normalized == "apply_patch" and "exec" in allow_set:
         return True
     return False
+
+
+def is_tool_allowed_by_policy(agent_id: str, tool_name: str) -> bool:
+    """判断工具是否满足 Agent 的 allow/deny 策略。"""
+    allow, deny = resolve_tool_policy(agent_id)
+    return is_tool_name_allowed(tool_name, allow, deny)
+
+
+def resolve_tool_catalog_signature() -> str:
+    """返回影响工具集合的配置签名，用于运行时缓存失效。"""
+    tools_config = get_config().get("tools") or {}
+    return json.dumps(
+        tools_config,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
 
 
 def get_exec_approval_config() -> dict[str, Any]:
