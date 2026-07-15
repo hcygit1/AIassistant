@@ -18,7 +18,6 @@ from config import (
     resolve_agent_config,
     resolve_agent_workspace,
     resolve_agent_dir,
-    resolve_mem_config,
     list_agents,
 )
 from runtime.prompt_builder import prompt_builder
@@ -49,6 +48,7 @@ from runtime.source_sink_guard import (
 from runtime.security_context import mark_recent_untrusted_content, runtime_security_context
 from runtime.tool_execution import invoke_tool_async
 from runtime.agent_state import AgentState
+from runtime.memory_runtime import MemoryRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -155,13 +155,41 @@ from infra.event_bus import EventBus, Events, event_bus
 # ---------------------------------------------------------------------------
 
 class AgentManager:
+    @property
+    def mem_stores(self) -> dict[str, Any]:
+        return self._memory_runtime.stores
+
+    @mem_stores.setter
+    def mem_stores(self, value: dict[str, Any]) -> None:
+        self._memory_runtime.stores = value
+
+    @property
+    def mem_embedders(self) -> dict[str, Any]:
+        return self._memory_runtime.embedders
+
+    @mem_embedders.setter
+    def mem_embedders(self, value: dict[str, Any]) -> None:
+        self._memory_runtime.embedders = value
+
+    @property
+    def mem_workers(self) -> dict[str, Any]:
+        return self._memory_runtime.workers
+
+    @mem_workers.setter
+    def mem_workers(self, value: dict[str, Any]) -> None:
+        self._memory_runtime.workers = value
+
+    @property
+    def mem_recalls(self) -> dict[str, Any]:
+        return self._memory_runtime.recalls
+
+    @mem_recalls.setter
+    def mem_recalls(self, value: dict[str, Any]) -> None:
+        self._memory_runtime.recalls = value
+
     def __init__(self):
         self.data_dir: str = ""
-        # New mem-system singletons (per agent_id)
-        self.mem_stores: dict[str, Any] = {}
-        self.mem_embedders: dict[str, Any] = {}
-        self.mem_workers: dict[str, Any] = {}
-        self.mem_recalls: dict[str, Any] = {}
+        self._memory_runtime = MemoryRuntime()
         self._states: dict[str, AgentState] = {}
         self._initialized = False
         self.lifecycle_hooks: LifecycleHooks | None = None
@@ -209,63 +237,7 @@ class AgentManager:
                 logger.warning(f"Periodic state save error for {agent_id}: {e}")
 
     def _init_mem_system(self, agent_id: str) -> None:
-        """Initialize the new memory system (MemStore / MemEmbedder / MemWorker / MemRecall)."""
-        try:
-            mem_cfg = resolve_mem_config()
-            if not mem_cfg.get("enabled", True):
-                logger.info("Mem system disabled for %s", agent_id)
-                return
-
-            from mem.store import MemStore
-            from mem.embedder import MemEmbedder
-            from mem.worker import MemWorker
-            from mem.recall import MemRecall
-            from mem.task_processor import MemTaskProcessor
-            from mem.skill_evolver import MemSkillEvolver
-
-            store = MemStore(
-                db_path=mem_cfg["storage"]["db_path"],
-                dimensions=mem_cfg.get("embedding", {}).get("dimensions", 1536),
-            )
-            self.mem_stores[agent_id] = store
-
-            embedder = MemEmbedder.from_config(mem_cfg.get("embedding", {}))
-            self.mem_embedders[agent_id] = embedder
-
-            skill_store_dir = str(Path(mem_cfg["storage"]["db_path"]).parent / "skills-store")
-            skill_evolver = MemSkillEvolver.from_config(
-                mem_cfg, store=store, embedder=embedder,
-                skill_store_dir=skill_store_dir,
-            )
-
-            async def _on_task_completed(task: Any) -> None:
-                await skill_evolver.on_task_completed(task)
-
-            task_proc = MemTaskProcessor.from_config(
-                mem_cfg, store=store, embedder=embedder,
-                on_task_completed=_on_task_completed,
-            )
-
-            async def _on_chunks_ingested(session_key: str, session_end: bool) -> None:
-                await task_proc.on_chunks_ingested(session_key, session_end, owner=agent_id)
-
-            worker = MemWorker.from_config(
-                mem_cfg, store=store, embedder=embedder,
-                on_chunks_ingested=_on_chunks_ingested,
-            )
-            self.mem_workers[agent_id] = worker
-
-            recall = MemRecall.from_config(
-                mem_cfg,
-                store=store,
-                embedder=embedder,
-                agent_id=agent_id,
-            )
-            self.mem_recalls[agent_id] = recall
-
-            logger.info("Mem system initialized for agent %s", agent_id)
-        except Exception as e:
-            logger.error("Failed to initialize mem system for %s: %s", agent_id, e)
+        self._memory_runtime.initialize_agent(agent_id)
 
     async def initialize(self, data_dir: str) -> None:
         self.data_dir = data_dir
@@ -370,16 +342,7 @@ class AgentManager:
         try:
             await self.wait_for_pending_tasks(timeout=timeout)
         finally:
-            for agent_id, store in list(self.mem_stores.items()):
-                try:
-                    store.close()
-                except Exception as e:
-                    logger.warning("Failed to close mem store for %s: %s", agent_id, e)
-
-            self.mem_stores.clear()
-            self.mem_embedders.clear()
-            self.mem_workers.clear()
-            self.mem_recalls.clear()
+            self._memory_runtime.close()
             self._states.clear()
             self._state_save_tasks.clear()
             self._pending_tasks.clear()
@@ -1263,34 +1226,12 @@ class AgentManager:
         user_content: str,
         assistant_content: str,
     ) -> None:
-        worker = self.mem_workers.get(agent_id)
-        if not worker:
-            return
-        try:
-            import uuid as _uuid
-            from mem.worker import IngestMessage
-            turn_id = str(_uuid.uuid4())
-            batch: list[IngestMessage] = []
-            if user_content.strip():
-                batch.append(IngestMessage(
-                    role="user",
-                    content=user_content.strip(),
-                    session_key=session_id,
-                    turn_id=turn_id,
-                    owner=agent_id,
-                ))
-            if assistant_content.strip():
-                batch.append(IngestMessage(
-                    role="assistant",
-                    content=assistant_content.strip(),
-                    session_key=session_id,
-                    turn_id=turn_id,
-                    owner=agent_id,
-                ))
-            if batch:
-                await worker.enqueue(batch, session_end=False)
-        except Exception as e:
-            logger.warning("incremental_ingest failed for %s: %s", agent_id, e)
+        await self._memory_runtime.ingest_turn(
+            agent_id,
+            session_id,
+            user_content,
+            assistant_content,
+        )
 
     # ------------------------------------------------------------------
     # Mem Worker 批量入库 (压缩 / session 结束时触发)
@@ -1303,31 +1244,12 @@ class AgentManager:
         messages: list[dict[str, Any]],
         session_end: bool = False,
     ) -> None:
-        worker = self.mem_workers.get(agent_id)
-        if not worker or not messages:
-            return
-        try:
-            import uuid as _uuid
-            from mem.worker import IngestMessage
-            batch: list[IngestMessage] = []
-            for msg in messages:
-                content = msg.get("content", "").strip()
-                if not content:
-                    continue
-                role = msg.get("role", "user")
-                if role == "system":
-                    continue
-                batch.append(IngestMessage(
-                    role=role,
-                    content=content,
-                    session_key=session_id,
-                    turn_id=str(_uuid.uuid4()),
-                    owner=agent_id,
-                ))
-            if batch:
-                await worker.enqueue(batch, session_end=session_end)
-        except Exception as e:
-            logger.warning("batch_ingest failed for %s: %s", agent_id, e)
+        await self._memory_runtime.ingest_messages(
+            agent_id,
+            session_id,
+            messages,
+            session_end=session_end,
+        )
 
     # ------------------------------------------------------------------
     # 自动压缩
