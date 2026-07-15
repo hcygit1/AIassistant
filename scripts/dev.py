@@ -30,6 +30,20 @@ DEFAULT_CORS_ORIGINS = (
 )
 
 
+def _build_dev_cors_origin_regex(frontend_port: int) -> str:
+    host_pattern = (
+        r"(?:"
+        r"localhost|"
+        r"127\.0\.0\.1|"
+        r"10(?:\.\d{1,3}){3}|"
+        r"172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|"
+        r"192\.168(?:\.\d{1,3}){2}|"
+        r"(?:[A-Za-z0-9-]+\.)+local"
+        r")"
+    )
+    return rf"^https?://{host_pattern}:{frontend_port}$"
+
+
 def build_frontend_env(
     base_env: Mapping[str, str],
     *,
@@ -38,7 +52,7 @@ def build_frontend_env(
 ) -> dict[str, str]:
     env = dict(base_env)
     env["PORT"] = str(frontend_port)
-    env["NEXT_PUBLIC_API_URL"] = f"http://localhost:{backend_port}/api"
+    env["NEXT_PUBLIC_API_PORT"] = str(backend_port)
     return env
 
 
@@ -66,6 +80,11 @@ def build_backend_env(
             origins.append(origin)
 
     env["PIPIXIA_CORS_ORIGINS"] = ",".join(origins)
+    if not configured_origins:
+        env.setdefault(
+            "PIPIXIA_CORS_ORIGIN_REGEX",
+            _build_dev_cors_origin_regex(frontend_port),
+        )
     return env
 
 

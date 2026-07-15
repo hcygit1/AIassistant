@@ -20,6 +20,12 @@ test.describe("resolveApiBase", () => {
       "http://devbox.local:8002/api",
     );
   });
+
+  test("uses the configured API port with the browser hostname", () => {
+    expect(resolveApiBase(undefined, "devbox.local", "9123")).toBe(
+      "http://devbox.local:9123/api",
+    );
+  });
 });
 
 test.describe("getTurnStatus", () => {

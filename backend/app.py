@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -15,6 +16,30 @@ from tools.skills_watcher import skills_watcher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8002",
+    "http://127.0.0.1:8002",
+)
+
+
+def resolve_cors_settings(
+    environ: Mapping[str, str],
+) -> tuple[list[str], str | None]:
+    configured_origins = environ.get("PIPIXIA_CORS_ORIGINS", "").strip()
+    if configured_origins:
+        origins = [
+            origin.strip()
+            for origin in configured_origins.split(",")
+            if origin.strip()
+        ]
+    else:
+        origins = list(DEFAULT_CORS_ORIGINS)
+
+    origin_regex = environ.get("PIPIXIA_CORS_ORIGIN_REGEX", "").strip() or None
+    return origins, origin_regex
 
 
 def _setup_logging_from_config() -> None:
@@ -61,77 +86,88 @@ def _setup_logging_from_config() -> None:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """启动时初始化：配置、技能扫描、Agent 引擎、Heartbeat、技能热加载"""
-    load_config()
-    _setup_logging_from_config()
-
     from runtime.agent import agent_manager
-    scan_all_skills()
-    await agent_manager.initialize(str(DATA_DIR))
-    skills_watcher.start()
-
     from system_messages.heartbeat import heartbeat_runner
-    agent_ids = [a["id"] for a in list_agents()]
-    await heartbeat_runner.start(agent_ids)
-    logger.info(f"Heartbeat started for agents: {agent_ids}")
+    from subagents.subagent_archive import (
+        start_subagent_archive,
+        stop_subagent_archive,
+    )
 
-    from sessions.session_work_delivery import session_work_delivery
-    recovered_work_count = session_work_delivery.recover_pending_work()
-    if recovered_work_count:
-        logger.info("Recovered %s pending system work items", recovered_work_count)
-
-    from subagents.subagent_archive import start_subagent_archive
-    start_subagent_archive()
-
-    from config import get_config
-    cfg = get_config()
-    cron_cfg = cfg.get("cron") or {}
-    if cron_cfg.get("enabled"):
-        from scheduler.cron_scheduler import CronScheduler
-        cron_scheduler = CronScheduler()
-        await cron_scheduler.start()
-        application.state.cron_scheduler = cron_scheduler
-        logger.info("Cron scheduler started")
-    else:
-        application.state.cron_scheduler = None
-
-    from subagents.subagent_resume import resume_subagent_runs
+    application.state.cron_scheduler = None
     try:
-        await resume_subagent_runs()
-    except Exception as e:
-        logger.warning(f"Subagent resume failed: {e}")
+        load_config()
+        _setup_logging_from_config()
 
-    yield
+        scan_all_skills()
+        await agent_manager.initialize(str(DATA_DIR))
+        skills_watcher.start()
 
-    skills_watcher.stop()
-    from subagents.subagent_archive import stop_subagent_archive
-    stop_subagent_archive()
-    if getattr(application.state, "cron_scheduler", None):
-        await application.state.cron_scheduler.stop()
+        agent_ids = [a["id"] for a in list_agents()]
+        await heartbeat_runner.start(agent_ids)
+        logger.info(f"Heartbeat started for agents: {agent_ids}")
 
-    # 等待后台记忆保存任务完成
-    from runtime.agent import agent_manager
-    await agent_manager.wait_for_pending_tasks(timeout=30)
+        from sessions.session_work_delivery import session_work_delivery
+        recovered_work_count = session_work_delivery.recover_pending_work()
+        if recovered_work_count:
+            logger.info("Recovered %s pending system work items", recovered_work_count)
 
-    await heartbeat_runner.stop()
-    logger.info("Heartbeat stopped")
+        start_subagent_archive()
+
+        from config import get_config
+        cfg = get_config()
+        cron_cfg = cfg.get("cron") or {}
+        if cron_cfg.get("enabled"):
+            from scheduler.cron_scheduler import CronScheduler
+            cron_scheduler = CronScheduler()
+            await cron_scheduler.start()
+            application.state.cron_scheduler = cron_scheduler
+            logger.info("Cron scheduler started")
+
+        from subagents.subagent_resume import resume_subagent_runs
+        try:
+            await resume_subagent_runs()
+        except Exception as e:
+            logger.warning(f"Subagent resume failed: {e}")
+
+        yield
+    finally:
+        try:
+            skills_watcher.stop()
+        except Exception:
+            logger.exception("Failed to stop skills watcher")
+
+        try:
+            stop_subagent_archive()
+        except Exception:
+            logger.exception("Failed to stop subagent archive")
+
+        try:
+            cron_scheduler = getattr(application.state, "cron_scheduler", None)
+            if cron_scheduler:
+                await cron_scheduler.stop()
+        except Exception:
+            logger.exception("Failed to stop cron scheduler")
+
+        try:
+            await heartbeat_runner.stop()
+            logger.info("Heartbeat stopped")
+        except Exception:
+            logger.exception("Failed to stop heartbeat")
+
+        try:
+            await agent_manager.close(timeout=30)
+        except Exception:
+            logger.exception("Failed to close agent manager")
 
 
 app = FastAPI(title="PIPIXIA", version="0.2.0", lifespan=lifespan)
 
-_cors_origins_env = os.getenv("PIPIXIA_CORS_ORIGINS", "").strip()
-if _cors_origins_env:
-    _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
-else:
-    _cors_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8002",
-        "http://127.0.0.1:8002",
-    ]
+_cors_origins, _cors_origin_regex = resolve_cors_settings(os.environ)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

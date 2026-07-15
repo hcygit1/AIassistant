@@ -419,12 +419,18 @@ class AgentManager:
     async def wait_for_pending_tasks(self, timeout: float = 30.0) -> None:
         """等待所有后台任务完成，用于应用关闭前确保数据不丢失"""
         # 先保存所有 Agent 状态
-        await self._save_all_states()
+        try:
+            await self._save_all_states()
+        except Exception as e:
+            logger.error("关闭前保存 Agent 状态失败: %s", e)
 
         # 取消状态保存任务
-        for task in self._state_save_tasks.values():
+        state_save_tasks = list(self._state_save_tasks.values())
+        for task in state_save_tasks:
             task.cancel()
         self._state_save_tasks.clear()
+        if state_save_tasks:
+            await asyncio.gather(*state_save_tasks, return_exceptions=True)
 
         if not self._pending_tasks:
             return
@@ -439,6 +445,31 @@ class AgentManager:
             logger.warning(f"等待后台任务超时（{timeout}秒），部分任务可能未完成")
         except Exception as e:
             logger.error(f"等待后台任务时出错: {e}")
+
+    async def close(self, timeout: float = 30.0) -> None:
+        """停止后台任务、关闭持久化资源，并将管理器恢复为未初始化状态。"""
+        self._initialized = False
+        try:
+            await self.wait_for_pending_tasks(timeout=timeout)
+        finally:
+            for agent_id, store in list(self.mem_stores.items()):
+                try:
+                    store.close()
+                except Exception as e:
+                    logger.warning("Failed to close mem store for %s: %s", agent_id, e)
+
+            self.mem_stores.clear()
+            self.mem_embedders.clear()
+            self.mem_workers.clear()
+            self.mem_recalls.clear()
+            self._states.clear()
+            self._state_save_tasks.clear()
+            self._pending_tasks.clear()
+            self._prompt_cache.clear()
+            self._session_context_cache.clear()
+            self._tool_name_cache.clear()
+            self.lifecycle_hooks = None
+            self.data_dir = ""
 
     async def _save_all_states(self) -> None:
         """保存所有 Agent 状态到磁盘"""

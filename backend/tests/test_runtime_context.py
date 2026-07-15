@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -499,6 +500,95 @@ class CompressSessionTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(manager._calc_compress_count_by_turns(messages, keep_turns=2), 3)
         self.assertEqual(manager._calc_compress_count_by_turns(messages, keep_turns=3), 0)
+
+
+class AgentManagerCloseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_releases_background_tasks_and_runtime_resources(self) -> None:
+        manager = AgentManager()
+        manager._initialized = True
+
+        store_main = SimpleNamespace(close=Mock())
+        store_writer = SimpleNamespace(close=Mock())
+        manager.mem_stores = {
+            "main": store_main,
+            "writer": store_writer,
+        }
+        manager.mem_embedders["main"] = object()
+        manager.mem_workers["main"] = object()
+        manager.mem_recalls["main"] = object()
+        manager._states["main"] = SimpleNamespace()
+        manager._prompt_cache[("main",)] = SimpleNamespace()
+        manager._session_context_cache[("main", "s1")] = SimpleNamespace()
+        manager._tool_name_cache[("main",)] = SimpleNamespace()
+
+        state_task = asyncio.create_task(asyncio.sleep(3600))
+        pending_finished = asyncio.Event()
+
+        async def _finish_pending() -> None:
+            await asyncio.sleep(0)
+            pending_finished.set()
+
+        pending_task = asyncio.create_task(_finish_pending())
+        manager._state_save_tasks["main"] = state_task
+        manager._pending_tasks.add(pending_task)
+
+        with patch.object(manager, "_save_all_states", new=AsyncMock()):
+            await manager.close(timeout=1)
+
+        self.assertTrue(pending_finished.is_set())
+        self.assertTrue(state_task.cancelled())
+        store_main.close.assert_called_once_with()
+        store_writer.close.assert_called_once_with()
+        self.assertFalse(manager._initialized)
+        self.assertEqual(manager.mem_stores, {})
+        self.assertEqual(manager.mem_embedders, {})
+        self.assertEqual(manager.mem_workers, {})
+        self.assertEqual(manager.mem_recalls, {})
+        self.assertEqual(manager._states, {})
+        self.assertEqual(manager._state_save_tasks, {})
+        self.assertEqual(manager._pending_tasks, set())
+        self.assertEqual(manager._prompt_cache, {})
+        self.assertEqual(manager._session_context_cache, {})
+        self.assertEqual(manager._tool_name_cache, {})
+
+    async def test_close_cancels_state_tasks_when_final_save_fails(self) -> None:
+        manager = AgentManager()
+        manager._initialized = True
+        state_task = asyncio.create_task(asyncio.sleep(3600))
+        manager._state_save_tasks["main"] = state_task
+        store = SimpleNamespace(close=Mock())
+        manager.mem_stores["main"] = store
+
+        with patch.object(
+            manager,
+            "_save_all_states",
+            new=AsyncMock(side_effect=RuntimeError("save failed")),
+        ):
+            await manager.close(timeout=1)
+
+        self.assertTrue(state_task.cancelled())
+        store.close.assert_called_once_with()
+        self.assertEqual(manager._state_save_tasks, {})
+
+    async def test_manager_can_initialize_again_after_close(self) -> None:
+        manager = AgentManager()
+
+        with (
+            patch("runtime.agent.list_agents", return_value=[]),
+            patch.object(manager, "_save_all_states", new=AsyncMock()),
+        ):
+            await manager.initialize("/tmp/pipixia-first")
+            self.assertTrue(manager._initialized)
+
+            await manager.close(timeout=1)
+            self.assertFalse(manager._initialized)
+
+            await manager.initialize("/tmp/pipixia-second")
+            self.assertTrue(manager._initialized)
+            self.assertEqual(manager.data_dir, "/tmp/pipixia-second")
+
+            await manager.close(timeout=1)
+            self.assertFalse(manager._initialized)
 
 
 class MessageBuildTests(unittest.TestCase):

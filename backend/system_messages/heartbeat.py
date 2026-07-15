@@ -113,10 +113,16 @@ class HeartbeatRunner:
 
     async def stop(self) -> None:
         self._running = False
-        for agent_id, task in list(self._tasks.items()):
+        tasks = list(self._tasks.items())
+        for agent_id, task in tasks:
             task.cancel()
             logger.info(f"Heartbeat stopped for agent: {agent_id}")
         self._tasks.clear()
+        if tasks:
+            await asyncio.gather(
+                *(task for _, task in tasks),
+                return_exceptions=True,
+            )
 
     def _ensure_task(self, agent_id: str) -> None:
         """确保心跳任务存在且正在运行，避免重复创建"""

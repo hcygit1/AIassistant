@@ -36,8 +36,8 @@ backend/data/**/skills-store/
 
 # Project analysis docs (local development only)
 docs-analysis/
-docs/
-skills/
+/skills/
+.planning/
 项目学习.md
 项目改进.md
 问题跟踪.md

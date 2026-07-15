@@ -1,16 +1,19 @@
 export function resolveApiBase(
   publicApiUrl: string | undefined,
   hostname?: string,
+  publicApiPort?: string,
 ): string {
   const configuredUrl = publicApiUrl?.trim().replace(/\/+$/, "");
   if (configuredUrl) return configuredUrl;
 
-  return `http://${hostname || "localhost"}:8002/api`;
+  const port = publicApiPort?.trim() || "8002";
+  return `http://${hostname || "localhost"}:${port}/api`;
 }
 
 export const API_BASE = resolveApiBase(
   process.env.NEXT_PUBLIC_API_URL,
   typeof window !== "undefined" ? window.location.hostname : undefined,
+  process.env.NEXT_PUBLIC_API_PORT,
 );
 
 export interface SSEEvent {
