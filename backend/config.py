@@ -86,6 +86,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "ackMaxChars": DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
                 "activeHours": {"start": "08:00", "end": "24:00"},
                 "target": "webchat",
+                "maxEvents": 50,
+            },
+            "statePersist": {
+                "enabled": True,
+                "autoSaveIntervalMinutes": 5,
             },
         },
         "list": [
@@ -103,6 +108,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fs": {"workspace_only": True, "readonly_dirs": ["docs"]},
         "exec": {
             "apply_patch": {"enabled": False},
+            "maxOutputChars": 5000,
             "approval": {
                 "security": "full",
                 "ask": "on_miss",
@@ -130,6 +136,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "maxDiskBytes": None,
             "highWaterBytes": None,
         },
+        "titleMaxLen": 60,
     },
     "cron": {
         "enabled": False,
@@ -261,13 +268,18 @@ def get_config_path() -> str:
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """深度合并：override 中的值覆盖 base，缺失的保留 base 默认值"""
-    result = base.copy()
+    result = copy.deepcopy(base)
     for k, v in override.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
             result[k] = _deep_merge(result[k], v)
         else:
-            result[k] = v
+            result[k] = copy.deepcopy(v)
     return result
+
+
+def merge_config_defaults(override: dict[str, Any]) -> dict[str, Any]:
+    """将局部配置合并到唯一的运行时默认配置。"""
+    return _deep_merge(DEFAULT_CONFIG, override)
 
 
 def _resolve_env_vars(obj: Any) -> Any:
@@ -285,11 +297,8 @@ def _resolve_env_vars(obj: Any) -> Any:
 
 
 def _init_from_template() -> dict[str, Any]:
-    """从 config.template.json 初始化配置文件"""
-    if TEMPLATE_PATH.exists():
-        with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return DEFAULT_CONFIG.copy()
+    """使用运行时默认配置初始化；模板仅作为受测试约束的发布镜像。"""
+    return copy.deepcopy(DEFAULT_CONFIG)
 
 
 def is_initialized() -> bool:
@@ -303,7 +312,7 @@ def load_config() -> dict[str, Any]:
     if p.exists():
         with open(p, "r", encoding="utf-8") as f:
             saved = json.load(f)
-        _raw_config = _deep_merge(DEFAULT_CONFIG, saved)
+        _raw_config = merge_config_defaults(saved)
     else:
         _raw_config = _init_from_template()
         save_config(_raw_config, validate=False)
@@ -427,9 +436,8 @@ def resolve_agent_config(agent_id: str) -> dict[str, Any]:
     defaults = get_agent_defaults()
     for agent in list_agents():
         if agent["id"] == agent_id:
-            merged = {**defaults, **{k: v for k, v in agent.items() if v is not None}}
-            merged["subagents"] = agent.get("subagents", defaults.get("subagents", {}))
-            return merged
+            override = {k: v for k, v in agent.items() if v is not None}
+            return _deep_merge(defaults, override)
     return defaults
 
 

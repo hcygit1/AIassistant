@@ -10,6 +10,12 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from config import DEFAULT_CONFIG, merge_config_defaults
+
+
+_HEARTBEAT_DEFAULTS = DEFAULT_CONFIG["agents"]["defaults"]["heartbeat"]
+_ACTIVE_HOURS_DEFAULTS = _HEARTBEAT_DEFAULTS["activeHours"]
+
 
 # ---------------------------------------------------------------------------
 # Models 配置
@@ -45,24 +51,30 @@ class ModelsConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ActiveHoursConfig(BaseModel):
-    start: str = "08:00"
-    end: str = "24:00"
+    start: str = _ACTIVE_HOURS_DEFAULTS["start"]
+    end: str = _ACTIVE_HOURS_DEFAULTS["end"]
 
 
 class HeartbeatConfig(BaseModel):
-    enabled: bool = True
-    every: str = "30m"
+    enabled: bool = _HEARTBEAT_DEFAULTS["enabled"]
+    every: str = _HEARTBEAT_DEFAULTS["every"]
     prompt: Optional[str] = None
-    ackMaxChars: int = 300
-    activeHours: Optional[ActiveHoursConfig] = None
-    target: str = "webchat"
-    maxEvents: int = Field(default=50, ge=10, le=200)  # 心跳事件队列大小
+    ackMaxChars: int = _HEARTBEAT_DEFAULTS["ackMaxChars"]
+    activeHours: Optional[ActiveHoursConfig] = Field(
+        default_factory=ActiveHoursConfig
+    )
+    target: str = _HEARTBEAT_DEFAULTS["target"]
+    maxEvents: int = Field(
+        default=_HEARTBEAT_DEFAULTS["maxEvents"],
+        ge=10,
+        le=200,
+    )
 
     @field_validator("every")
     @classmethod
     def validate_every(cls, v: str) -> str:
         if not v or not v.strip():
-            return "30m"
+            return _HEARTBEAT_DEFAULTS["every"]
         s = v.strip().lower()
         if s in ("0", "0m", "0h", "disabled", "off"):
             return s
@@ -199,7 +211,10 @@ class AgentsConfig(BaseModel):
     @model_validator(mode="after")
     def ensure_at_least_one_agent(self) -> "AgentsConfig":
         if not self.list:
-            self.list = [AgentEntryConfig(id="main", name="主助手", description="默认通用助手")]
+            self.list = [
+                AgentEntryConfig.model_validate(copy.deepcopy(agent))
+                for agent in DEFAULT_CONFIG["agents"]["list"]
+            ]
         return self
 
 
@@ -490,8 +505,14 @@ class ConfigValidationResult:
 
 def validate_config(raw: Dict[str, Any]) -> ConfigValidationResult:
     try:
-        parsed = PIPIXIAConfig.model_validate(raw)
-        return ConfigValidationResult(ok=True, config=parsed.model_dump(by_alias=True))
+        parsed = PIPIXIAConfig.model_validate(merge_config_defaults(raw))
+        return ConfigValidationResult(
+            ok=True,
+            config=parsed.model_dump(
+                by_alias=True,
+                exclude_unset=True,
+            ),
+        )
     except Exception as e:
         errors = []
         if hasattr(e, "errors"):
