@@ -38,6 +38,7 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         user_turn_coordinator._runtimes.clear()
         user_turn_coordinator._session_to_turn.clear()
+        user_turn_coordinator._terminal_turns.clear()
 
     async def test_submit_creates_turn_and_enqueues_user_work_item(self) -> None:
         dispatcher = _FakeDispatcher(position=1)
@@ -83,6 +84,17 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "queued")
         self.assertEqual(result["position"], 3)
 
+    async def test_status_returns_retained_terminal_error(self) -> None:
+        runtime = user_turn_coordinator.create_queued("main", "main-main")
+        user_turn_coordinator.set_error(runtime.turn_id, "model failed")
+
+        result = await user_turn_service.status(runtime.turn_id)
+
+        self.assertEqual(result["turn_id"], runtime.turn_id)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["position"], 0)
+        self.assertEqual(result["error"], "model failed")
+
     async def test_pending_returns_active_turn_for_session(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")
         dispatcher = _FakeDispatcher(position=2)
@@ -123,6 +135,28 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
         await producer
 
         self.assertEqual(items, ["event: token\ndata: {}\n\n"])
+
+    async def test_stream_ends_cleanly_if_turn_finished_before_subscription(self) -> None:
+        runtime = user_turn_coordinator.create_queued("main", "main-main")
+        user_turn_coordinator.set_done(runtime.turn_id)
+
+        items = []
+        async for item in user_turn_service.stream(runtime.turn_id):
+            items.append(item)
+
+        self.assertEqual(items, [])
+
+    async def test_stream_replays_terminal_error_if_turn_failed_before_subscription(self) -> None:
+        runtime = user_turn_coordinator.create_queued("main", "main-main")
+        user_turn_coordinator.set_error(runtime.turn_id, "model failed")
+
+        items = []
+        async for item in user_turn_service.stream(runtime.turn_id):
+            items.append(item)
+
+        self.assertEqual(len(items), 1)
+        self.assertIn('"type": "error"', items[0])
+        self.assertIn('"error": "model failed"', items[0])
 
     async def test_abort_cancels_bound_execution_task(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")

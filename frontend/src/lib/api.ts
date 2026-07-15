@@ -108,15 +108,6 @@ export async function getTurnStatus(turnId: string): Promise<{
   error?: string | null;
 }> {
   const resp = await fetch(`${API_BASE}/chat/turn/${encodeURIComponent(turnId)}/status`);
-  if (resp.status === 404) {
-    return {
-      turn_id: turnId,
-      status: "done",
-      position: 0,
-      session_id: "",
-      agent_id: "",
-    };
-  }
   if (!resp.ok) throw new Error(await readErrorMessage(resp));
   return resp.json();
 }

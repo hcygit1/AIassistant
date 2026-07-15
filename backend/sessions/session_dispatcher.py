@@ -46,6 +46,22 @@ AGING_INTERVAL_SEC = 30.0
 MAX_AGING_BONUS = 3.0
 
 
+def _parse_sse_event(line: str) -> tuple[str, dict[str, Any]]:
+    event_type = ""
+    payload: dict[str, Any] = {}
+    for raw_line in line.splitlines():
+        if raw_line.startswith("event: "):
+            event_type = raw_line[7:].strip()
+        elif raw_line.startswith("data: "):
+            try:
+                parsed = json.loads(raw_line[6:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                payload = parsed
+    return event_type, payload
+
+
 @dataclass(order=False)
 class SessionWorkItem:
     """会话正式工作项。
@@ -136,7 +152,10 @@ class SessionDispatcher:
             while self._queue:
                 self._queue.sort(key=self._sort_key)
                 task = self._queue.pop(0)
-                await self._execute(task)
+                try:
+                    await self._execute(task)
+                finally:
+                    del task
 
     async def _execute(self, task: SessionWorkItem) -> None:
         if task.kind == "user":
@@ -165,7 +184,9 @@ class SessionDispatcher:
         self._current_executing_turn_id = task.turn_id
         user_turn_coordinator.set_running(task.turn_id)
 
-        async def _run_user_inner() -> None:
+        async def _run_user_inner() -> tuple[str, str | None]:
+            terminal_status = "done"
+            terminal_error: str | None = None
             async for line in iter_user_turn_sse(
                 task.content,
                 task.session_id,
@@ -173,12 +194,21 @@ class SessionDispatcher:
                 task.turn_id,
             ):
                 await task.stream_queue.put(line)
+                event_type, payload = _parse_sse_event(line)
+                if terminal_status == "done" and event_type == "error":
+                    terminal_status = "error"
+                    terminal_error = str(
+                        payload.get("error") or "user turn failed"
+                    )
+                elif terminal_status == "done" and event_type == "aborted":
+                    terminal_status = "cancelled"
+            return terminal_status, terminal_error
 
         inner = asyncio.create_task(_run_user_inner())
         user_turn_coordinator.bind_execution_task(task.turn_id, inner)
 
         try:
-            await inner
+            terminal_status, terminal_error = await inner
         except asyncio.CancelledError:
             user_turn_coordinator.set_cancelled(task.turn_id)
         except Exception as e:
@@ -187,7 +217,15 @@ class SessionDispatcher:
             await task.stream_queue.put(f"event: error\ndata: {err_line}\n\n")
             user_turn_coordinator.set_error(task.turn_id, str(e))
         else:
-            user_turn_coordinator.set_done(task.turn_id)
+            if terminal_status == "error":
+                user_turn_coordinator.set_error(
+                    task.turn_id,
+                    terminal_error or "user turn failed",
+                )
+            elif terminal_status == "cancelled":
+                user_turn_coordinator.set_cancelled(task.turn_id)
+            else:
+                user_turn_coordinator.set_done(task.turn_id)
         finally:
             self._current_executing_turn_id = None
             user_turn_coordinator.bind_execution_task(task.turn_id, None)

@@ -52,23 +52,26 @@ class UserTurnService:
         }
 
     async def status(self, turn_id: str) -> dict:
-        from sessions.session_lock_manager import session_lock_manager
-        from sessions.session_dispatcher import dispatcher_manager
         from turns.coordinator import user_turn_coordinator
 
         runtime = user_turn_coordinator.get(turn_id)
         if not runtime:
             raise HTTPException(status_code=404, detail="unknown turn_id")
 
-        session_lock = session_lock_manager.get_lock(runtime.agent_id, runtime.session_id)
-        dispatcher = dispatcher_manager.get(
-            runtime.agent_id,
-            runtime.session_id,
-            session_lock.lock,
-        )
-
         position = 0
         if runtime.status == "queued":
+            from sessions.session_lock_manager import session_lock_manager
+            from sessions.session_dispatcher import dispatcher_manager
+
+            session_lock = session_lock_manager.get_lock(
+                runtime.agent_id,
+                runtime.session_id,
+            )
+            dispatcher = dispatcher_manager.get(
+                runtime.agent_id,
+                runtime.session_id,
+                session_lock.lock,
+            )
             pos = dispatcher.turn_queue_position(turn_id)
             position = pos if pos is not None else 0
 
@@ -113,12 +116,14 @@ class UserTurnService:
             yield f"event: error\ndata: {err}\n\n"
             return
 
-        if runtime.status not in ("queued", "running"):
-            err = json.dumps(
-                {"type": "error", "error": f"turn not streamable (status={runtime.status})"},
-                ensure_ascii=False,
-            )
+        if runtime.status == "error":
+            err = json.dumps({
+                "type": "error",
+                "error": runtime.error or "user turn failed",
+            }, ensure_ascii=False)
             yield f"event: error\ndata: {err}\n\n"
+            return
+        if runtime.status in ("done", "cancelled"):
             return
 
         while True:

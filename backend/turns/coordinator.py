@@ -3,16 +3,22 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections import OrderedDict
 
-from .runtime import UserTurnRuntime
+from .runtime import TerminalTurnStatus, TerminalUserTurn, UserTurnRuntime
+
+
+DEFAULT_MAX_TERMINAL_TURNS = 1000
 
 
 class UserTurnCoordinator:
     """Authoritative lifecycle/state owner for user turns."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_terminal_turns: int = DEFAULT_MAX_TERMINAL_TURNS) -> None:
         self._runtimes: dict[str, UserTurnRuntime] = {}
         self._session_to_turn: dict[str, str] = {}
+        self._terminal_turns: OrderedDict[str, TerminalUserTurn] = OrderedDict()
+        self._max_terminal_turns = max(0, max_terminal_turns)
 
     def _session_key(self, agent_id: str, session_id: str) -> str:
         return f"{agent_id}:{session_id}"
@@ -25,9 +31,38 @@ class UserTurnCoordinator:
         if self._session_to_turn.get(key) == turn_id:
             self._session_to_turn.pop(key, None)
 
-    def _purge_turn(self, turn_id: str) -> None:
+    def _finish_turn(
+        self,
+        turn_id: str,
+        status: TerminalTurnStatus,
+        *,
+        error: str | None = None,
+    ) -> None:
+        runtime = self._runtimes.get(turn_id)
+        if not runtime:
+            return
+
         self._release_session(turn_id)
+        runtime.status = status
+        runtime.error = error
+        runtime.execution_task = None
         self._runtimes.pop(turn_id, None)
+
+        if self._max_terminal_turns == 0:
+            return
+        self._terminal_turns[turn_id] = TerminalUserTurn(
+            turn_id=runtime.turn_id,
+            agent_id=runtime.agent_id,
+            session_id=runtime.session_id,
+            status=status,
+            created_at=runtime.created_at,
+            finished_at=time.time(),
+            error=runtime.error,
+            cancel_reason=runtime.cancel_reason,
+        )
+        self._terminal_turns.move_to_end(turn_id)
+        while len(self._terminal_turns) > self._max_terminal_turns:
+            self._terminal_turns.popitem(last=False)
 
     def create_queued(
         self,
@@ -48,6 +83,7 @@ class UserTurnCoordinator:
             stream_queue=queue,
             created_at=time.time(),
         )
+        self._terminal_turns.pop(resolved_turn_id, None)
         self._runtimes[resolved_turn_id] = runtime
         self._session_to_turn[self._session_key(agent_id, session_id)] = resolved_turn_id
         return runtime
@@ -63,8 +99,8 @@ class UserTurnCoordinator:
             return False
         return runtime.status in ("queued", "running")
 
-    def get(self, turn_id: str) -> UserTurnRuntime | None:
-        return self._runtimes.get(turn_id)
+    def get(self, turn_id: str) -> UserTurnRuntime | TerminalUserTurn | None:
+        return self._runtimes.get(turn_id) or self._terminal_turns.get(turn_id)
 
     def get_pending_for_session(self, agent_id: str, session_id: str) -> UserTurnRuntime | None:
         key = self._session_key(agent_id, session_id)
@@ -120,36 +156,26 @@ class UserTurnCoordinator:
         return True
 
     def get_cancel_reason(self, turn_id: str) -> str | None:
-        runtime = self._runtimes.get(turn_id)
+        runtime = self.get(turn_id)
         return runtime.cancel_reason if runtime else None
 
     def set_done(self, turn_id: str) -> None:
-        runtime = self._runtimes.get(turn_id)
-        if runtime:
-            runtime.status = "done"
-            runtime.execution_task = None
-        self._purge_turn(turn_id)
+        self._finish_turn(turn_id, "done")
 
     def set_error(self, turn_id: str, message: str) -> None:
-        runtime = self._runtimes.get(turn_id)
-        if runtime:
-            runtime.status = "error"
-            runtime.error = message
-            runtime.execution_task = None
-        self._purge_turn(turn_id)
+        self._finish_turn(turn_id, "error", error=message)
 
     def set_cancelled(self, turn_id: str) -> None:
-        runtime = self._runtimes.get(turn_id)
-        if runtime:
-            runtime.status = "cancelled"
-            runtime.execution_task = None
-        self._purge_turn(turn_id)
+        self._finish_turn(turn_id, "cancelled")
 
     def clear_session(self, agent_id: str, session_id: str) -> None:
         key = self._session_key(agent_id, session_id)
         turn_id = self._session_to_turn.pop(key, None)
         if turn_id:
             self._runtimes.pop(turn_id, None)
+        for retained_turn_id, retained in list(self._terminal_turns.items()):
+            if retained.agent_id == agent_id and retained.session_id == session_id:
+                self._terminal_turns.pop(retained_turn_id, None)
 
 
 user_turn_coordinator = UserTurnCoordinator()
