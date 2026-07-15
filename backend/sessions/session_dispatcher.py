@@ -24,11 +24,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+
+from turns.events import TurnEvent
 
 logger = logging.getLogger(__name__)
 
@@ -44,22 +45,6 @@ PRIORITY_HEARTBEAT = 3
 
 AGING_INTERVAL_SEC = 30.0
 MAX_AGING_BONUS = 3.0
-
-
-def _parse_sse_event(line: str) -> tuple[str, dict[str, Any]]:
-    event_type = ""
-    payload: dict[str, Any] = {}
-    for raw_line in line.splitlines():
-        if raw_line.startswith("event: "):
-            event_type = raw_line[7:].strip()
-        elif raw_line.startswith("data: "):
-            try:
-                parsed = json.loads(raw_line[6:])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict):
-                payload = parsed
-    return event_type, payload
 
 
 @dataclass(order=False)
@@ -88,7 +73,8 @@ class SessionWorkItem:
     on_failure: Callable[[], Any] | None = None
     on_failure_async: Callable[[Exception], Awaitable[None]] | None = None
     turn_id: str | None = None
-    stream_queue: asyncio.Queue[str | None] | None = None
+    stream_queue: asyncio.Queue[TurnEvent | None] | None = None
+
 
 class SessionDispatcher:
     """每个 session 一个实例，后台单协程按优先级 + aging 消费队列。"""
@@ -164,7 +150,7 @@ class SessionDispatcher:
             await self._execute_system(task)
 
     async def _execute_user(self, task: SessionWorkItem) -> None:
-        from runtime.user_turn_stream import iter_user_turn_sse
+        from runtime.user_turn_stream import iter_user_turn_events
         from turns.coordinator import user_turn_coordinator
 
         if not task.turn_id or not task.stream_queue:
@@ -187,20 +173,17 @@ class SessionDispatcher:
         async def _run_user_inner() -> tuple[str, str | None]:
             terminal_status = "done"
             terminal_error: str | None = None
-            async for line in iter_user_turn_sse(
+            async for event in iter_user_turn_events(
                 task.content,
                 task.session_id,
                 task.agent_id,
                 task.turn_id,
             ):
-                await task.stream_queue.put(line)
-                event_type, payload = _parse_sse_event(line)
-                if terminal_status == "done" and event_type == "error":
+                await task.stream_queue.put(event)
+                if terminal_status == "done" and event.type == "error":
                     terminal_status = "error"
-                    terminal_error = str(
-                        payload.get("error") or "user turn failed"
-                    )
-                elif terminal_status == "done" and event_type == "aborted":
+                    terminal_error = event.error_message or "user turn failed"
+                elif terminal_status == "done" and event.type == "aborted":
                     terminal_status = "cancelled"
             return terminal_status, terminal_error
 
@@ -213,8 +196,7 @@ class SessionDispatcher:
             user_turn_coordinator.set_cancelled(task.turn_id)
         except Exception as e:
             logger.error("User turn execution failed: %s", e)
-            err_line = json.dumps({"type": "error", "error": str(e)}, ensure_ascii=False)
-            await task.stream_queue.put(f"event: error\ndata: {err_line}\n\n")
+            await task.stream_queue.put(TurnEvent.error(str(e)))
             user_turn_coordinator.set_error(task.turn_id, str(e))
         else:
             if terminal_status == "error":

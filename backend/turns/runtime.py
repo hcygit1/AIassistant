@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .events import TurnEvent
+
 TurnStatus = Literal["queued", "running", "done", "error", "cancelled"]
 TerminalTurnStatus = Literal["done", "error", "cancelled"]
 CancelReason = Literal["stopped_by_user", "client_disconnected"]
@@ -18,7 +20,7 @@ class UserTurnRuntime:
     agent_id: str
     session_id: str
     status: TurnStatus
-    stream_queue: asyncio.Queue[str | None]
+    stream_queue: asyncio.Queue[TurnEvent | None]
     created_at: float = field(default_factory=time.time)
     execution_task: asyncio.Task | None = None
     error: str | None = None

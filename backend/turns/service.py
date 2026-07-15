@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncGenerator
 
 from fastapi import HTTPException
+
+from .events import TurnEvent
 
 
 class UserTurnService:
@@ -107,21 +108,16 @@ class UserTurnService:
             "agent_id": runtime.agent_id,
         }
 
-    async def stream(self, turn_id: str) -> AsyncGenerator[str, None]:
+    async def stream(self, turn_id: str) -> AsyncGenerator[TurnEvent, None]:
         from turns.coordinator import user_turn_coordinator
 
         runtime = user_turn_coordinator.get(turn_id)
         if not runtime:
-            err = json.dumps({"type": "error", "error": "unknown turn_id"}, ensure_ascii=False)
-            yield f"event: error\ndata: {err}\n\n"
+            yield TurnEvent.error("unknown turn_id")
             return
 
         if runtime.status == "error":
-            err = json.dumps({
-                "type": "error",
-                "error": runtime.error or "user turn failed",
-            }, ensure_ascii=False)
-            yield f"event: error\ndata: {err}\n\n"
+            yield TurnEvent.error(runtime.error or "user turn failed")
             return
         if runtime.status in ("done", "cancelled"):
             return

@@ -20,6 +20,7 @@ from sessions.session_dispatcher import (
     SessionDispatcher,
     SessionWorkItem,
 )
+from turns.events import TurnEvent
 from turns.coordinator import user_turn_coordinator
 
 
@@ -124,7 +125,7 @@ class SessionDispatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_dispatcher_releases_last_work_item_and_stream_queue(self) -> None:
         dispatcher = _RecordingDispatcher(expected_count=1)
         dispatcher.start()
-        stream_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        stream_queue: asyncio.Queue[TurnEvent | None] = asyncio.Queue()
         work_item = SessionWorkItem(
             kind="user",
             priority=PRIORITY_USER,
@@ -195,7 +196,7 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         user_turn_coordinator._session_to_turn.clear()
         user_turn_coordinator._terminal_turns.clear()
 
-    async def test_error_sse_retains_error_terminal_status(self) -> None:
+    async def test_error_event_retains_error_terminal_status(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")
         dispatcher = SessionDispatcher(lock=asyncio.Lock())
         task = SessionWorkItem(
@@ -209,20 +210,23 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def fake_stream(*args, **kwargs):
-            yield 'event: error\ndata: {"type":"error","error":"model failed"}\n\n'
+            yield TurnEvent.error("model failed")
 
         with patch(
-            "runtime.user_turn_stream.iter_user_turn_sse",
+            "runtime.user_turn_stream.iter_user_turn_events",
             fake_stream,
         ):
             await dispatcher._execute_user(task)
 
+        streamed = await task.stream_queue.get()
+        self.assertIsInstance(streamed, TurnEvent)
+        self.assertEqual(streamed.type, "error")
         retained = user_turn_coordinator.get(runtime.turn_id)
         self.assertIsNotNone(retained)
         self.assertEqual(retained.status, "error")
         self.assertEqual(retained.error, "model failed")
 
-    async def test_aborted_sse_retains_cancelled_terminal_status(self) -> None:
+    async def test_aborted_event_retains_cancelled_terminal_status(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")
         dispatcher = SessionDispatcher(lock=asyncio.Lock())
         task = SessionWorkItem(
@@ -236,13 +240,15 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def fake_stream(*args, **kwargs):
-            yield (
-                'event: aborted\ndata: {"type":"aborted",'
-                '"reason":"stopped_by_user"}\n\n'
+            yield TurnEvent.from_payload(
+                {
+                    "type": "aborted",
+                    "reason": "stopped_by_user",
+                }
             )
 
         with patch(
-            "runtime.user_turn_stream.iter_user_turn_sse",
+            "runtime.user_turn_stream.iter_user_turn_events",
             fake_stream,
         ):
             await dispatcher._execute_user(task)

@@ -1,10 +1,12 @@
-"""用户回合 SSE 行生成 — 供 SessionDispatcher 与 chat 路由复用"""
+"""用户回合事件生成 — 供 SessionDispatcher 与 turn service 复用。"""
 
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
+
+from turns.events import TurnEvent
+
 
 def _should_skip_auto_title(message: str) -> bool:
     text = (message or "").strip().lower()
@@ -15,12 +17,12 @@ def _should_skip_auto_title(message: str) -> bool:
     return text.startswith("a new session was started via /new or /reset")
 
 
-async def iter_user_turn_sse(
+async def iter_user_turn_events(
     message: str,
     session_id: str,
     agent_id: str,
     turn_id: str,
-) -> AsyncIterator[str]:
+) -> AsyncIterator[TurnEvent]:
     from runtime.agent import agent_manager
     from sessions.session_manager import session_manager
     from turns.coordinator import user_turn_coordinator
@@ -46,9 +48,7 @@ async def iter_user_turn_sse(
                     partial_text = refreshed
             elif event.get("type") == "lifecycle" and event.get("event") == "turn_start":
                 run_id = str(event.get("run_id") or run_id)
-            event_type = event.get("type", "")
-            data = json.dumps(event, ensure_ascii=False)
-            yield f"event: {event_type}\ndata: {data}\n\n"
+            yield TurnEvent.from_payload(event)
     except asyncio.CancelledError:
         cancel_reason = user_turn_coordinator.get_cancel_reason(turn_id) or "client_disconnected"
         was_user_initiated = cancel_reason == "stopped_by_user"
@@ -72,30 +72,32 @@ async def iter_user_turn_sse(
                     )
             except Exception:
                 pass
-        aborted_data = json.dumps({
-            "type": "aborted",
-            "session_id": session_id,
-            "run_id": run_id,
-            "content": partial_text,
-            "reason": cancel_reason,
-        }, ensure_ascii=False)
-        yield f"event: aborted\ndata: {aborted_data}\n\n"
+        yield TurnEvent.from_payload(
+            {
+                "type": "aborted",
+                "session_id": session_id,
+                "run_id": run_id,
+                "content": partial_text,
+                "reason": cancel_reason,
+            }
+        )
         return
 
     except Exception as e:
-        error_data = json.dumps({"type": "error", "error": str(e)}, ensure_ascii=False)
-        yield f"event: error\ndata: {error_data}\n\n"
+        yield TurnEvent.error(str(e))
         return
 
     if is_first_message and not _should_skip_auto_title(message):
         title = await _generate_title(message, agent_id)
         if title:
             session_manager.rename_session(session_id, agent_id, title)
-            title_data = json.dumps(
-                {"type": "title", "session_id": session_id, "title": title},
-                ensure_ascii=False,
+            yield TurnEvent.from_payload(
+                {
+                    "type": "title",
+                    "session_id": session_id,
+                    "title": title,
+                }
             )
-            yield f"event: title\ndata: {title_data}\n\n"
 
 
 async def _generate_title(message: str, agent_id: str) -> str | None:

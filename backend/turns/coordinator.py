@@ -5,6 +5,7 @@ import time
 import uuid
 from collections import OrderedDict
 
+from .events import TurnEvent
 from .runtime import TerminalTurnStatus, TerminalUserTurn, UserTurnRuntime
 
 
@@ -68,7 +69,7 @@ class UserTurnCoordinator:
         self,
         agent_id: str,
         session_id: str,
-        stream_queue: asyncio.Queue[str | None] | None = None,
+        stream_queue: asyncio.Queue[TurnEvent | None] | None = None,
         turn_id: str | None = None,
     ) -> UserTurnRuntime:
         if self.has_active_user_turn(agent_id, session_id):

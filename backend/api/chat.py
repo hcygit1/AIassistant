@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -58,10 +60,15 @@ async def chat_turn_status(turn_id: str):
 
 @router.get("/chat/turn/{turn_id}/stream")
 async def chat_turn_stream(turn_id: str):
+    from api.sse import encode_turn_event_sse
     from turns.service import user_turn_service
 
+    async def encoded_events() -> AsyncIterator[str]:
+        async for event in user_turn_service.stream(turn_id):
+            yield encode_turn_event_sse(event)
+
     return StreamingResponse(
-        user_turn_service.stream(turn_id),
+        encoded_events(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

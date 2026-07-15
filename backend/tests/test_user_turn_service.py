@@ -13,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from turns.coordinator import user_turn_coordinator
+from turns.events import TurnEvent
 from turns.service import user_turn_service
 
 
@@ -111,21 +112,24 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_yields_runtime_queue_items_for_running_turn(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")
         user_turn_coordinator.set_running(runtime.turn_id)
-        await runtime.stream_queue.put("event: token\ndata: {}\n\n")
+        event = TurnEvent.from_payload({"type": "token", "content": "hello"})
+        await runtime.stream_queue.put(event)
         await runtime.stream_queue.put(None)
 
         items = []
         async for item in user_turn_service.stream(runtime.turn_id):
             items.append(item)
 
-        self.assertEqual(items, ["event: token\ndata: {}\n\n"])
+        self.assertEqual(items, [event])
 
     async def test_stream_allows_queued_turn_and_waits_for_events(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")
 
         async def _produce() -> None:
             await asyncio.sleep(0)
-            await runtime.stream_queue.put("event: token\ndata: {}\n\n")
+            await runtime.stream_queue.put(
+                TurnEvent.from_payload({"type": "token", "content": "hello"})
+            )
             await runtime.stream_queue.put(None)
 
         producer = asyncio.create_task(_produce())
@@ -134,7 +138,9 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
             items.append(item)
         await producer
 
-        self.assertEqual(items, ["event: token\ndata: {}\n\n"])
+        self.assertEqual(len(items), 1)
+        self.assertIsInstance(items[0], TurnEvent)
+        self.assertEqual(items[0].payload["content"], "hello")
 
     async def test_stream_ends_cleanly_if_turn_finished_before_subscription(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")
@@ -155,8 +161,9 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
             items.append(item)
 
         self.assertEqual(len(items), 1)
-        self.assertIn('"type": "error"', items[0])
-        self.assertIn('"error": "model failed"', items[0])
+        self.assertIsInstance(items[0], TurnEvent)
+        self.assertEqual(items[0].type, "error")
+        self.assertEqual(items[0].error_message, "model failed")
 
     async def test_abort_cancels_bound_execution_task(self) -> None:
         runtime = user_turn_coordinator.create_queued("main", "main-main")

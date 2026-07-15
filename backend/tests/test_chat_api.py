@@ -13,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from api.chat import router as chat_router
+from turns.events import TurnEvent
 
 
 class ChatApiTests(unittest.TestCase):
@@ -105,6 +106,25 @@ class ChatApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "running")
         status_mock.assert_awaited_once_with("turn-4")
+
+    def test_turn_stream_encodes_structured_events_as_sse(self) -> None:
+        async def fake_stream(turn_id: str):
+            self.assertEqual(turn_id, "turn-5")
+            yield TurnEvent.from_payload(
+                {
+                    "type": "token",
+                    "content": "你好",
+                }
+            )
+
+        with patch("turns.service.user_turn_service.stream", fake_stream):
+            response = self.client.get("/api/chat/turn/turn-5/stream")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.text,
+            'event: token\ndata: {"type": "token", "content": "你好"}\n\n',
+        )
 
 
 if __name__ == "__main__":
