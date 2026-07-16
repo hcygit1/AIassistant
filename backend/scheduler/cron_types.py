@@ -40,6 +40,10 @@ class CronJob:
     next_run_at_ms: int | None = None
     last_run_at_ms: int | None = None
     last_run_status: str | None = None  # ok | error | skipped
+    schedule_revision: int = 0
+    active_run_token: str | None = None
+    active_run_due_at_ms: int | None = None
+    active_run_schedule_revision: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +67,10 @@ class CronJob:
             "nextRunAtMs": self.next_run_at_ms,
             "lastRunAtMs": self.last_run_at_ms,
             "lastRunStatus": self.last_run_status,
+            "scheduleRevision": self.schedule_revision,
+            "activeRunToken": self.active_run_token,
+            "activeRunDueAtMs": self.active_run_due_at_ms,
+            "activeRunScheduleRevision": self.active_run_schedule_revision,
         }
 
     @classmethod
@@ -98,6 +106,12 @@ class CronJob:
             next_run_at_ms=d.get("nextRunAtMs"),
             last_run_at_ms=d.get("lastRunAtMs"),
             last_run_status=d.get("lastRunStatus"),
+            schedule_revision=int(d.get("scheduleRevision", 0) or 0),
+            active_run_token=d.get("activeRunToken"),
+            active_run_due_at_ms=d.get("activeRunDueAtMs"),
+            active_run_schedule_revision=d.get(
+                "activeRunScheduleRevision"
+            ),
         )
 
 

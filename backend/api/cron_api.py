@@ -2,34 +2,28 @@
 
 from __future__ import annotations
 
-import time
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-
-from config import get_config, list_agents, is_cron_enabled
-from scheduler.cron_store import load_cron_store, save_cron_store, resolve_cron_store_path
-from scheduler.cron_types import CronJob, CronSchedule, CronPayload
 
 router = APIRouter()
 
 
-def _store_path() -> Path:
-    cfg = get_config()
-    cron_cfg = cfg.get("cron") or {}
-    override = cron_cfg.get("store")
-    return resolve_cron_store_path(override)
+def _cron_service():
+    from scheduler.cron_service import cron_service
+
+    return cron_service
 
 
-def _ensure_cron_enabled() -> None:
-    if not is_cron_enabled():
-        raise HTTPException(
-            409,
-            "cron is disabled (config.cron.enabled=false); enable it before creating/updating/running reminders.",
-        )
+def _raise_cron_error(exc) -> None:
+    if exc.code == "disabled":
+        status = 409
+    elif exc.code == "not_found":
+        status = 404
+    elif exc.code in ("invalid_schedule", "invalid_payload"):
+        status = 400
+    else:
+        status = 502
+    raise HTTPException(status, str(exc))
 
 
 class CronJobCreate(BaseModel):
@@ -59,127 +53,86 @@ class CronJobUpdate(BaseModel):
 @router.get("/cron/jobs")
 async def list_cron_jobs():
     """列出所有 Cron 任务"""
-    store = load_cron_store(_store_path())
-    return [j.to_dict() for j in store.jobs]
+    return [
+        job.to_dict()
+        for job in _cron_service().list_jobs()
+    ]
 
 
 @router.post("/cron/jobs")
 async def create_cron_job(body: CronJobCreate):
     """创建 Cron 任务"""
-    _ensure_cron_enabled()
-    store = load_cron_store(_store_path())
-    now_ms = int(time.time() * 1000)
-    job_id = f"cron-{uuid.uuid4().hex[:12]}"
-    s = body.schedule or {}
-    schedule = CronSchedule(
-        kind=s.get("kind", "cron"),
-        at=s.get("at"),
-        every_ms=s.get("everyMs"),
-        expr=s.get("expr", "0 8 * * *"),
-        tz=s.get("tz"),
-    )
-    p = body.payload or {}
-    if p.get("kind") != "systemEvent":
-        raise HTTPException(400, "main session cron jobs require payload.kind='systemEvent'")
-    payload = CronPayload(kind="systemEvent", text=str(p.get("text", "")).strip())
-    job = CronJob(
-        id=job_id,
-        name=body.name,
-        description=body.description,
-        agent_id=body.agent_id,
-        enabled=body.enabled,
-        delete_after_run=body.delete_after_run,
-        schedule=schedule,
-        payload=payload,
-        created_at_ms=now_ms,
-        updated_at_ms=now_ms,
-    )
-    from scheduler.cron_scheduler import _compute_next_run
-    job.next_run_at_ms = _compute_next_run(job, now_ms, None)
-    store.jobs.append(job)
-    save_cron_store(store, _store_path())
+    from scheduler.cron_service import CronServiceError
+
+    try:
+        job = _cron_service().create_job(
+            name=body.name,
+            description=body.description,
+            agent_id=body.agent_id,
+            enabled=body.enabled,
+            delete_after_run=body.delete_after_run,
+            schedule=body.schedule,
+            payload=body.payload,
+        )
+    except CronServiceError as exc:
+        _raise_cron_error(exc)
     return job.to_dict()
 
 
 @router.get("/cron/jobs/{job_id}")
 async def get_cron_job(job_id: str):
     """获取单个 Cron 任务"""
-    store = load_cron_store(_store_path())
-    for j in store.jobs:
-        if j.id == job_id:
-            return j.to_dict()
-    raise HTTPException(404, f"Job {job_id} not found")
+    from scheduler.cron_service import CronServiceError
+
+    try:
+        return _cron_service().get_job(job_id).to_dict()
+    except CronServiceError as exc:
+        _raise_cron_error(exc)
 
 
 @router.patch("/cron/jobs/{job_id}")
 async def update_cron_job(job_id: str, body: CronJobUpdate):
     """更新 Cron 任务"""
-    _ensure_cron_enabled()
-    store = load_cron_store(_store_path())
-    for i, j in enumerate(store.jobs):
-        if j.id == job_id:
-            if body.name is not None:
-                j.name = body.name
-            if body.description is not None:
-                j.description = body.description
-            if body.agent_id is not None:
-                j.agent_id = body.agent_id
-            if body.enabled is not None:
-                j.enabled = body.enabled
-            if body.delete_after_run is not None:
-                j.delete_after_run = body.delete_after_run
-            if body.schedule is not None:
-                s = body.schedule
-                j.schedule = CronSchedule(
-                    kind=s.get("kind", j.schedule.kind),
-                    at=s.get("at"),
-                    every_ms=s.get("everyMs"),
-                    expr=s.get("expr", j.schedule.expr),
-                    tz=s.get("tz"),
-                )
-            if body.payload is not None:
-                p = body.payload
-                if p.get("kind") == "systemEvent":
-                    j.payload = CronPayload(kind="systemEvent", text=str(p.get("text", "")).strip())
-            j.updated_at_ms = int(time.time() * 1000)
-            from scheduler.cron_scheduler import _compute_next_run
-            now_ms = int(time.time() * 1000)
-            j.next_run_at_ms = _compute_next_run(j, now_ms, j.last_run_at_ms)
-            save_cron_store(store, _store_path())
-            return j.to_dict()
-    raise HTTPException(404, f"Job {job_id} not found")
+    from scheduler.cron_service import CronServiceError
+
+    try:
+        job = _cron_service().update_job(
+            job_id,
+            name=body.name,
+            description=body.description,
+            agent_id=body.agent_id,
+            enabled=body.enabled,
+            delete_after_run=body.delete_after_run,
+            schedule=body.schedule,
+            payload=body.payload,
+        )
+    except CronServiceError as exc:
+        _raise_cron_error(exc)
+    return job.to_dict()
 
 
 @router.delete("/cron/jobs/{job_id}")
 async def delete_cron_job(job_id: str):
     """删除 Cron 任务"""
-    _ensure_cron_enabled()
-    store = load_cron_store(_store_path())
-    for i, j in enumerate(store.jobs):
-        if j.id == job_id:
-            store.jobs.pop(i)
-            save_cron_store(store, _store_path())
-            return {"ok": True}
-    raise HTTPException(404, f"Job {job_id} not found")
+    from scheduler.cron_service import CronServiceError
+
+    try:
+        _cron_service().delete_job(job_id)
+    except CronServiceError as exc:
+        _raise_cron_error(exc)
+    return {"ok": True}
 
 
 @router.post("/cron/jobs/{job_id}/run")
 async def run_cron_job(job_id: str, mode: str = "force"):
     """手动触发 Cron 任务"""
-    _ensure_cron_enabled()
-    store = load_cron_store(_store_path())
-    for j in store.jobs:
-        if j.id == job_id:
-            from system_messages.reminder_delivery import reminder_delivery_service
+    from scheduler.cron_service import CronServiceError
 
-            agent_id = j.agent_id or "main"
-            reminder_delivery_service.deliver_cron_reminder(
-                agent_id=agent_id,
-                text=j.payload.text,
-                run_id=j.id,
-            )
-            return {"ok": True, "message": "Triggered"}
-    raise HTTPException(404, f"Job {job_id} not found")
+    try:
+        _cron_service().trigger_job(job_id)
+    except CronServiceError as exc:
+        _raise_cron_error(exc)
+    return {"ok": True, "message": "Triggered"}
 
 
 # ---------------------------------------------------------------------------
@@ -279,27 +232,14 @@ class ReminderCreate(BaseModel):
 @router.post("/reminders")
 async def create_reminder(body: ReminderCreate):
     """创建自然语言提醒 — 底层是一次性 at cron job"""
-    _ensure_cron_enabled()
-    store = load_cron_store(_store_path())
-    now_ms = int(time.time() * 1000)
-    job_id = f"reminder-{uuid.uuid4().hex[:12]}"
+    from scheduler.cron_service import CronServiceError
 
-    schedule = CronSchedule(kind="at", at=body.at)
-    payload = CronPayload(kind="systemEvent", text=body.text.strip())
-    job = CronJob(
-        id=job_id,
-        name=f"提醒: {body.text[:40]}",
-        description=body.text,
-        agent_id=body.agent_id,
-        enabled=True,
-        delete_after_run=True,
-        schedule=schedule,
-        payload=payload,
-        created_at_ms=now_ms,
-        updated_at_ms=now_ms,
-    )
-    from scheduler.cron_scheduler import _compute_next_run
-    job.next_run_at_ms = _compute_next_run(job, now_ms, None)
-    store.jobs.append(job)
-    save_cron_store(store, _store_path())
+    try:
+        job = _cron_service().create_reminder(
+            text=body.text,
+            at=body.at,
+            agent_id=body.agent_id,
+        )
+    except CronServiceError as exc:
+        _raise_cron_error(exc)
     return {"ok": True, "job": job.to_dict()}

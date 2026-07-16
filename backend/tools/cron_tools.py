@@ -2,25 +2,10 @@
 
 from __future__ import annotations
 
-import time
-import uuid
 from typing import Any, Literal
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
-
-from config import get_config, is_cron_enabled
-from scheduler.cron_scheduler import _compute_next_run
-from scheduler.cron_store import load_cron_store, save_cron_store, resolve_cron_store_path
-from scheduler.cron_types import CronJob, CronPayload, CronSchedule
-
-
-def _store_path() -> Any:
-    cfg = get_config()
-    cron_cfg = cfg.get("cron") or {}
-    override = cron_cfg.get("store")
-    return resolve_cron_store_path(override)
-
 
 class CronToolInput(BaseModel):
     action: Literal["list", "add", "update", "remove", "run", "wake"] = Field(
@@ -50,6 +35,7 @@ class CronTool(BaseTool):
     )
     args_schema: type[BaseModel] = CronToolInput
     current_agent_id: str = "main"
+    _cron_service: Any = None
 
     def _run(
         self,
@@ -61,19 +47,23 @@ class CronTool(BaseTool):
         payload: dict | None = None,
         text: str | None = None,
     ) -> str:
-        if not is_cron_enabled():
-            if action == "list":
-                return "cron 调度器当前处于禁用状态（config.cron.enabled=false）。可查看任务，但不会自动触发。"
-            return "cron 调度器当前处于禁用状态（config.cron.enabled=false）。请先启用后再执行该操作。"
+        service = self._cron_service
+        if service is None:
+            from scheduler.cron_service import cron_service
 
-        path = _store_path()
-        store = load_cron_store(path)
+            service = cron_service
+        if not service.is_enabled() and action != "list":
+            return "cron 调度器当前处于禁用状态（config.cron.enabled=false）。请先启用后再执行该操作。"
+        from scheduler.cron_service import CronServiceError
 
         if action == "list":
-            if not store.jobs:
+            jobs = service.list_jobs(
+                agent_id=self.current_agent_id or "main"
+            )
+            if not jobs:
                 return "暂无定时任务。"
             lines = []
-            for j in store.jobs:
+            for j in jobs:
                 s = j.schedule
                 sched_str = ""
                 if s.kind == "at":
@@ -91,14 +81,14 @@ class CronTool(BaseTool):
         if action == "wake":
             if not (text or "").strip():
                 return "wake 需要提供 text 参数。"
-            from system_messages.reminder_delivery import reminder_delivery_service
-
             agent_id = self.current_agent_id or "main"
-            reminder_delivery_service.deliver_cron_reminder(
-                agent_id=agent_id,
-                text=(text or "").strip(),
-                run_id="cron:wake",
-            )
+            try:
+                service.wake(
+                    agent_id=agent_id,
+                    text=(text or "").strip(),
+                )
+            except CronServiceError as exc:
+                return f"发送提醒失败：{exc}"
             return f"已发送提醒到主会话，内容：{(text or '').strip()[:100]}..."
 
         if action == "add":
@@ -112,87 +102,85 @@ class CronTool(BaseTool):
             if not payload_text:
                 return "add 需要提供 payload.text（提醒内容）。"
 
-            now_ms = int(time.time() * 1000)
-            job_id_new = f"cron-{uuid.uuid4().hex[:12]}"
-            schedule_obj = CronSchedule(
-                kind=s.get("kind", "cron"),
-                at=s.get("at"),
-                every_ms=s.get("everyMs"),
-                expr=s.get("expr", "0 8 * * *"),
-                tz=s.get("tz"),
-            )
-            payload_obj = CronPayload(kind="systemEvent", text=payload_text)
-            job = CronJob(
-                id=job_id_new,
-                name=(name or "").strip(),
-                description=(description or "").strip(),
-                agent_id=self.current_agent_id or "main",
-                enabled=True,
-                delete_after_run=schedule_obj.kind == "at",
-                schedule=schedule_obj,
-                payload=payload_obj,
-                created_at_ms=now_ms,
-                updated_at_ms=now_ms,
-            )
-            job.next_run_at_ms = _compute_next_run(job, now_ms, None)
-            store.jobs.append(job)
-            save_cron_store(store, path)
-            return f"已创建任务 {job_id_new}：{job.name}"
+            try:
+                job = service.create_job(
+                    name=(name or "").strip(),
+                    description=(description or "").strip(),
+                    agent_id=self.current_agent_id or "main",
+                    enabled=True,
+                    delete_after_run=s.get("kind") == "at",
+                    schedule=s,
+                    payload={
+                        "kind": "systemEvent",
+                        "text": payload_text,
+                    },
+                )
+            except CronServiceError as exc:
+                return f"创建任务失败：{exc}"
+            return f"已创建任务 {job.id}：{job.name}"
 
         if action in ("update", "remove", "run"):
             if not (job_id or "").strip():
                 return f"{action} 需要提供 job_id 参数。"
-            target = None
-            for j in store.jobs:
-                if j.id == (job_id or "").strip():
-                    target = j
-                    break
-            if not target:
-                return f"未找到任务 {job_id}。"
-
-            if action == "remove":
-                store.jobs = [j for j in store.jobs if j.id != target.id]
-                save_cron_store(store, path)
-                return f"已删除任务 {target.id}。"
-
-            if action == "run":
-                from system_messages.reminder_delivery import reminder_delivery_service
-
-                agent_id = target.agent_id or "main"
-                reminder_delivery_service.deliver_cron_reminder(
-                    agent_id=agent_id,
-                    text=target.payload.text,
-                    run_id=target.id,
-                )
-                return f"已触发任务 {target.id}：{target.payload.text[:50]}..."
-
-            if action == "update":
-                if isinstance(schedule, dict) and schedule:
-                    s = schedule
-                    target.schedule = CronSchedule(
-                        kind=s.get("kind", target.schedule.kind),
-                        at=s.get("at", target.schedule.at),
-                        every_ms=s.get("everyMs", target.schedule.every_ms),
-                        expr=s.get("expr", target.schedule.expr),
-                        tz=s.get("tz", target.schedule.tz),
+            target_id = (job_id or "").strip()
+            agent_id = self.current_agent_id or "main"
+            try:
+                if action == "remove":
+                    service.delete_job(
+                        target_id,
+                        agent_id=agent_id,
                     )
-                if isinstance(payload, dict) and payload.get("text") is not None:
-                    target.payload = CronPayload(kind="systemEvent", text=str(payload.get("text", "")).strip())
-                if name is not None:
-                    target.name = str(name).strip()
-                if description is not None:
-                    target.description = str(description).strip()
-                target.updated_at_ms = int(time.time() * 1000)
-                target.next_run_at_ms = _compute_next_run(
-                    target, target.updated_at_ms, target.last_run_at_ms
+                    return f"已删除任务 {target_id}。"
+
+                if action == "run":
+                    target = service.get_job(
+                        target_id,
+                        agent_id=agent_id,
+                    )
+                    service.trigger_job(
+                        target_id,
+                        agent_id=agent_id,
+                    )
+                    return (
+                        f"已触发任务 {target.id}："
+                        f"{target.payload.text[:50]}..."
+                    )
+
+                payload_patch = None
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("text") is not None
+                ):
+                    payload_patch = {
+                        "kind": "systemEvent",
+                        "text": str(payload.get("text", "")).strip(),
+                    }
+                target = service.update_job(
+                    target_id,
+                    name=name,
+                    description=description,
+                    schedule=(
+                        schedule
+                        if isinstance(schedule, dict) and schedule
+                        else None
+                    ),
+                    payload=payload_patch,
+                    scope_agent_id=agent_id,
                 )
-                save_cron_store(store, path)
                 return f"已更新任务 {target.id}。"
+            except CronServiceError as exc:
+                if exc.code == "not_found":
+                    return f"未找到任务 {job_id}。"
+                return f"{action} 任务失败：{exc}"
 
         return f"未知操作：{action}"
 
 
-def get_cron_tools(agent_id: str = "main") -> list[BaseTool]:
+def get_cron_tools(
+    agent_id: str = "main",
+    cron_service: Any = None,
+) -> list[BaseTool]:
     """返回 cron 工具实例"""
     tool = CronTool(current_agent_id=agent_id)
+    tool._cron_service = cron_service
     return [tool]

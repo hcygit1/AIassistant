@@ -1,0 +1,709 @@
+"""Cron 任务定义、调度计算与触发编排。"""
+
+from __future__ import annotations
+
+import copy
+import threading
+import time
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, ContextManager, Iterator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from croniter import croniter
+
+from scheduler.cron_types import (
+    CronJob,
+    CronPayload,
+    CronSchedule,
+    CronStore,
+)
+
+
+class CronServiceError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class RunReceipt:
+    job_id: str
+    queue_position: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessDueResult:
+    fired: int
+    failed: int
+    next_wake_at_ms: int
+
+
+def compute_next_run(
+    job: CronJob,
+    now_ms: int,
+    last_run_ms: int | None = None,
+) -> int | None:
+    if not job.enabled:
+        return None
+    schedule = job.schedule
+    if schedule.kind == "at":
+        return _parse_at_ms(schedule.at, schedule.tz)
+    if schedule.kind == "every":
+        every_ms = schedule.every_ms or 0
+        if every_ms <= 0:
+            return None
+        anchor = (
+            last_run_ms
+            if last_run_ms is not None
+            else job.created_at_ms or now_ms
+        )
+        return anchor + every_ms
+    if schedule.kind == "cron" and schedule.expr:
+        tz = _resolve_timezone(schedule.tz)
+        now = datetime.fromtimestamp(now_ms / 1000, tz=tz)
+        next_dt = croniter(schedule.expr, now).get_next(datetime)
+        return int(next_dt.timestamp() * 1000)
+    return None
+
+
+def _parse_at_ms(value: str | None, tz_name: str | None) -> int | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(
+            tzinfo=_resolve_timezone(tz_name or "UTC")
+        )
+    return int(parsed.timestamp() * 1000)
+
+
+def _resolve_timezone(name: str | None):
+    if not name:
+        return timezone.utc
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError as exc:
+        raise CronServiceError(
+            "invalid_schedule",
+            f"unknown timezone: {name}",
+        ) from exc
+
+
+class CronService:
+    RETRY_DELAY_MS = 60_000
+
+    def __init__(
+        self,
+        *,
+        load_store: Callable[[Path], CronStore] | None = None,
+        save_store: Callable[[CronStore, Path], None] | None = None,
+        resolve_store_path: Callable[[], Path] | None = None,
+        store_transaction: (
+            Callable[[Path], ContextManager[None]] | None
+        ) = None,
+        is_enabled: Callable[[], bool] | None = None,
+        deliver: Callable[..., int] | None = None,
+        now_ms: Callable[[], int] | None = None,
+        id_factory: Callable[[], str] | None = None,
+        default_timezone: Callable[[], str] | None = None,
+    ) -> None:
+        if load_store is None:
+            from scheduler.cron_store import load_cron_store
+
+            load_store = load_cron_store
+        if save_store is None:
+            from scheduler.cron_store import save_cron_store
+
+            save_store = save_cron_store
+        if resolve_store_path is None:
+            resolve_store_path = self._default_store_path
+        if store_transaction is None:
+            from scheduler.cron_store import cron_store_transaction
+
+            store_transaction = cron_store_transaction
+        if is_enabled is None:
+            from config import is_cron_enabled
+
+            is_enabled = is_cron_enabled
+        if deliver is None:
+            from system_messages.reminder_delivery import (
+                reminder_delivery_service,
+            )
+
+            deliver = (
+                reminder_delivery_service.deliver_cron_reminder
+            )
+
+        self._load_store = load_store
+        self._save_store = save_store
+        self._resolve_store_path = resolve_store_path
+        self._store_transaction = store_transaction
+        self._is_enabled = is_enabled
+        self._deliver = deliver
+        self._now_ms = now_ms or (
+            lambda: int(time.time() * 1000)
+        )
+        self._id_factory = id_factory or (
+            lambda: uuid.uuid4().hex[:12]
+        )
+        self._default_timezone = (
+            default_timezone or self._resolve_default_timezone
+        )
+        self._lock = threading.RLock()
+
+    def is_enabled(self) -> bool:
+        return bool(self._is_enabled())
+
+    @staticmethod
+    def _default_store_path() -> Path:
+        from config import get_config
+        from scheduler.cron_store import resolve_cron_store_path
+
+        config = get_config() or {}
+        override = (config.get("cron") or {}).get("store")
+        return resolve_cron_store_path(override)
+
+    @staticmethod
+    def _resolve_default_timezone() -> str:
+        from config import get_config
+
+        config = get_config() or {}
+        return str(
+            config.get("agents", {})
+            .get("defaults", {})
+            .get("user_timezone", "UTC")
+            or "UTC"
+        )
+
+    def list_jobs(
+        self,
+        *,
+        agent_id: str | None = None,
+    ) -> list[CronJob]:
+        with self._transaction() as (store, _):
+            jobs = store.jobs
+            if agent_id is not None:
+                jobs = [
+                    job for job in jobs
+                    if (job.agent_id or "main") == agent_id
+                ]
+            return copy.deepcopy(jobs)
+
+    def find_job(
+        self,
+        job_id: str,
+        *,
+        agent_id: str | None = None,
+    ) -> CronJob | None:
+        with self._transaction() as (store, _):
+            job = self._find(
+                store,
+                job_id,
+                agent_id=agent_id,
+            )
+            return copy.deepcopy(job) if job is not None else None
+
+    def get_job(
+        self,
+        job_id: str,
+        *,
+        agent_id: str | None = None,
+    ) -> CronJob:
+        job = self.find_job(job_id, agent_id=agent_id)
+        if job is None:
+            raise CronServiceError(
+                "not_found",
+                f"Job {job_id} not found",
+            )
+        return job
+
+    def create_job(
+        self,
+        *,
+        name: str,
+        agent_id: str = "main",
+        schedule: dict[str, Any],
+        payload: dict[str, Any],
+        description: str = "",
+        enabled: bool = True,
+        delete_after_run: bool = False,
+        id_prefix: str = "cron",
+    ) -> CronJob:
+        self._ensure_enabled()
+        now_ms = self._now_ms()
+        cron_schedule = self._build_schedule(
+            schedule,
+            now_ms=now_ms,
+        )
+        cron_payload = self._build_payload(payload)
+        with self._transaction() as (store, path):
+            job = CronJob(
+                id=f"{id_prefix}-{self._id_factory()}",
+                name=(name or "").strip(),
+                description=(description or "").strip(),
+                agent_id=(agent_id or "main").strip() or "main",
+                enabled=bool(enabled),
+                delete_after_run=bool(delete_after_run),
+                schedule=cron_schedule,
+                payload=cron_payload,
+                created_at_ms=now_ms,
+                updated_at_ms=now_ms,
+            )
+            job.next_run_at_ms = compute_next_run(
+                job,
+                now_ms,
+                None,
+            )
+            store.jobs.append(job)
+            self._save(store, path)
+            return copy.deepcopy(job)
+
+    def create_reminder(
+        self,
+        *,
+        text: str,
+        at: str,
+        agent_id: str = "main",
+    ) -> CronJob:
+        reminder_text = (text or "").strip()
+        return self.create_job(
+            name=f"提醒: {reminder_text[:40]}",
+            description=reminder_text,
+            agent_id=agent_id,
+            enabled=True,
+            delete_after_run=True,
+            schedule={"kind": "at", "at": at},
+            payload={
+                "kind": "systemEvent",
+                "text": reminder_text,
+            },
+            id_prefix="reminder",
+        )
+
+    def update_job(
+        self,
+        job_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        agent_id: str | None = None,
+        enabled: bool | None = None,
+        delete_after_run: bool | None = None,
+        schedule: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+        scope_agent_id: str | None = None,
+    ) -> CronJob:
+        self._ensure_enabled()
+        now_ms = self._now_ms()
+        with self._transaction() as (store, path):
+            job = self._find(
+                store,
+                job_id,
+                agent_id=scope_agent_id,
+            )
+            if job is None:
+                raise self._not_found(job_id)
+            schedule_state = self._schedule_state(job)
+            if name is not None:
+                job.name = str(name).strip()
+            if description is not None:
+                job.description = str(description).strip()
+            if agent_id is not None:
+                job.agent_id = str(agent_id).strip() or "main"
+            if enabled is not None:
+                job.enabled = bool(enabled)
+            if delete_after_run is not None:
+                job.delete_after_run = bool(delete_after_run)
+            if schedule is not None:
+                job.schedule = self._build_schedule(
+                    schedule,
+                    current=job.schedule,
+                    now_ms=now_ms,
+                )
+            if payload is not None:
+                job.payload = self._build_payload(payload)
+            if self._schedule_state(job) != schedule_state:
+                job.schedule_revision += 1
+            job.updated_at_ms = now_ms
+            job.next_run_at_ms = compute_next_run(
+                job,
+                now_ms,
+                job.last_run_at_ms,
+            )
+            self._save(store, path)
+            return copy.deepcopy(job)
+
+    def delete_job(
+        self,
+        job_id: str,
+        *,
+        agent_id: str | None = None,
+    ) -> bool:
+        self._ensure_enabled()
+        with self._transaction() as (store, path):
+            job = self._find(store, job_id, agent_id=agent_id)
+            if job is None:
+                raise self._not_found(job_id)
+            store.jobs = [
+                current
+                for current in store.jobs
+                if current.id != job.id
+            ]
+            self._save(store, path)
+            return True
+
+    def trigger_job(
+        self,
+        job_id: str,
+        *,
+        agent_id: str | None = None,
+    ) -> RunReceipt:
+        self._ensure_enabled()
+        now_ms = self._now_ms()
+        token = uuid.uuid4().hex
+        with self._transaction() as (store, path):
+            job = self._find(store, job_id, agent_id=agent_id)
+            if job is None:
+                raise self._not_found(job_id)
+            if job.active_run_token:
+                raise CronServiceError(
+                    "busy",
+                    f"Job {job_id} is already being triggered",
+                )
+            job.active_run_token = token
+            job.active_run_due_at_ms = None
+            job.active_run_schedule_revision = job.schedule_revision
+            job.last_run_at_ms = now_ms
+            job.last_run_status = "running"
+            claimed = copy.deepcopy(job)
+            self._save(store, path)
+
+        try:
+            position = self._deliver_job(claimed)
+        except Exception as exc:
+            self._finalize_claim(
+                claimed.id,
+                token,
+                status="error",
+            )
+            raise CronServiceError(
+                "delivery_failed",
+                f"Failed to trigger {job_id}: {exc}",
+            ) from exc
+        self._finalize_claim(
+            claimed.id,
+            token,
+            status="ok",
+        )
+        return RunReceipt(claimed.id, position)
+
+    def wake(self, *, agent_id: str, text: str) -> RunReceipt:
+        self._ensure_enabled()
+        reminder_text = (text or "").strip()
+        if not reminder_text:
+            raise CronServiceError(
+                "invalid_payload",
+                "reminder text is required",
+            )
+        position = self._deliver(
+            agent_id=agent_id or "main",
+            text=reminder_text,
+            run_id="cron:wake",
+        )
+        return RunReceipt("cron:wake", position)
+
+    def process_due_jobs(
+        self,
+        *,
+        now_ms: int | None = None,
+    ) -> ProcessDueResult:
+        current_ms = (
+            self._now_ms() if now_ms is None else now_ms
+        )
+        fired = 0
+        failed = 0
+        claims: list[tuple[CronJob, str]] = []
+        with self._transaction() as (store, path):
+            for job in store.jobs:
+                if job.active_run_token:
+                    if (
+                        job.last_run_at_ms is not None
+                        and current_ms - job.last_run_at_ms
+                        < 5 * 60_000
+                    ):
+                        continue
+                    schedule_unchanged = (
+                        job.active_run_schedule_revision is None
+                        or job.active_run_schedule_revision
+                        == job.schedule_revision
+                    )
+                    stale_due_at_ms = job.active_run_due_at_ms
+                    job.active_run_token = None
+                    job.active_run_due_at_ms = None
+                    job.active_run_schedule_revision = None
+                    job.last_run_status = "error"
+                    if (
+                        stale_due_at_ms is not None
+                        and schedule_unchanged
+                    ):
+                        job.next_run_at_ms = current_ms
+                if not job.enabled:
+                    continue
+                if job.next_run_at_ms is None:
+                    job.next_run_at_ms = compute_next_run(
+                        job,
+                        current_ms,
+                        job.last_run_at_ms,
+                    )
+                if (
+                    job.next_run_at_ms is None
+                    or job.next_run_at_ms > current_ms
+                ):
+                    continue
+                token = uuid.uuid4().hex
+                due_at_ms = job.next_run_at_ms
+                job.active_run_token = token
+                job.active_run_due_at_ms = due_at_ms
+                job.active_run_schedule_revision = (
+                    job.schedule_revision
+                )
+                job.last_run_at_ms = current_ms
+                job.last_run_status = "running"
+                if job.schedule.kind == "at":
+                    job.next_run_at_ms = None
+                else:
+                    job.next_run_at_ms = compute_next_run(
+                        job,
+                        current_ms,
+                        current_ms,
+                    )
+                claims.append((copy.deepcopy(job), token))
+            self._save(store, path)
+
+        for claimed, token in claims:
+            try:
+                self._deliver_job(claimed)
+            except Exception:
+                failed += 1
+                self._finalize_claim(
+                    claimed.id,
+                    token,
+                    status="error",
+                    attempted_at_ms=current_ms,
+                )
+            else:
+                fired += 1
+                self._finalize_claim(
+                    claimed.id,
+                    token,
+                    status="ok",
+                    attempted_at_ms=current_ms,
+                )
+
+        with self._transaction() as (store, _):
+            next_wake = current_ms + 60_000
+            for job in store.jobs:
+                if (
+                    job.enabled
+                    and job.next_run_at_ms is not None
+                ):
+                    next_wake = min(
+                        next_wake,
+                        job.next_run_at_ms,
+                    )
+        return ProcessDueResult(fired, failed, next_wake)
+
+    def _finalize_claim(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        status: str,
+        attempted_at_ms: int | None = None,
+    ) -> None:
+        with self._transaction() as (store, path):
+            job = self._find(store, job_id, agent_id=None)
+            if job is None or job.active_run_token != token:
+                return
+            due_at_ms = job.active_run_due_at_ms
+            schedule_unchanged = (
+                job.active_run_schedule_revision is None
+                or job.active_run_schedule_revision
+                == job.schedule_revision
+            )
+            job.active_run_token = None
+            job.active_run_due_at_ms = None
+            job.active_run_schedule_revision = None
+            job.last_run_status = status
+            if (
+                due_at_ms is not None
+                and schedule_unchanged
+                and job.schedule.kind == "at"
+            ):
+                if status == "ok":
+                    job.enabled = False
+                    job.next_run_at_ms = None
+                    if job.delete_after_run:
+                        store.jobs = [
+                            current
+                            for current in store.jobs
+                            if current.id != job.id
+                        ]
+                else:
+                    job.next_run_at_ms = (
+                        (attempted_at_ms or due_at_ms)
+                        + self.RETRY_DELAY_MS
+                    )
+            self._save(store, path)
+
+    def _build_schedule(
+        self,
+        data: dict[str, Any],
+        *,
+        current: CronSchedule | None = None,
+        now_ms: int,
+    ) -> CronSchedule:
+        raw = data or {}
+        kind = raw.get(
+            "kind",
+            current.kind if current is not None else None,
+        )
+        if kind not in ("at", "every", "cron"):
+            raise CronServiceError(
+                "invalid_schedule",
+                "schedule.kind must be at, every, or cron",
+            )
+        timezone_name = raw.get(
+            "tz",
+            current.tz if current is not None else None,
+        )
+        if kind in ("at", "cron") and not timezone_name:
+            timezone_name = self._default_timezone()
+        schedule = CronSchedule(
+            kind=kind,
+            at=raw.get(
+                "at",
+                current.at if current is not None else None,
+            ),
+            every_ms=raw.get(
+                "everyMs",
+                current.every_ms if current is not None else None,
+            ),
+            expr=raw.get(
+                "expr",
+                current.expr if current is not None else None,
+            ),
+            tz=timezone_name,
+        )
+        try:
+            if kind == "at":
+                at_ms = _parse_at_ms(schedule.at, schedule.tz)
+                if at_ms is None or at_ms <= now_ms:
+                    raise ValueError("at must be in the future")
+            elif kind == "every":
+                schedule.every_ms = int(schedule.every_ms or 0)
+                if schedule.every_ms <= 0:
+                    raise ValueError("everyMs must be positive")
+            else:
+                if not schedule.expr or not croniter.is_valid(
+                    schedule.expr
+                ):
+                    raise ValueError("invalid cron expression")
+                _resolve_timezone(schedule.tz)
+        except CronServiceError:
+            raise
+        except (TypeError, ValueError) as exc:
+            raise CronServiceError(
+                "invalid_schedule",
+                str(exc),
+            ) from exc
+        return schedule
+
+    @staticmethod
+    def _build_payload(data: dict[str, Any]) -> CronPayload:
+        payload = data or {}
+        if payload.get("kind") != "systemEvent":
+            raise CronServiceError(
+                "invalid_payload",
+                "payload.kind must be systemEvent",
+            )
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            raise CronServiceError(
+                "invalid_payload",
+                "payload.text is required",
+            )
+        return CronPayload(kind="systemEvent", text=text)
+
+    def _deliver_job(self, job: CronJob) -> int:
+        return self._deliver(
+            agent_id=job.agent_id or "main",
+            text=job.payload.text,
+            run_id=job.id,
+        )
+
+    @staticmethod
+    def _schedule_state(job: CronJob) -> tuple[Any, ...]:
+        schedule = job.schedule
+        return (
+            job.enabled,
+            job.delete_after_run,
+            schedule.kind,
+            schedule.at,
+            schedule.every_ms,
+            schedule.expr,
+            schedule.tz,
+        )
+
+    @contextmanager
+    def _transaction(
+        self,
+    ) -> Iterator[tuple[CronStore, Path]]:
+        path = self._resolve_store_path()
+        with self._lock:
+            with self._store_transaction(path):
+                yield self._load_store(path), path
+
+    def _save(self, store: CronStore, path: Path) -> None:
+        self._save_store(store, path)
+
+    @staticmethod
+    def _find(
+        store: CronStore,
+        job_id: str,
+        *,
+        agent_id: str | None,
+    ) -> CronJob | None:
+        target = (job_id or "").strip()
+        for job in store.jobs:
+            if job.id != target:
+                continue
+            if (
+                agent_id is not None
+                and (job.agent_id or "main") != agent_id
+            ):
+                continue
+            return job
+        return None
+
+    def _ensure_enabled(self) -> None:
+        if not self._is_enabled():
+            raise CronServiceError(
+                "disabled",
+                "cron is disabled "
+                "(config.cron.enabled=false)",
+            )
+
+    @staticmethod
+    def _not_found(job_id: str) -> CronServiceError:
+        return CronServiceError(
+            "not_found",
+            f"Job {job_id} not found",
+        )
+
+
+cron_service = CronService()
