@@ -49,6 +49,7 @@ from runtime.security_context import mark_recent_untrusted_content, runtime_secu
 from runtime.tool_execution import invoke_tool_async
 from runtime.agent_state import AgentState
 from runtime.memory_runtime import MemoryRuntime
+from runtime.session_compactor import SessionCompactor
 from runtime.tool_registry import ToolRegistry
 from runtime.turn_context import (
     PromptCacheEntry,
@@ -188,11 +189,42 @@ class AgentManager:
     def mem_recalls(self, value: dict[str, Any]) -> None:
         self._memory_runtime.recalls = value
 
+    @staticmethod
+    def _log_compress(
+        agent_id: str,
+        session_id: str,
+        archived_count: int,
+        remaining_count: int,
+    ) -> None:
+        audit_logger.log_compress(
+            agent_id,
+            session_id,
+            archived_count,
+            remaining_count,
+        )
+
     def __init__(self):
         self.data_dir: str = ""
         self._memory_runtime = MemoryRuntime()
         self._tool_registry = ToolRegistry(self)
         self._turn_context = TurnContext()
+        self._session_compactor = SessionCompactor(
+            resolve_agent_config=lambda agent_id: resolve_agent_config(
+                agent_id
+            ),
+            load_session=lambda session_id, agent_id: (
+                session_manager.load_session(session_id, agent_id)
+            ),
+            compress_history=lambda session_id, agent_id, count: (
+                session_manager.compress_history(
+                    session_id,
+                    agent_id,
+                    count,
+                )
+            ),
+            get_llm=lambda agent_id: self.get_llm(agent_id),
+            log_compress=self._log_compress,
+        )
         self._states: dict[str, AgentState] = {}
         self._initialized = False
         self.lifecycle_hooks: LifecycleHooks | None = None
@@ -1337,87 +1369,13 @@ class AgentManager:
         to_compress: list[dict[str, Any]],
         text_to_summarize: str,
     ) -> dict[str, Any]:
-        """生成结构化摘要 dict，失败时降级为 raw_summary。"""
-        from llm.retry import retry_async
-        from infra.token_counter import count_tokens
-        from llm.model_selection import resolve_agent_model, get_model_context_window
-
-        store = self.mem_stores.get(agent_id)
-        prev_summary: dict[str, Any] = {}
-        if store:
-            existing = store.get_session_summary(session_id, agent_id)
-            if existing:
-                prev_summary = {
-                    "goal": existing.goal,
-                    "decisions": json.loads(existing.decisions) if existing.decisions else [],
-                    "progress": existing.progress,
-                    "open_items": json.loads(existing.open_items) if existing.open_items else [],
-                    "entities": json.loads(existing.entities) if existing.entities else [],
-                    "user_preferences": json.loads(existing.user_preferences) if existing.user_preferences else [],
-                }
-
-        prev_block = ""
-        if prev_summary:
-            prev_block = (
-                "\n\n## 上一版摘要（请在此基础上更新，而非重新生成）\n"
-                f"{json.dumps(prev_summary, ensure_ascii=False, indent=2)}"
-            )
-
-        system_prompt = (
-            "你是一个对话摘要生成器。将对话历史压缩为结构化 JSON 摘要。\n\n"
-            "关键语言规则：使用与用户消息相同的语言输出。中文输入→中文输出。英文输入→英文输出。\n\n"
-            "输出严格的 JSON（无 markdown 代码块包裹）：\n"
-            "{\n"
-            '  "goal": "用户的总体目标（1 句话）",\n'
-            '  "decisions": ["关键决策1", "关键决策2"],\n'
-            '  "progress": "当前进展到哪一步",\n'
-            '  "open_items": ["待办事项1", "未解决问题1"],\n'
-            '  "entities": ["关键实体: 版本号/路径/配置值等"],\n'
-            '  "user_preferences": ["用户偏好1"]\n'
-            "}\n\n"
-            "规则：\n"
-            "- 保留所有关键信息：命令、文件路径、配置值、版本号、错误信息\n"
-            "- 丢弃寒暄、填充词\n"
-            "- 如果有上一版摘要，在其基础上更新（合并/覆盖），不要丢弃仍然有效的信息\n"
-            "- 敏感信息替换为 [REDACTED]\n"
-            "- 只输出 JSON，不要输出其他内容"
-        )
-
-        from runtime.context_budget import resolve_budget
-        budget = resolve_budget(agent_id)
-        summary_max_tokens = budget.session_summary_tokens
-
-        async def _do_structured(text: str) -> dict[str, Any]:
-            llm = self.get_llm(agent_id)
-            resp = await llm.ainvoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=text + prev_block),
-                ],
-                max_tokens=summary_max_tokens,
-            )
-            raw = resp.content.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            parsed = json.loads(raw)
-            parsed["raw_summary"] = raw
-            parsed["token_count"] = count_tokens(raw)
-            return parsed
-
-        try:
-            return await retry_async(
-                lambda: _do_structured(text_to_summarize),
-                attempts=3,
-                min_delay_ms=500,
-                max_delay_ms=5000,
-                jitter=0.2,
-                should_retry=lambda e, _: "AbortError" not in type(e).__name__,
-            )
-        except Exception as e:
-            logger.warning("Structured summary failed, falling back to plain text: %s", e)
-
-        return await self._summarize_plain_fallback(
-            agent_id, to_compress, text_to_summarize,
+        return await self._session_compactor.generate_structured_summary(
+            agent_id,
+            session_id,
+            to_compress,
+            text_to_summarize,
+            store=self.mem_stores.get(agent_id),
+            plain_fallback=self._summarize_plain_fallback,
         )
 
     async def _summarize_plain_fallback(
@@ -1426,175 +1384,34 @@ class AgentManager:
         to_compress: list[dict[str, Any]],
         text_to_summarize: str,
     ) -> dict[str, Any]:
-        """纯文本摘要降级：返回只含 raw_summary 的 dict。"""
-        from llm.retry import retry_async
-        from infra.token_counter import count_tokens
-        from llm.model_selection import resolve_agent_model, get_model_context_window
-
-        from runtime.context_budget import resolve_budget
-        budget = resolve_budget(agent_id)
-        summary_max_tokens = budget.session_summary_tokens
-
-        async def _do_summarize(text: str) -> str:
-            llm = self.get_llm(agent_id)
-            resp = await llm.ainvoke(
-                [
-                    SystemMessage(content=(
-                        "你是一个对话摘要生成器。请将以下对话历史压缩为简洁的摘要，不超过500字。"
-                        "使用与用户消息相同的语言。保留关键信息、决定、上下文和待办事项。"
-                    )),
-                    HumanMessage(content=text),
-                ],
-                max_tokens=summary_max_tokens,
-            )
-            return resp.content.strip()
-
-        try:
-            text = await retry_async(
-                lambda: _do_summarize(text_to_summarize),
-                attempts=3,
-                min_delay_ms=500,
-                max_delay_ms=5000,
-                jitter=0.2,
-                should_retry=lambda e, _: "AbortError" not in type(e).__name__,
-            )
-            return {"raw_summary": text, "token_count": count_tokens(text)}
-        except Exception as full_err:
-            logger.warning(f"Full summarization failed, trying partial: {full_err}")
-
-        try:
-            ref = resolve_agent_model(agent_id)
-            context_window = get_model_context_window(ref)
-            small_msgs: list[dict[str, Any]] = []
-            oversized_notes: list[str] = []
-            for m in to_compress:
-                content = m.get("content", "")
-                tokens = count_tokens(content) + 4
-                if tokens > context_window * 0.5:
-                    role = m.get("role", "message")
-                    oversized_notes.append(
-                        f"[Large {role} (~{tokens // 1000}K tokens) omitted from summary]"
-                    )
-                else:
-                    small_msgs.append(m)
-
-            if small_msgs:
-                partial_text = "\n".join(
-                    f"[{x.get('role', '?')}] {x.get('content', '')}"
-                    for x in small_msgs
-                )
-                partial = await retry_async(
-                    lambda: _do_summarize(partial_text),
-                    attempts=2,
-                    min_delay_ms=500,
-                    max_delay_ms=3000,
-                    jitter=0.2,
-                )
-                notes = "\n\n" + "\n".join(oversized_notes) if oversized_notes else ""
-                text = partial + notes
-                return {"raw_summary": text, "token_count": count_tokens(text)}
-        except Exception as partial_err:
-            logger.warning(f"Partial summarization failed: {partial_err}")
-
-        fallback = (
-            f"Context contained {len(to_compress)} messages. "
-            "Summary unavailable due to size limits."
+        return await self._session_compactor.summarize_plain_fallback(
+            agent_id,
+            to_compress,
+            text_to_summarize,
         )
-        return {"raw_summary": fallback, "token_count": count_tokens(fallback)}
 
     async def compress_session(
         self, session_id: str, agent_id: str, level: str = "sliding",
     ) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "compress": None,
-            "post_compaction": None,
-        }
-
-        agent_cfg = resolve_agent_config(agent_id)
-        compaction_cfg = agent_cfg.get("compaction", {})
-
-        if level == "forced":
-            keep_turns = int(compaction_cfg.get("forcedKeepRecentTurns", 4))
-        else:
-            keep_turns = int(compaction_cfg.get("keepRecentTurns", 12))
-
-        data = session_manager.load_session(session_id, agent_id)
-        if not data:
-            return {**result, "error": "会话不存在"}
-
-        messages = data.get("messages", [])
-        if len(messages) < 4:
-            return {**result, "error": "消息过少，无需压缩"}
-
-        n = self._calc_compress_count_by_turns(messages, keep_turns)
-        if n < 2:
-            return {**result, "error": "无足够消息可压缩"}
-
-        to_compress = messages[:n]
-
-        text_to_summarize = "\n".join(
-            f"[{m.get('role', '?')}] {m.get('content', '')}"
-            for m in to_compress
+        return await self._session_compactor.compress_session(
+            session_id,
+            agent_id,
+            level=level,
+            get_store=lambda target_agent_id: self.mem_stores.get(
+                target_agent_id
+            ),
+            get_state=self.get_state,
+            generate_summary=self._generate_structured_summary,
+            batch_ingest_messages=self._batch_ingest_messages,
+            pending_tasks=self._pending_tasks,
         )
-
-        summary_dict = await self._generate_structured_summary(
-            agent_id, session_id, to_compress, text_to_summarize,
-        )
-
-        store = self.mem_stores.get(agent_id)
-        if store:
-            store.upsert_session_summary(session_id, agent_id, summary_dict)
-
-        compress_result = session_manager.compress_history(
-            session_id, agent_id, n,
-        )
-        result["compress"] = {"summary": summary_dict, "level": level, **compress_result}
-
-        state = self.get_state(agent_id)
-        state.compaction_count += 1
-
-        audit_logger.log_compress(
-            agent_id, session_id,
-            compress_result.get("archived_count", 0),
-            compress_result.get("remaining_count", 0),
-        )
-
-        task = asyncio.create_task(
-            self._batch_ingest_messages(agent_id, session_id, to_compress, session_end=False)
-        )
-        self._pending_tasks.add(task)
-        task.add_done_callback(self._pending_tasks.discard)
-
-        return result
 
     @staticmethod
     def _calc_compress_count_by_turns(messages: list[dict[str, Any]], keep_turns: int) -> int:
-        """按轮次保留：从尾部数 keep_turns 轮（每轮 = 连续 user+assistant），前面全部压缩。
-
-        token 预算兜底：如果保留的轮次 token 数超过 summary_max_tokens * 5，
-        则减少保留轮数。
-        """
-        if not messages:
-            return 0
-
-        turn_boundaries: list[int] = []
-        i = len(messages) - 1
-        while i >= 0:
-            if messages[i].get("role") == "assistant" and i > 0 and messages[i - 1].get("role") == "user":
-                turn_boundaries.append(i - 1)
-                i -= 2
-            else:
-                turn_boundaries.append(i)
-                i -= 1
-
-        turn_boundaries.reverse()
-
-        if len(turn_boundaries) <= keep_turns:
-            return 0
-
-        keep_from = turn_boundaries[-keep_turns]
-        compress_count = keep_from
-        return max(compress_count, 2) if compress_count >= 2 else 0
+        return SessionCompactor.calc_compress_count_by_turns(
+            messages,
+            keep_turns,
+        )
 
     # ------------------------------------------------------------------
     # Agent 注册
