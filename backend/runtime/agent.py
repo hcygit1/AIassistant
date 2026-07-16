@@ -7,14 +7,14 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config import (
     DATA_DIR,
+    get_heartbeat_config,
     resolve_agent_config,
     resolve_agent_workspace,
     resolve_agent_dir,
@@ -50,6 +50,11 @@ from runtime.tool_execution import invoke_tool_async
 from runtime.agent_state import AgentState
 from runtime.memory_runtime import MemoryRuntime
 from runtime.tool_registry import ToolRegistry
+from runtime.turn_context import (
+    PromptCacheEntry,
+    SessionContextCacheEntry,
+    TurnContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,28 +124,6 @@ class LifecycleHooks:
         pass
 
 
-@dataclass
-class PromptCacheEntry:
-    key: tuple[Any, ...]
-    system_prompt: str
-    prompt_report: Any
-    prompt_tokens: int
-
-
-@dataclass
-class SessionContextCacheEntry:
-    agent_id: str
-    session_id: str
-    session_file_mtime: float | None
-    summary_fingerprint: str | None
-    raw_history: list[dict[str, Any]]
-    summary_text: str
-    history_with_summary: list[dict[str, Any]]
-    pruned_history: list[dict[str, Any]]
-    summary_tokens: int
-    history_tokens: int
-
-
 from infra.event_bus import EventBus, Events, event_bus
 
 
@@ -149,6 +132,30 @@ from infra.event_bus import EventBus, Events, event_bus
 # ---------------------------------------------------------------------------
 
 class AgentManager:
+    @property
+    def _prompt_cache(self) -> dict[tuple[Any, ...], PromptCacheEntry]:
+        return self._turn_context.prompt_cache
+
+    @_prompt_cache.setter
+    def _prompt_cache(
+        self,
+        value: dict[tuple[Any, ...], PromptCacheEntry],
+    ) -> None:
+        self._turn_context.prompt_cache = value
+
+    @property
+    def _session_context_cache(
+        self,
+    ) -> dict[tuple[str, str], SessionContextCacheEntry]:
+        return self._turn_context.session_context_cache
+
+    @_session_context_cache.setter
+    def _session_context_cache(
+        self,
+        value: dict[tuple[str, str], SessionContextCacheEntry],
+    ) -> None:
+        self._turn_context.session_context_cache = value
+
     @property
     def mem_stores(self) -> dict[str, Any]:
         return self._memory_runtime.stores
@@ -185,13 +192,12 @@ class AgentManager:
         self.data_dir: str = ""
         self._memory_runtime = MemoryRuntime()
         self._tool_registry = ToolRegistry(self)
+        self._turn_context = TurnContext()
         self._states: dict[str, AgentState] = {}
         self._initialized = False
         self.lifecycle_hooks: LifecycleHooks | None = None
         self._pending_tasks: set[asyncio.Task] = set()
         self._state_save_tasks: dict[str, asyncio.Task] = {}
-        self._prompt_cache: dict[tuple[Any, ...], PromptCacheEntry] = {}
-        self._session_context_cache: dict[tuple[str, str], SessionContextCacheEntry] = {}
         self._tool_name_cache = self._tool_registry.name_cache
 
     def _get_state_persist_config(self, agent_id: str) -> tuple[bool, int]:
@@ -392,42 +398,38 @@ class AgentManager:
     def _build_messages(
         self, history: list[dict[str, Any]], new_message: str
     ) -> list:
-        messages = []
-        for msg in history:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "user":
-                messages.append(HumanMessage(content=content))
-            elif role == "assistant":
-                messages.append(AIMessage(content=content))
-            elif role == "system":
-                if not messages:
-                    messages.append(SystemMessage(content=content))
-                else:
-                    # Anthropic 协议不允许 system 消息穿插在 user/assistant 之间，
-                    # 降级为 HumanMessage，内容保留 [System Message] 前缀供 LLM 识别来源
-                    messages.append(HumanMessage(content=content))
-        messages.append(HumanMessage(content=new_message))
-        return messages
+        return self._turn_context.build_messages(
+            history,
+            new_message,
+            human_message=HumanMessage,
+            ai_message=AIMessage,
+            system_message=SystemMessage,
+        )
 
     @staticmethod
     def _safe_mtime(path: Path) -> float | None:
-        try:
-            return path.stat().st_mtime if path.exists() else None
-        except Exception:
-            return None
+        return TurnContext.safe_mtime(path)
 
     def _project_context_signature(self, agent_id: str, prompt_mode: str) -> tuple[Any, ...]:
-        workspace = resolve_agent_workspace(agent_id)
-        files: list[Path] = [workspace / "AGENTS.md"]
-        if prompt_mode == "full":
-            files.extend([workspace / "IDENTITY.md", workspace / "USER.md"])
-        snapshot = resolve_agent_dir(agent_id) / "SKILLS_SNAPSHOT.md"
-        bootstrap = workspace / "BOOTSTRAP.md"
-        return (
-            tuple((str(p), self._safe_mtime(p)) for p in files),
-            self._safe_mtime(snapshot),
-            bootstrap.exists(),
+        return self._turn_context.project_context_signature(
+            agent_id,
+            prompt_mode,
+            resolve_workspace=resolve_agent_workspace,
+            resolve_agent_dir=resolve_agent_dir,
+            safe_mtime=self._safe_mtime,
+        )
+
+    def _prompt_runtime_signature(self, agent_id: str) -> tuple[str, str]:
+        return self._turn_context.prompt_runtime_signature(
+            agent_id,
+            resolve_agent_config_fn=resolve_agent_config,
+            get_heartbeat_config_fn=get_heartbeat_config,
+        )
+
+    def _pruning_signature(self, agent_id: str) -> str:
+        return self._turn_context.pruning_signature(
+            agent_id,
+            resolve_agent_config_fn=resolve_agent_config,
         )
 
     def _tool_policy_signature(self, agent_id: str) -> tuple[Any, ...]:
@@ -453,61 +455,24 @@ class AgentManager:
         extra_system_prompt: str | None,
         locale: str,
     ) -> tuple[str, Any, int]:
-        from runtime.prompt_builder import PromptParams
-        from infra.token_counter import count_tokens
-
-        tool_key = tuple(sorted(available_tool_names or []))
-        static_sig = self._project_context_signature(agent_id, prompt_mode)
-        cache_key = (
-            agent_id,
-            prompt_mode,
-            tool_key,
-            extra_system_prompt or "",
-            locale,
-            static_sig,
-        )
-        cached = self._prompt_cache.get(cache_key)
-        if cached is not None:
-            return cached.system_prompt, cached.prompt_report, cached.prompt_tokens
-
-        prompt_params = PromptParams(
+        return self._turn_context.get_or_build_prompt(
             agent_id=agent_id,
-            mode=prompt_mode,
-            available_tools=available_tool_names,
+            prompt_mode=prompt_mode,
+            available_tool_names=available_tool_names,
             extra_system_prompt=extra_system_prompt or None,
             locale=locale,
+            static_signature=self._project_context_signature(
+                agent_id,
+                prompt_mode,
+            ),
+            runtime_signature=self._prompt_runtime_signature(agent_id),
+            build_prompt=prompt_builder.build_system_prompt_with_report,
+            count_tokens=count_tokens,
         )
-        system_prompt, prompt_report = prompt_builder.build_system_prompt_with_report(prompt_params)
-        prompt_tokens = count_tokens(system_prompt)
-
-        self._prompt_cache[cache_key] = PromptCacheEntry(
-            key=cache_key,
-            system_prompt=system_prompt,
-            prompt_report=prompt_report,
-            prompt_tokens=prompt_tokens,
-        )
-        return system_prompt, prompt_report, prompt_tokens
 
     @staticmethod
     def _session_summary_fingerprint(summary: Any) -> str | None:
-        if not summary:
-            return None
-        try:
-            if isinstance(summary, dict):
-                payload = summary
-            else:
-                payload = {
-                    "goal": getattr(summary, "goal", None),
-                    "decisions": getattr(summary, "decisions", None),
-                    "progress": getattr(summary, "progress", None),
-                    "open_items": getattr(summary, "open_items", None),
-                    "entities": getattr(summary, "entities", None),
-                    "user_preferences": getattr(summary, "user_preferences", None),
-                    "raw_summary": getattr(summary, "raw_summary", None),
-                }
-            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        except Exception:
-            return str(summary)
+        return TurnContext.session_summary_fingerprint(summary)
 
     def _get_or_build_session_context(
         self,
@@ -515,50 +480,22 @@ class AgentManager:
         agent_id: str,
         session_id: str,
     ) -> SessionContextCacheEntry:
-        from infra.token_counter import count_tokens
-
-        cache_key = (agent_id, session_id)
         session_path = resolve_agent_dir(agent_id) / "sessions" / f"{session_id}.json"
-        session_file_mtime = self._safe_mtime(session_path)
-
         store = self.mem_stores.get(agent_id)
-        session_summary = store.get_session_summary(session_id, agent_id) if store else None
-        summary_fingerprint = self._session_summary_fingerprint(session_summary)
-
-        cached = self._session_context_cache.get(cache_key)
-        if (
-            cached is not None
-            and cached.session_file_mtime == session_file_mtime
-            and cached.summary_fingerprint == summary_fingerprint
-        ):
-            return cached
-
-        raw_history = session_manager.load_session_for_agent(session_id, agent_id)
-        summary_text = ""
-        history_with_summary = list(raw_history)
-        if session_summary:
-            summary_text = prompt_builder.format_session_summary(session_summary)
-            if summary_text:
-                history_with_summary = [{"role": "system", "content": summary_text}, *history_with_summary]
-
-        pruned_history = prune_messages(history_with_summary, agent_id=agent_id)
-        summary_tokens = count_tokens(summary_text) if summary_text else 0
-        history_tokens = count_messages_tokens(pruned_history)
-
-        entry = SessionContextCacheEntry(
+        return self._turn_context.get_or_build_session_context(
             agent_id=agent_id,
             session_id=session_id,
-            session_file_mtime=session_file_mtime,
-            summary_fingerprint=summary_fingerprint,
-            raw_history=raw_history,
-            summary_text=summary_text,
-            history_with_summary=history_with_summary,
-            pruned_history=pruned_history,
-            summary_tokens=summary_tokens,
-            history_tokens=history_tokens,
+            session_path=session_path,
+            store=store,
+            safe_mtime=self._safe_mtime,
+            summary_fingerprint=self._session_summary_fingerprint,
+            load_history=session_manager.load_session_for_agent,
+            format_summary=prompt_builder.format_session_summary,
+            prune_history=prune_messages,
+            count_tokens=count_tokens,
+            count_messages_tokens=count_messages_tokens,
+            pruning_signature=self._pruning_signature(agent_id),
         )
-        self._session_context_cache[cache_key] = entry
-        return entry
 
     # ------------------------------------------------------------------
     # 核心流式方法

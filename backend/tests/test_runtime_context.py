@@ -640,6 +640,11 @@ class RuntimeCacheTests(unittest.TestCase):
 
         with (
             patch.object(manager, "_project_context_signature", return_value=(("AGENTS.md", 1.0),)),
+            patch.object(
+                manager,
+                "_prompt_runtime_signature",
+                return_value=("runtime", "2026-07-16 10:00"),
+            ),
             patch("runtime.agent.prompt_builder.build_system_prompt_with_report", build_mock),
             patch("runtime.agent.count_tokens", return_value=123),
         ):
