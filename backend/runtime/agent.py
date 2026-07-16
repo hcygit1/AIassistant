@@ -305,8 +305,11 @@ class AgentManager:
                 parse_command=lambda message: (
                     parse_command(message)
                 ),
-                execute_command=lambda *args: (
-                    execute_command(*args)
+                execute_command=lambda *args, **kwargs: (
+                    execute_command(*args, **kwargs)
+                ),
+                switch_model=lambda agent_id, model: (
+                    self.switch_model(agent_id, model)
                 ),
                 handle_reset=lambda *args, **kwargs: (
                     self._handle_reset(*args, **kwargs)

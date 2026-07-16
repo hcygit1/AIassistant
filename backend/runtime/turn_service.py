@@ -28,6 +28,7 @@ class TurnServicePorts:
     get_state: Callable[[str], Any]
     parse_command: Callable[[str], Any]
     execute_command: Callable[..., Awaitable[dict[str, Any]]]
+    switch_model: Callable[[str, str], str]
     handle_reset: Callable[..., AsyncGenerator[dict[str, Any], None]]
     handle_reset_noflush: Callable[
         ...,
@@ -85,6 +86,7 @@ class TurnService:
                 agent_id,
                 session_id,
                 state,
+                switch_model=ports.switch_model,
             )
             if result.get("handled"):
                 action = result.get("action", "")

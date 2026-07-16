@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -76,6 +76,41 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         get_locale.assert_called_once_with()
         resolve_budget.assert_called_once_with("main")
 
+    async def test_agent_manager_command_port_forwards_keywords(
+        self,
+    ) -> None:
+        manager = AgentManager()
+        command_result = {
+            "handled": True,
+            "action": "setting",
+            "response": "ok",
+        }
+        execute = AsyncMock(return_value=command_result)
+        switch_model = Mock()
+
+        with patch(
+            "runtime.agent.execute_command",
+            new=execute,
+        ):
+            result = await (
+                manager._turn_service._ports.execute_command(
+                    "parsed",
+                    "main",
+                    "s1",
+                    "state",
+                    switch_model=switch_model,
+                )
+            )
+
+        self.assertEqual(result, command_result)
+        execute.assert_awaited_once_with(
+            "parsed",
+            "main",
+            "s1",
+            "state",
+            switch_model=switch_model,
+        )
+
     async def test_stream_prepares_and_executes_normal_turn(
         self,
     ) -> None:
@@ -117,6 +152,7 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
             get_state=Mock(return_value=state),
             parse_command=Mock(return_value=None),
             execute_command=AsyncMock(),
+            switch_model=Mock(),
             handle_reset=_empty_stream,
             handle_reset_noflush=_empty_stream,
             handle_compact=_empty_stream,
@@ -202,6 +238,7 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
                     "response": "已停止",
                 }
             ),
+            switch_model=Mock(),
             handle_reset=_empty_stream,
             handle_reset_noflush=_empty_stream,
             handle_compact=_empty_stream,

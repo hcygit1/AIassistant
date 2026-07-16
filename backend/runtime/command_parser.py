@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass
@@ -132,6 +132,8 @@ async def execute_command(
     session_id: str,
     agent_state: Any = None,
     locale: str = "zh-CN",
+    *,
+    switch_model: Callable[[str, str], str] | None = None,
 ) -> dict[str, Any]:
     """Execute a command and return result dict."""
     cmd = parsed.command
@@ -159,7 +161,12 @@ async def execute_command(
         return {"handled": True, "response": "", "action": "compact"}
 
     if cmd == "/model":
-        return _cmd_model(agent_id, parsed.args, locale)
+        return _cmd_model(
+            agent_id,
+            parsed.args,
+            locale,
+            switch_model=switch_model,
+        )
 
     if cmd == "/subagents":
         return _cmd_subagents(agent_id, session_id, locale)
@@ -249,7 +256,13 @@ def _cmd_usage(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
     return {"handled": True, "response": response, "action": "info"}
 
 
-def _cmd_model(agent_id: str, args: list[str], locale: str) -> dict[str, Any]:
+def _cmd_model(
+    agent_id: str,
+    args: list[str],
+    locale: str,
+    *,
+    switch_model: Callable[[str, str], str] | None,
+) -> dict[str, Any]:
     from llm.model_selection import resolve_agent_model, get_model_display_name
     from llm.models_config import models_config
 
@@ -277,8 +290,11 @@ def _cmd_model(agent_id: str, args: list[str], locale: str) -> dict[str, Any]:
 
     target = args[0]
     try:
-        from runtime.agent import agent_manager
-        new_name = agent_manager.switch_model(agent_id, target)
+        if switch_model is None:
+            raise RuntimeError(
+                "model switch service unavailable"
+            )
+        new_name = switch_model(agent_id, target)
         return {
             "handled": True,
             "response": t("model_switched", locale, name=new_name, target=target),

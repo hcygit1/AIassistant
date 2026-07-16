@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -11,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
 from runtime.agent import _should_persist_input_message
 from runtime.command_parser import execute_command, format_help, parse_command
 from runtime.user_turn_stream import _should_skip_auto_title
+from llm.models_config import ModelRef
 
 
 class CommandParserTests(unittest.IsolatedAsyncioTestCase):
@@ -32,6 +34,41 @@ class CommandParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["handled"])
         self.assertEqual(result["action"], "info")
         self.assertIn("未知命令", result["response"])
+
+    async def test_model_switch_uses_injected_callback(
+        self,
+    ) -> None:
+        parsed = parse_command("/model fake/new-model")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        switch_model = Mock(return_value="New Model")
+
+        with (
+            patch(
+                "llm.model_selection.resolve_agent_model",
+                return_value=ModelRef(
+                    provider="fake",
+                    model="old-model",
+                ),
+            ),
+            patch(
+                "llm.model_selection.get_model_display_name",
+                return_value="Old Model",
+            ),
+        ):
+            result = await execute_command(
+                parsed,
+                "main",
+                "main-main",
+                switch_model=switch_model,
+            )
+
+        switch_model.assert_called_once_with(
+            "main",
+            "fake/new-model",
+        )
+        self.assertEqual(result["action"], "setting")
+        self.assertIn("New Model", result["response"])
 
     def test_absolute_path_is_not_treated_as_command(self) -> None:
         self.assertIsNone(parse_command("/etc/hosts"))
