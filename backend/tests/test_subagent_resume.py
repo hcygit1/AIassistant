@@ -11,10 +11,49 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from subagents.subagent_registry import SubagentRunRecord
-from subagents.subagent_resume import resume_subagent_runs
+from subagents.subagent_resume import (
+    _resolve_orphan_reason,
+    resume_subagent_runs,
+)
 
 
 class SubagentResumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_orphan_check_uses_public_session_manager_boundary(self) -> None:
+        entry = SubagentRunRecord(
+            run_id="run-orphan",
+            child_session_key="agent:main:subagent:child-1",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+        )
+        manager = Mock(
+            spec=[
+                "get_session_index_entry",
+                "session_file_exists",
+            ]
+        )
+        manager.get_session_index_entry.return_value = {
+            "sessionId": "child-1"
+        }
+        manager.session_file_exists.return_value = False
+
+        with patch(
+            "sessions.session_manager.session_manager",
+            manager,
+        ):
+            reason = _resolve_orphan_reason(entry)
+
+        self.assertEqual(reason, "missing-session-file")
+        manager.get_session_index_entry.assert_called_once_with(
+            "child-1",
+            "main",
+        )
+        manager.session_file_exists.assert_called_once_with(
+            "child-1",
+            "main",
+        )
+
     async def test_resume_marks_result_delivery_dropped_when_retry_limit_reached(self) -> None:
         entry = SubagentRunRecord(
             run_id="run-resume-1",

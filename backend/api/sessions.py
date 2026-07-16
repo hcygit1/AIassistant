@@ -144,7 +144,7 @@ async def sessions_cleanup(agent_id: str, enforce: bool = False, dry_run: bool =
     """sessions cleanup：prune 过期 + cap 超限 + 磁盘预算。enforce=true 时忽略 mode=warn"""
     if not any(a["id"] == agent_id for a in list_agents()):
         raise HTTPException(404, f"Agent '{agent_id}' 不存在")
-    store, report = session_manager._run_session_maintenance(
+    store, report = session_manager.run_maintenance(
         agent_id, enforce=enforce, dry_run=dry_run
     )
     result: dict = {"pruned": report["pruned"], "capped": report["capped"]}

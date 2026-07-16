@@ -68,13 +68,11 @@ class RunTracker:
     def __init__(self):
         self._active: dict[str, TurnRecord] = {}
         self._history: list[TurnRecord] = []
-        self._event_listeners: list[Any] = []
 
     def start_turn(self, agent_id: str, session_id: str) -> TurnRecord:
         record = TurnRecord(agent_id=agent_id, session_id=session_id)
         record.phase = "running"
         self._active[record.run_id] = record
-        self._emit("turn_start", record)
         return record
 
     def record_tool_start(
@@ -94,11 +92,6 @@ class RunTracker:
             started_at=time.time(),
         )
         record.tool_calls.append(tc)
-        self._emit(
-            "tool_start",
-            record,
-            {"tool": tool, "input": tool_input, "tool_call_id": tool_call_id or ""},
-        )
 
     def record_tool_end(
         self,
@@ -121,11 +114,6 @@ class RunTracker:
                 if tool_call_id and not tc.tool_call_id:
                     tc.tool_call_id = tool_call_id
                 break
-        self._emit(
-            "tool_end",
-            record,
-            {"tool": tool, "output": output[:500], "tool_call_id": tool_call_id or ""},
-        )
 
     def record_tokens(
         self,
@@ -154,7 +142,6 @@ class RunTracker:
         record.ended_at = time.time()
         record.phase = "completed"
         self._history.append(record)
-        self._emit("turn_end", record)
         return record
 
     def error_turn(self, run_id: str, error: str) -> TurnRecord | None:
@@ -165,7 +152,6 @@ class RunTracker:
         record.phase = "error"
         record.error = error
         self._history.append(record)
-        self._emit("turn_error", record, {"error": error})
         return record
 
     def get_active(self, run_id: str) -> TurnRecord | None:
@@ -195,19 +181,5 @@ class RunTracker:
             "total_tokens": sum(r.total_tokens for r in records),
             "turns": len(records),
         }
-
-    def add_listener(self, callback: Any) -> None:
-        self._event_listeners.append(callback)
-
-    def _emit(self, event_type: str, record: TurnRecord, extra: dict | None = None) -> None:
-        data = {"event": event_type, "record": record.to_dict()}
-        if extra:
-            data.update(extra)
-        for listener in self._event_listeners:
-            try:
-                listener(data)
-            except Exception:
-                pass
-
 
 run_tracker = RunTracker()

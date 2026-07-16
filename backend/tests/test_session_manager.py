@@ -253,6 +253,22 @@ class SessionManagerPersistenceTests(unittest.TestCase):
         self.assertIsNone(caught_error)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
 
+    def test_public_session_reference_methods_hide_storage_paths(self) -> None:
+        self.manager.ensure_session("session-1", "agent-1")
+
+        entry = self.manager.get_session_index_entry(
+            "session-1",
+            "agent-1",
+        )
+
+        self.assertEqual(entry["sessionId"], "session-1")
+        self.assertTrue(
+            self.manager.session_file_exists("session-1", "agent-1")
+        )
+        self.assertIsNone(
+            self.manager.get_session_index_entry("missing", "agent-1")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

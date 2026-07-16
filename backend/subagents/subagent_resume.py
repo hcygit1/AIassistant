@@ -32,16 +32,19 @@ def _resolve_orphan_reason(entry: SubagentRunRecord) -> Literal["missing-session
             return "missing-session-entry"
         agent_id = parts[1]
         session_id = parts[3]
-        store = session_manager._load_session_store(agent_id)
-        session_key = session_manager.session_key_from_session_id(agent_id, session_id)
-        if session_key not in store:
+        ent = session_manager.get_session_index_entry(
+            session_id,
+            agent_id,
+        )
+        if ent is None:
             return "missing-session-entry"
-        ent = store.get(session_key, {})
         sid = ent.get("sessionId")
         if not sid or not str(sid).strip():
             return "missing-session-id"
-        session_file = session_manager._session_path(str(sid).strip(), agent_id)
-        if not session_file.exists():
+        if not session_manager.session_file_exists(
+            str(sid).strip(),
+            agent_id,
+        ):
             return "missing-session-file"
         return None
     except Exception:

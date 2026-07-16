@@ -132,17 +132,6 @@ class SessionManager:
                 self._store_locks[agent_id] = threading.RLock()
             return self._store_locks[agent_id]
 
-    @staticmethod
-    def _emit_lifecycle(event_name: str, agent_id: str, session_id: str, **extra: Any) -> None:
-        try:
-            from runtime.session_lifecycle import lifecycle_bus, LifecycleEvent, LifecyclePayload
-            ev = LifecycleEvent(event_name)
-            lifecycle_bus.emit(LifecyclePayload(
-                event=ev, agent_id=agent_id, session_id=session_id, data=extra,
-            ))
-        except Exception:
-            pass
-
     # ------------------------------------------------------------------
     # 主会话 — 每个 Agent 有且仅有一个主会话
     # ------------------------------------------------------------------
@@ -182,6 +171,9 @@ class SessionManager:
 
     def _session_path(self, session_id: str, agent_id: str) -> Path:
         return resolve_agent_sessions_dir(agent_id) / f"{session_id}.json"
+
+    def session_file_exists(self, session_id: str, agent_id: str) -> bool:
+        return self._session_path(session_id, agent_id).is_file()
 
     def load_session(self, session_id: str, agent_id: str) -> dict[str, Any] | None:
         cache_key = f"{agent_id}:{session_id}"
@@ -290,7 +282,6 @@ class SessionManager:
             label=data.get("label", ""),
             spawned_by=spawned_by,
         )
-        self._emit_lifecycle("session_create", agent_id, session_id)
         return data
 
     def rollback_last_turn(self, session_id: str, agent_id: str) -> bool:
@@ -357,6 +348,18 @@ class SessionManager:
             path = self._session_store_path(agent_id)
             _write_json_atomic(path, store)
 
+    def get_session_index_entry(
+        self,
+        session_id: str,
+        agent_id: str,
+    ) -> dict[str, Any] | None:
+        session_key = self.session_key_from_session_id(
+            agent_id,
+            session_id,
+        )
+        entry = self._load_session_store(agent_id).get(session_key)
+        return dict(entry) if isinstance(entry, dict) else None
+
     def _update_session_store_entry(
         self,
         agent_id: str,
@@ -382,7 +385,7 @@ class SessionManager:
             if spawned_by:
                 entry["spawnedBy"] = spawned_by
             store[session_key] = entry
-            store, _ = self._run_session_maintenance(
+            store, _ = self.run_maintenance(
                 agent_id,
                 store=store,
                 enforce=False,
@@ -575,7 +578,7 @@ class SessionManager:
             return num * 60 * 1000
         return num * 1000
 
-    def _run_session_maintenance(
+    def run_maintenance(
         self, agent_id: str, store: dict | None = None, enforce: bool = False, dry_run: bool = False
     ) -> tuple[dict, dict[str, Any]]:
         """prune 过期 + cap 超限 + 磁盘预算。返回 (store, report)"""
