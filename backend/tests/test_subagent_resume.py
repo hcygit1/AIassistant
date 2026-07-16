@@ -3,7 +3,8 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from dataclasses import replace
+from unittest.mock import AsyncMock, Mock, patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -28,7 +29,9 @@ class SubagentResumeTests(unittest.IsolatedAsyncioTestCase):
             announce_retry_count=3,
         )
         registry = Mock()
-        registry._runs = {"run-resume-1": entry}
+        registry.list_run_entries.return_value = [
+            ("run-resume-1", entry)
+        ]
 
         with (
             patch("subagents.subagent_resume.registry", registry),
@@ -39,8 +42,9 @@ class SubagentResumeTests(unittest.IsolatedAsyncioTestCase):
             await resume_subagent_runs()
 
         registry.mark_result_delivery_dropped.assert_not_called()
-        self.assertNotIn("run-resume-1", registry._runs)
-        self.assertTrue(registry._persist_to_disk.called)
+        registry.remove_run.assert_called_once_with(
+            "run-resume-1"
+        )
 
     async def test_resume_marks_result_delivery_dropped_when_retry_fails_after_delivery_attempt(self) -> None:
         entry = SubagentRunRecord(
@@ -56,7 +60,9 @@ class SubagentResumeTests(unittest.IsolatedAsyncioTestCase):
             announce_retry_count=1,
         )
         registry = Mock()
-        registry._runs = {"run-resume-2": entry}
+        registry.list_run_entries.return_value = [
+            ("run-resume-2", entry)
+        ]
         registry.mark_announce_retry.return_value = False
 
         with (
@@ -68,8 +74,52 @@ class SubagentResumeTests(unittest.IsolatedAsyncioTestCase):
             await resume_subagent_runs()
 
         registry.mark_result_delivery_dropped.assert_called_once_with("run-resume-2")
-        self.assertNotIn("run-resume-2", registry._runs)
-        self.assertTrue(registry._persist_to_disk.called)
+        registry.remove_run.assert_called_once_with(
+            "run-resume-2"
+        )
+
+    async def test_resume_marks_active_run_interrupted_through_registry(self) -> None:
+        entry = SubagentRunRecord(
+            run_id="run-resume-3",
+            child_session_key="agent:main:subagent:child-3",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+        )
+        interrupted = replace(
+            entry,
+            ended_at=101.0,
+            outcome="restart-interrupted",
+            state="interrupted",
+        )
+        registry = Mock()
+        registry.list_run_entries.return_value = [
+            ("run-resume-3", entry)
+        ]
+        registry.get_run.return_value = interrupted
+        registry.mark_announce_retry.return_value = True
+        deliver = AsyncMock(return_value=False)
+
+        with (
+            patch("subagents.subagent_resume.registry", registry),
+            patch("subagents.subagent_resume._resolve_orphan_reason", return_value=None),
+            patch("subagents.subagent_resume._deliver_announce_for_run", deliver),
+            patch("time.time", return_value=101.0),
+        ):
+            await resume_subagent_runs()
+
+        registry.mark_terminated.assert_called_once_with(
+            "run-resume-3",
+            "restart-interrupted",
+        )
+        deliver.assert_awaited_once_with(
+            "run-resume-3",
+            interrupted,
+        )
+        registry.mark_announce_retry.assert_called_once_with(
+            "run-resume-3"
+        )
 
 
 if __name__ == "__main__":

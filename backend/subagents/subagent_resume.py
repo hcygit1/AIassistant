@@ -50,11 +50,7 @@ def _resolve_orphan_reason(entry: SubagentRunRecord) -> Literal["missing-session
 
 def _reconcile_orphaned(run_id: str, entry: SubagentRunRecord, reason: str) -> bool:
     """将孤儿 run 标记为已结束并清理"""
-    import time
-    entry.ended_at = time.time()
-    entry.outcome = f"orphaned ({reason})"
-    registry._runs.pop(run_id, None)
-    registry._persist_to_disk()
+    registry.remove_run(run_id)
     logger.warning(f"Subagent orphan pruned run={run_id} child={entry.child_session_key} reason={reason}")
     return True
 
@@ -68,10 +64,7 @@ async def _deliver_announce_for_run(run_id: str, entry: SubagentRunRecord) -> bo
 
 async def resume_subagent_runs() -> None:
     """启动时调用：对恢复的 run 执行 reconcile + announce"""
-    for run_id in list(registry._runs.keys()):
-        entry = registry._runs.get(run_id)
-        if not entry:
-            continue
+    for run_id, entry in registry.list_run_entries():
 
         reason = _resolve_orphan_reason(entry)
         if reason:
@@ -79,18 +72,15 @@ async def resume_subagent_runs() -> None:
             continue
 
         if getattr(entry, "result_delivery_state", "pending") == "delivered":
-            registry._runs.pop(run_id, None)
-            registry._persist_to_disk()
+            registry.remove_run(run_id)
             continue
 
         if entry.announce_retry_count >= MAX_ANNOUNCE_RETRY:
-            registry._runs.pop(run_id, None)
-            registry._persist_to_disk()
+            registry.remove_run(run_id)
             continue
 
         if entry.ended_at and (__import__("time").time() - entry.ended_at) > ANNOUNCE_EXPIRY_SEC:
-            registry._runs.pop(run_id, None)
-            registry._persist_to_disk()
+            registry.remove_run(run_id)
             continue
 
         if entry.ended_at:
@@ -100,24 +90,25 @@ async def resume_subagent_runs() -> None:
                 logger.warning(f"Resume announce error run={run_id}: {e}")
                 delivered = False
             if delivered:
-                registry._runs.pop(run_id, None)
-                registry._persist_to_disk()
+                registry.remove_run(run_id)
             elif not registry.mark_announce_retry(run_id):
                 registry.mark_result_delivery_dropped(run_id)
-                registry._runs.pop(run_id, None)
-                registry._persist_to_disk()
+                registry.remove_run(run_id)
             continue
 
-        entry.ended_at = __import__("time").time()
-        entry.outcome = "restart-interrupted"
+        registry.mark_terminated(run_id, "restart-interrupted")
+        interrupted = registry.get_run(run_id)
+        if interrupted is None:
+            continue
         try:
-            delivered = await _deliver_announce_for_run(run_id, entry)
+            delivered = await _deliver_announce_for_run(
+                run_id,
+                interrupted,
+            )
         except Exception:
             delivered = False
         if delivered:
-            registry._runs.pop(run_id, None)
-            registry._persist_to_disk()
+            registry.remove_run(run_id)
         elif not registry.mark_announce_retry(run_id):
             registry.mark_result_delivery_dropped(run_id)
-            registry._runs.pop(run_id, None)
-            registry._persist_to_disk()
+            registry.remove_run(run_id)

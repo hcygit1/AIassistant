@@ -114,8 +114,7 @@ def load_registry_from_disk() -> dict[str, SubagentRunRecord]:
     for run_id, entry in runs_raw.items():
         if not isinstance(entry, dict) or not run_id:
             continue
-        if not entry.get("run_id"):
-            entry["run_id"] = run_id
+        entry["run_id"] = run_id
         try:
             out[run_id] = _dict_to_record(entry)
         except Exception:

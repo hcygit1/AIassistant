@@ -135,7 +135,7 @@ def _build_subagent_tree(
     """递归构建子 Agent 树。cutoff 为 None 时不过滤；否则只包含 ended_at is None 或 ended_at >= cutoff 的 run"""
     children_sk = registry.session_key_from_child_session_key
     tree: list[dict] = []
-    for r in registry._runs.values():
+    for r in registry.list_runs():
         if r.requester_session_key != root_session_key:
             continue
         if session_id_filter and session_id_filter not in r.requester_session_key:
