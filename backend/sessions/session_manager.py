@@ -17,20 +17,17 @@ from sessions.session_repository import (
     SessionRepository,
 )
 from sessions.session_maintenance import SessionMaintenanceService
+from sessions.session_title import SessionTitleService
 
 logger = logging.getLogger(__name__)
 
 
 class SessionManager:
-    _SESSION_BOOTSTRAP_PREFIXES = (
-        "a new session was started via /new or /reset",
-        "[system message]",
-    )
-
     def __init__(
         self,
         repository: SessionRepository | None = None,
         maintenance: SessionMaintenanceService | None = None,
+        title_service: SessionTitleService | None = None,
     ) -> None:
         self._repository = repository or SessionRepository(
             resolve_sessions_dir=resolve_agent_sessions_dir
@@ -39,13 +36,10 @@ class SessionManager:
             repository=self._repository,
             get_config=get_config,
         )
+        self._title_service = title_service or SessionTitleService()
 
     def _is_bootstrap_text(self, text: str | None) -> bool:
-        raw = (text or "").strip()
-        if not raw:
-            return False
-        lowered = raw.lower()
-        return any(lowered.startswith(prefix) for prefix in self._SESSION_BOOTSTRAP_PREFIXES)
+        return self._title_service.is_bootstrap_text(text)
 
     def _get_store_lock(self, agent_id: str):
         return self._repository.get_agent_lock(agent_id)
@@ -559,8 +553,6 @@ class SessionManager:
     # 会话标题推导
     # ------------------------------------------------------------------
 
-    DERIVED_TITLE_MAX_LEN = 60
-
     def _get_title_max_len(self) -> int:
         """从配置获取标题最大长度"""
         try:
@@ -572,48 +564,12 @@ class SessionManager:
     def derive_session_title(
         self, data: dict[str, Any] | None, session_id: str = "", updated_at: float | None = None
     ) -> str:
-        """从 label/displayName/subject/首条真实用户消息或 session_id 推导标题"""
-        max_len = self._get_title_max_len()
-
-        if not data:
-            return "未命名"
-        label = str(data.get("label", "")).strip()
-        if label and not self._is_bootstrap_text(label):
-            return label[:max_len]
-        if data.get("displayName", "").strip():
-            return data["displayName"].strip()[:max_len]
-        if data.get("subject", "").strip():
-            return data["subject"].strip()[:max_len]
-        for msg in data.get("messages", []):
-            if msg.get("role") == "user" and msg.get("content", "").strip():
-                text = " ".join(str(msg.get("content", "")).split()).strip()
-                lowered = text.lower()
-                if any(lowered.startswith(prefix) for prefix in self._SESSION_BOOTSTRAP_PREFIXES):
-                    continue
-                # 跳过更多特殊前缀
-                if text.startswith("/"):  # 所有命令
-                    continue
-                if text.startswith("http://") or text.startswith("https://"):  # URL
-                    continue
-
-                # 更好的截断：优先在标点符号处截断
-                if len(text) > max_len:
-                    # 尝试在标点符号处截断
-                    for sep in ["。", ".", "！", "!", "？", "?", ";", "；", "\n"]:
-                        idx = text.find(sep, max_len // 2)
-                        if 0 < idx <= max_len:
-                            return text[:idx].strip() + "…"
-
-                    # 没有合适的标点，在空格处截断
-                    cut = text[:max_len - 1]
-                    last_space = cut.rfind(" ")
-                    if last_space > max_len * 0.6:
-                        return cut[:last_space] + "…"
-                    return cut + "…"
-                return text or "未命名"
-        if session_id and updated_at:
-            return f"{session_id} @ {int(updated_at)}"
-        return "未命名"
+        return self._title_service.derive(
+            data,
+            session_id=session_id,
+            updated_at=updated_at,
+            max_length=self._get_title_max_len(),
+        )
 
     # ------------------------------------------------------------------
     # 会话重置
