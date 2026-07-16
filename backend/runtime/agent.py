@@ -26,12 +26,16 @@ from infra.token_counter import count_messages_tokens, count_tokens
 from sessions.session_pruning import prune_messages
 from runtime.command_parser import parse_command, execute_command
 from llm.model_selection import (
+    get_model_display_name,
+    resolve_agent_model,
     resolve_fallback_candidates,
     run_with_fallback_stream,
 )
-from llm.llm_factory import create_llm
+from llm.llm_factory import create_llm, llm_cache
+from llm.models_config import models_config
 from runtime.agent_state import AgentState
 from runtime.memory_runtime import MemoryRuntime
+from runtime.model_runtime import ModelRuntime
 from runtime.session_commands import SessionCommands
 from runtime.session_compactor import SessionCompactor
 from runtime.tool_registry import ToolRegistry
@@ -236,6 +240,27 @@ class AgentManager:
     def __init__(self):
         self.data_dir: str = ""
         self._memory_runtime = MemoryRuntime()
+        self._model_runtime = ModelRuntime(
+            resolve_configured_model=lambda agent_id: (
+                resolve_agent_model(agent_id)
+            ),
+            resolve_configured_candidates=lambda agent_id: (
+                resolve_fallback_candidates(agent_id)
+            ),
+            find_model=lambda model_id: (
+                models_config.find_model_by_id(model_id)
+            ),
+            get_model=lambda ref: models_config.get_model(ref),
+            invalidate_llm=lambda agent_id: (
+                llm_cache.invalidate(agent_id)
+            ),
+            get_or_create_llm=lambda agent_id, ref: (
+                llm_cache.get_or_create(agent_id, ref)
+            ),
+            get_display_name=lambda ref: (
+                get_model_display_name(ref)
+            ),
+        )
         self._tool_registry = ToolRegistry(self)
         self._turn_context = TurnContext()
         self._session_compactor = SessionCompactor(
@@ -311,6 +336,12 @@ class AgentManager:
                 switch_model=lambda agent_id, model: (
                     self.switch_model(agent_id, model)
                 ),
+                get_current_model=lambda agent_id: (
+                    self.get_current_model_ref(agent_id)
+                ),
+                get_model_override=lambda agent_id: (
+                    self.get_model_override(agent_id)
+                ),
                 handle_reset=lambda *args, **kwargs: (
                     self._handle_reset(*args, **kwargs)
                 ),
@@ -354,7 +385,9 @@ class AgentManager:
                     resolve_agent_config(agent_id)
                 ),
                 resolve_candidates=lambda agent_id: (
-                    resolve_fallback_candidates(agent_id)
+                    self._model_runtime.resolve_candidates(
+                        agent_id
+                    )
                 ),
                 execute_turn=lambda request: (
                     self._turn_executor.execute(request)
@@ -447,40 +480,40 @@ class AgentManager:
 
     def get_llm(self, agent_id: str = "main"):
         """获取指定 Agent 的 LLM 实例（per-agent 动态创建，按 Provider 配置路由）"""
-        from llm.llm_factory import llm_cache
-        from llm.model_selection import resolve_agent_model
-
-        ref = resolve_agent_model(agent_id)
-        return llm_cache.get_or_create(agent_id, ref)
+        return self._model_runtime.get_llm(agent_id)
 
     def get_current_model_ref(self, agent_id: str = "main"):
         """获取 Agent 当前使用的 ModelRef"""
-        from llm.model_selection import resolve_agent_model
-        return resolve_agent_model(agent_id)
+        return self._model_runtime.resolve_current(agent_id)
 
     def switch_model(self, agent_id: str, model_raw: str) -> str:
         """运行时切换 Agent 模型，返回新模型描述"""
-        from llm.llm_factory import llm_cache
-        from llm.model_selection import resolve_agent_model, get_model_display_name
-        from llm.models_config import parse_model_ref
+        return self._model_runtime.switch(
+            agent_id,
+            model_raw,
+        )
 
-        ref = parse_model_ref(model_raw)
-        if not ref:
-            raise ValueError(f"Invalid model reference: {model_raw}")
+    def get_model_override(
+        self,
+        agent_id: str,
+    ):
+        return self._model_runtime.get_override(agent_id)
 
-        if not ref.provider:
-            from llm.models_config import models_config
-            found = models_config.find_model_by_id(ref.model)
-            if found:
-                provider, model_def = found
-                ref.provider = provider.id
-            else:
-                raise ValueError(f"Model '{ref.model}' not found in any provider")
+    def restore_model_override(
+        self,
+        agent_id: str,
+        override,
+    ) -> None:
+        self._model_runtime.restore_override(
+            agent_id,
+            override,
+        )
 
-        llm_cache.invalidate(agent_id)
-        llm_cache.get_or_create(agent_id, ref)
-
-        return get_model_display_name(ref)
+    def clear_model_overrides(
+        self,
+        agent_id: str | None = None,
+    ) -> None:
+        self._model_runtime.clear(agent_id)
 
     def get_state(self, agent_id: str) -> AgentState:
         if agent_id not in self._states:
@@ -524,6 +557,7 @@ class AgentManager:
             await self.wait_for_pending_tasks(timeout=timeout)
         finally:
             self._memory_runtime.close()
+            self._model_runtime.clear()
             self._states.clear()
             self._state_save_tasks.clear()
             self._pending_tasks.clear()
@@ -599,11 +633,20 @@ class AgentManager:
             safe_mtime=self._safe_mtime,
         )
 
-    def _prompt_runtime_signature(self, agent_id: str) -> tuple[str, str]:
-        return self._turn_context.prompt_runtime_signature(
-            agent_id,
-            resolve_agent_config_fn=resolve_agent_config,
-            get_heartbeat_config_fn=get_heartbeat_config,
+    def _prompt_runtime_signature(
+        self,
+        agent_id: str,
+    ) -> tuple[Any, ...]:
+        base_signature = (
+            self._turn_context.prompt_runtime_signature(
+                agent_id,
+                resolve_agent_config_fn=resolve_agent_config,
+                get_heartbeat_config_fn=get_heartbeat_config,
+            )
+        )
+        return (
+            *base_signature,
+            str(self.get_current_model_ref(agent_id)),
         )
 
     def _pruning_signature(self, agent_id: str) -> str:

@@ -271,11 +271,12 @@ async def list_models():
 
 @router.get("/models/current/{agent_id}")
 async def get_current_model(agent_id: str):
-    from llm.model_selection import resolve_agent_model, get_model_display_name
+    from runtime.agent import agent_manager
+    from llm.model_selection import get_model_display_name
     from llm.models_config import models_config
 
     try:
-        ref = resolve_agent_model(agent_id)
+        ref = agent_manager.get_current_model_ref(agent_id)
     except RuntimeError as e:
         raise HTTPException(status_code=404, detail=str(e))
     model_def = models_config.get_model(ref)
@@ -304,25 +305,47 @@ async def switch_model(agent_id: str, req: ModelSwitchRequest):
     from runtime.agent import agent_manager
     from config import get_raw_config, save_config
 
+    previous_override = agent_manager.get_model_override(agent_id)
+    switched = False
     try:
         new_name = agent_manager.switch_model(agent_id, req.model)
+        switched = True
+        current_model = str(
+            agent_manager.get_current_model_ref(agent_id)
+        )
 
         cfg = get_raw_config()
         if req.scope == "default":
-            cfg.setdefault("agents", {}).setdefault("defaults", {})["model"] = req.model
+            cfg.setdefault("agents", {}).setdefault(
+                "defaults",
+                {},
+            )["model"] = current_model
         else:
             agents_list = cfg.get("agents", {}).get("list", [])
             for a in agents_list:
                 if a.get("id") == agent_id:
-                    a["model"] = req.model
+                    a["model"] = current_model
                     break
             else:
-                cfg.setdefault("agents", {}).setdefault("defaults", {})["model"] = req.model
+                cfg.setdefault("agents", {}).setdefault(
+                    "defaults",
+                    {},
+                )["model"] = current_model
 
         save_config(cfg)
 
-        return {"status": "ok", "model": req.model, "name": new_name, "scope": req.scope}
+        return {
+            "status": "ok",
+            "model": current_model,
+            "name": new_name,
+            "scope": req.scope,
+        }
     except Exception as e:
+        if switched:
+            agent_manager.restore_model_override(
+                agent_id,
+                previous_override,
+            )
         return {"status": "error", "error": str(e)}
 
 
@@ -376,9 +399,11 @@ def _reload_subsystems(updates: dict[str, Any]) -> None:
         try:
             from llm.models_config import models_config
             from llm.llm_factory import llm_cache
+            from runtime.agent import agent_manager
             from config import get_config
             models_config.reload(get_config().get("models"))
             llm_cache.invalidate_all()
+            agent_manager.clear_model_overrides()
         except Exception:
             pass
 

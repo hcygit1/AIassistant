@@ -134,6 +134,7 @@ async def execute_command(
     locale: str = "zh-CN",
     *,
     switch_model: Callable[[str, str], str] | None = None,
+    get_current_model: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     """Execute a command and return result dict."""
     cmd = parsed.command
@@ -148,7 +149,12 @@ async def execute_command(
         return await _cmd_context(agent_id, session_id, locale)
 
     if cmd == "/usage":
-        return _cmd_usage(agent_id, session_id, locale)
+        return _cmd_usage(
+            agent_id,
+            session_id,
+            locale,
+            get_current_model=get_current_model,
+        )
 
     if cmd == "/new":
         model_override = parsed.args[0] if parsed.args else None
@@ -166,13 +172,18 @@ async def execute_command(
             parsed.args,
             locale,
             switch_model=switch_model,
+            get_current_model=get_current_model,
         )
 
     if cmd == "/subagents":
         return _cmd_subagents(agent_id, session_id, locale)
 
     if cmd == "/whoami":
-        return _cmd_whoami(agent_id, locale)
+        return _cmd_whoami(
+            agent_id,
+            locale,
+            get_current_model=get_current_model,
+        )
 
     return {"handled": True, "response": t("unknown_cmd", locale, cmd=cmd), "action": "info"}
 
@@ -235,11 +246,21 @@ async def _cmd_context(agent_id: str, session_id: str, locale: str) -> dict[str,
     return {"handled": True, "response": response, "action": "info"}
 
 
-def _cmd_usage(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
+def _cmd_usage(
+    agent_id: str,
+    session_id: str,
+    locale: str,
+    *,
+    get_current_model: Callable[[str], Any] | None,
+) -> dict[str, Any]:
     from infra.run_tracker import run_tracker
     from llm.model_selection import resolve_agent_model, get_model_display_name
 
-    model_ref = resolve_agent_model(agent_id)
+    model_ref = (
+        get_current_model(agent_id)
+        if get_current_model is not None
+        else resolve_agent_model(agent_id)
+    )
     model_name = get_model_display_name(model_ref)
 
     usage = run_tracker.get_cumulative_usage(agent_id, session_id)
@@ -262,11 +283,16 @@ def _cmd_model(
     locale: str,
     *,
     switch_model: Callable[[str, str], str] | None,
+    get_current_model: Callable[[str], Any] | None,
 ) -> dict[str, Any]:
     from llm.model_selection import resolve_agent_model, get_model_display_name
     from llm.models_config import models_config
 
-    current_ref = resolve_agent_model(agent_id)
+    current_ref = (
+        get_current_model(agent_id)
+        if get_current_model is not None
+        else resolve_agent_model(agent_id)
+    )
     current_name = get_model_display_name(current_ref)
 
     if not args:
@@ -333,14 +359,23 @@ def _cmd_subagents(agent_id: str, session_id: str, locale: str) -> dict[str, Any
     return {"handled": True, "response": "\n".join(lines), "action": "info"}
 
 
-def _cmd_whoami(agent_id: str, locale: str) -> dict[str, Any]:
+def _cmd_whoami(
+    agent_id: str,
+    locale: str,
+    *,
+    get_current_model: Callable[[str], Any] | None,
+) -> dict[str, Any]:
     from config import resolve_agent_config, resolve_agent_workspace
     from llm.model_selection import resolve_agent_model, get_model_display_name
     from llm.models_config import models_config
 
     cfg = resolve_agent_config(agent_id)
     workspace = resolve_agent_workspace(agent_id)
-    model_ref = resolve_agent_model(agent_id)
+    model_ref = (
+        get_current_model(agent_id)
+        if get_current_model is not None
+        else resolve_agent_model(agent_id)
+    )
     model_name = get_model_display_name(model_ref)
     api_protocol = models_config.resolve_api_protocol(model_ref)
 

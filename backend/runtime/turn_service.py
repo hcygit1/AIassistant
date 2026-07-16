@@ -29,6 +29,8 @@ class TurnServicePorts:
     parse_command: Callable[[str], Any]
     execute_command: Callable[..., Awaitable[dict[str, Any]]]
     switch_model: Callable[[str, str], str]
+    get_current_model: Callable[[str], Any]
+    get_model_override: Callable[[str], Any]
     handle_reset: Callable[..., AsyncGenerator[dict[str, Any], None]]
     handle_reset_noflush: Callable[
         ...,
@@ -87,6 +89,7 @@ class TurnService:
                 session_id,
                 state,
                 switch_model=ports.switch_model,
+                get_current_model=ports.get_current_model,
             )
             if result.get("handled"):
                 action = result.get("action", "")
@@ -144,6 +147,13 @@ class TurnService:
                 )
             except Exception:
                 pass
+
+        model_override = ports.get_model_override(agent_id)
+        if model_override is not None:
+            extra_prompt += (
+                "\n\n## 当前运行模型\n\n"
+                f"当前运行模型：`{model_override}`。"
+            )
 
         available_tool_names = list(
             ports.get_tool_names(agent_id)

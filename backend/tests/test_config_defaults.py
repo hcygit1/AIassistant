@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -18,9 +19,69 @@ from config import (
 )
 from config_schema import HeartbeatConfig, validate_config
 import config_schema
+import config as config_module
 
 
 class ConfigDefaultConsistencyTests(unittest.TestCase):
+    def test_save_failure_does_not_publish_in_memory_config(
+        self,
+    ) -> None:
+        old_raw = {
+            "agents": {
+                "defaults": {"model": "fake/old"}
+            }
+        }
+        old_resolved = {
+            "agents": {
+                "defaults": {"model": "fake/old"}
+            }
+        }
+        new_config = {
+            "agents": {
+                "defaults": {"model": "fake/new"}
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            with (
+                patch.object(
+                    config_module,
+                    "_raw_config",
+                    old_raw,
+                ),
+                patch.object(
+                    config_module,
+                    "_config",
+                    old_resolved,
+                ),
+                patch(
+                    "config._config_path",
+                    return_value=config_path,
+                ),
+                patch(
+                    "config.shutil.move",
+                    side_effect=OSError("disk full"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "disk full",
+                ):
+                    config_module.save_config(
+                        new_config,
+                        validate=False,
+                    )
+
+                self.assertEqual(
+                    config_module.get_raw_config(),
+                    old_raw,
+                )
+                self.assertEqual(
+                    config_module.get_config(),
+                    old_resolved,
+                )
+
     def test_empty_config_validation_uses_runtime_defaults(self) -> None:
         result = validate_config({})
 

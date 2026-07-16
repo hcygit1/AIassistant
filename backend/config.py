@@ -388,14 +388,23 @@ def save_config(cfg: dict[str, Any], *, validate: bool = True) -> None:
         result = validate_config(cfg)
         if not result.ok:
             raise ValueError(f"Config validation failed: {'; '.join(result.errors)}")
-    _raw_config = copy.deepcopy(cfg)
-    _config = _resolve_env_vars(copy.deepcopy(cfg))
+    next_raw_config = copy.deepcopy(cfg)
+    next_config = _resolve_env_vars(copy.deepcopy(cfg))
     p = _config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-    shutil.move(str(tmp), str(p))
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        shutil.move(str(tmp), str(p))
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    _raw_config = next_raw_config
+    _config = next_config
 
 
 def resolve_mem_config() -> dict:

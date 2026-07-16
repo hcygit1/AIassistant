@@ -13,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from runtime.turn_service import TurnService, TurnServicePorts
 from runtime.agent import AgentManager
+from llm.models_config import ModelRef
 
 
 async def _empty_stream(*_args, **_kwargs):
@@ -61,6 +62,13 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         manager._has_bootstrap = has_bootstrap
         manager._get_locale = get_locale
         manager._resolve_context_budget = resolve_budget
+        get_model_override = Mock(
+            return_value=ModelRef(
+                provider="fake",
+                model="runtime",
+            )
+        )
+        manager.get_model_override = get_model_override
         ports = manager._turn_service._ports
 
         ports.write_skills_snapshot("main")
@@ -70,11 +78,19 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
             ports.resolve_budget("main").active_tokens,
             2000,
         )
+        self.assertEqual(
+            ports.get_model_override("main"),
+            ModelRef(
+                provider="fake",
+                model="runtime",
+            ),
+        )
 
         write_snapshot.assert_called_once_with("main")
         has_bootstrap.assert_called_once_with("main")
         get_locale.assert_called_once_with()
         resolve_budget.assert_called_once_with("main")
+        get_model_override.assert_called_once_with("main")
 
     async def test_agent_manager_command_port_forwards_keywords(
         self,
@@ -153,6 +169,18 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
             parse_command=Mock(return_value=None),
             execute_command=AsyncMock(),
             switch_model=Mock(),
+            get_current_model=Mock(
+                return_value=ModelRef(
+                    provider="fake",
+                    model="runtime",
+                )
+            ),
+            get_model_override=Mock(
+                return_value=ModelRef(
+                    provider="fake",
+                    model="runtime",
+                )
+            ),
             handle_reset=_empty_stream,
             handle_reset_noflush=_empty_stream,
             handle_compact=_empty_stream,
@@ -222,6 +250,12 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
         ports.write_skills_snapshot.assert_called_once_with(
             "main"
         )
+        self.assertIn(
+            "fake/runtime",
+            ports.build_prompt.call_args.kwargs[
+                "extra_system_prompt"
+            ],
+        )
 
     async def test_stream_returns_handled_command_without_turn(
         self,
@@ -239,6 +273,8 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
             switch_model=Mock(),
+            get_current_model=Mock(),
+            get_model_override=Mock(return_value=None),
             handle_reset=_empty_stream,
             handle_reset_noflush=_empty_stream,
             handle_compact=_empty_stream,
