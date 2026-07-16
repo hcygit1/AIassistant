@@ -45,19 +45,13 @@ from runtime.turn_context import (
     SessionContextCacheEntry,
     TurnContext,
 )
-from runtime.turn_models import TurnExecutionRequest
+from runtime.turn_service import (
+    BARE_SESSION_RESET_PROMPT,
+    TurnService,
+    TurnServicePorts,
+)
 
 logger = logging.getLogger(__name__)
-
-# 裸 /new 或 /reset 后作为首条用户消息注入，触发 Session Startup + 问候
-BARE_SESSION_RESET_PROMPT = (
-    "A new session was started via /new or /reset. "
-    "Greet the user in your configured persona (IDENTITY.md is already in your system prompt). "
-    "Be yourself - use your defined voice, mannerisms, and mood. "
-    "Keep it to 1-3 sentences and ask what they want to do. "
-    "If the runtime model differs from default_model in the system prompt, mention the default model. "
-    "Do not mention internal files, tools, memory status, or reasoning."
-)
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +212,27 @@ class AgentManager:
             **kwargs,
         )
 
+    @staticmethod
+    def _has_bootstrap(agent_id: str) -> bool:
+        from runtime.workspace import has_bootstrap
+
+        return has_bootstrap(agent_id)
+
+    @staticmethod
+    def _get_locale() -> str:
+        from config import get_config
+
+        return get_config().get(
+            "app",
+            {},
+        ).get("locale", "zh-CN")
+
+    @staticmethod
+    def _resolve_context_budget(agent_id: str) -> Any:
+        from runtime.context_budget import resolve_budget
+
+        return resolve_budget(agent_id)
+
     def __init__(self):
         self.data_dir: str = ""
         self._memory_runtime = MemoryRuntime()
@@ -281,6 +296,79 @@ class AgentManager:
             incremental_ingest=self._ingest_completed_turn,
             get_pending_tasks=lambda: self._pending_tasks,
             maybe_auto_compact=self._run_auto_compaction,
+        )
+        self._turn_service = TurnService(
+            TurnServicePorts(
+                get_state=lambda agent_id: (
+                    self.get_state(agent_id)
+                ),
+                parse_command=lambda message: (
+                    parse_command(message)
+                ),
+                execute_command=lambda *args: (
+                    execute_command(*args)
+                ),
+                handle_reset=lambda *args, **kwargs: (
+                    self._handle_reset(*args, **kwargs)
+                ),
+                handle_reset_noflush=lambda *args, **kwargs: (
+                    self._handle_reset_noflush(
+                        *args,
+                        **kwargs,
+                    )
+                ),
+                handle_compact=lambda *args, **kwargs: (
+                    self._handle_compact(*args, **kwargs)
+                ),
+                write_skills_snapshot=lambda agent_id: (
+                    self._write_skills_snapshot(agent_id)
+                ),
+                has_bootstrap=lambda agent_id: (
+                    self._has_bootstrap(agent_id)
+                ),
+                resolve_workspace=lambda agent_id: (
+                    resolve_agent_workspace(agent_id)
+                ),
+                get_locale=lambda: self._get_locale(),
+                get_tool_names=lambda agent_id: (
+                    self._get_or_build_tool_names(agent_id)
+                ),
+                build_prompt=lambda **kwargs: (
+                    self._get_or_build_prompt(**kwargs)
+                ),
+                get_session_context=lambda **kwargs: (
+                    self._get_or_build_session_context(
+                        **kwargs
+                    )
+                ),
+                build_tools=lambda agent_id, session_id: (
+                    self._build_tools(agent_id, session_id)
+                ),
+                resolve_budget=lambda agent_id: (
+                    self._resolve_context_budget(agent_id)
+                ),
+                resolve_agent_config=lambda agent_id: (
+                    resolve_agent_config(agent_id)
+                ),
+                resolve_candidates=lambda agent_id: (
+                    resolve_fallback_candidates(agent_id)
+                ),
+                execute_turn=lambda request: (
+                    self._turn_executor.execute(request)
+                ),
+                run_fallback_stream=(
+                    lambda candidates, run_model, agent_id: (
+                        run_with_fallback_stream(
+                            candidates,
+                            run_model,
+                            agent_id,
+                        )
+                    )
+                ),
+                recover_turn=lambda **kwargs: (
+                    self._turn_recovery.run(**kwargs)
+                ),
+            )
         )
         self._states: dict[str, AgentState] = {}
         self._initialized = False
@@ -598,120 +686,12 @@ class AgentManager:
         prompt_mode: str = "full",
         persist_input_role: str = "user",
     ) -> AsyncGenerator[dict[str, Any], None]:
-        state = self.get_state(agent_id)
-
-        # 命令处理
-        parsed = parse_command(message)
-        if parsed:
-            result = await execute_command(parsed, agent_id, session_id, state)
-            if result.get("handled"):
-                action = result.get("action", "")
-
-                if action == "reset":
-                    # /new：保存 session-memory 后重置，再注入 BARE_SESSION_RESET_PROMPT 跑一轮问候
-                    model_override = result.get("model_override")
-                    async for evt in self._handle_reset(
-                        session_id, agent_id, model_override=model_override
-                    ):
-                        yield evt
-                    persist_input_role = ""
-                    message = BARE_SESSION_RESET_PROMPT
-                elif action == "reset_noflush":
-                    # /reset：不写入 session-memory 的轻量重置，再注入 BARE_SESSION_RESET_PROMPT 跑一轮问候
-                    async for evt in self._handle_reset_noflush(session_id, agent_id):
-                        yield evt
-                    persist_input_role = ""
-                    message = BARE_SESSION_RESET_PROMPT
-                else:
-                    if action == "compact":
-                        async for evt in self._handle_compact(session_id, agent_id):
-                            yield evt
-                        return
-                    if action == "stop":
-                        yield {"type": "command_response", "response": result["response"]}
-                        yield {"type": "done", "content": result["response"], "session_id": session_id}
-                        return
-                    yield {"type": "command_response", "response": result["response"]}
-                    yield {"type": "done", "content": result["response"], "session_id": session_id}
-                    return
-
-        self._write_skills_snapshot(agent_id)
-
-        # 检测 BOOTSTRAP.md
-        from runtime.workspace import has_bootstrap
-        extra_prompt = ""
-        if has_bootstrap(agent_id):
-            bootstrap_path = resolve_agent_workspace(agent_id) / "BOOTSTRAP.md"
-            try:
-                extra_prompt = (
-                    "\n\n## 首次运行引导\n\n"
-                    "检测到 BOOTSTRAP.md，请先读取并执行其中的引导步骤。"
-                    "完成后删除该文件。\n"
-                )
-            except Exception:
-                pass
-
-        available_tool_names = list(self._get_or_build_tool_names(agent_id))
-
-        from config import get_config
-        _locale = get_config().get("app", {}).get("locale", "zh-CN")
-        system_prompt, prompt_report, _sp_tokens = self._get_or_build_prompt(
+        async for event in self._turn_service.stream(
+            message,
+            session_id,
             agent_id=agent_id,
             prompt_mode=prompt_mode,
-            available_tool_names=available_tool_names,
-            extra_system_prompt=extra_prompt or None,
-            locale=_locale,
-        )
-        logger.info(prompt_report.summary())
-
-        context_entry = self._get_or_build_session_context(agent_id=agent_id, session_id=session_id)
-        history = context_entry.pruned_history
-        tools = self._build_tools(agent_id, session_id)
-
-        from runtime.context_budget import resolve_budget
-        _budget = resolve_budget(agent_id)
-        _summary_tokens = context_entry.summary_tokens
-        _history_tokens = context_entry.history_tokens
-
-        agent_cfg = resolve_agent_config(agent_id)
-        recursion_limit = agent_cfg.get("recursion_limit", 50)
-
-        candidates = resolve_fallback_candidates(agent_id)
-
-        async def run_for_model(provider: str, model: str):
-            request = TurnExecutionRequest(
-                agent_id=agent_id,
-                session_id=session_id,
-                state=state,
-                provider=provider,
-                model=model,
-                message=message,
-                persist_input_role=persist_input_role,
-                system_prompt=system_prompt,
-                tools=tools,
-                history=history,
-                recursion_limit=recursion_limit,
-                prompt_tokens=_sp_tokens,
-                summary_tokens=_summary_tokens,
-                history_tokens=_history_tokens,
-                active_tokens=_budget.active_tokens,
-            )
-            async for event in self._turn_executor.execute(request):
-                yield event
-
-        async def run_fallback_stream():
-            async for event in run_with_fallback_stream(
-                candidates,
-                run_for_model,
-                agent_id,
-            ):
-                yield event
-
-        async for event in self._turn_recovery.run(
-            agent_id=agent_id,
-            session_id=session_id,
-            state=state,
-            stream=run_fallback_stream,
+            persist_input_role=persist_input_role,
         ):
             yield event
 
