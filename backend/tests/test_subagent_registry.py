@@ -32,6 +32,7 @@ class SubagentRegistryTests(unittest.TestCase):
             requester_agent_id="main",
             target_agent_id="worker",
             task="inspect files",
+            spawn_depth=1,
         )
         self.registry._persist_to_disk.reset_mock()
 
@@ -160,7 +161,9 @@ class SubagentRegistryTests(unittest.TestCase):
         child = self.registry.register_run(
             run_id="run-2",
             child_session_key="agent:worker:subagent:child-2",
-            requester_session_key="agent:worker:child-1",
+            requester_session_key=(
+                "agent:worker:subagent:child-1"
+            ),
             requester_agent_id="worker",
             target_agent_id="worker",
             task="inspect child files",
@@ -199,6 +202,47 @@ class SubagentRegistryTests(unittest.TestCase):
         self.assertTrue(child_task.cancelled)
         self.assertFalse(parent_task.lock_owned_during_cancel)
         self.assertFalse(child_task.lock_owned_during_cancel)
+
+    def test_canonical_child_key_drives_depth_and_descendants(self) -> None:
+        child = self.registry.register_run(
+            run_id="run-2",
+            child_session_key="agent:worker:subagent:child-2",
+            requester_session_key=(
+                "agent:worker:subagent:child-1"
+            ),
+            requester_agent_id="worker",
+            target_agent_id="worker",
+            task="inspect child files",
+            spawn_depth=2,
+        )
+
+        self.assertEqual(
+            self.registry.session_key_from_child_session_key(
+                self.record.child_session_key
+            ),
+            self.record.child_session_key,
+        )
+        self.assertEqual(
+            self.registry.get_requester_depth(
+                self.record.child_session_key
+            ),
+            1,
+        )
+        self.assertEqual(
+            [
+                record.run_id
+                for record in self.registry.list_descendant_runs(
+                    "agent:main:main"
+                )
+            ],
+            [child.run_id, self.record.run_id],
+        )
+        self.assertEqual(
+            self.registry.count_active_descendant_runs(
+                "agent:main:main"
+            ),
+            2,
+        )
 
     def test_terminal_run_is_not_overwritten_by_late_callbacks(
         self,

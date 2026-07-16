@@ -374,34 +374,22 @@ class SubagentRegistry:
     def get_requester_depth(self, requester_session_key: str) -> int:
         """Depth 0 = main, 1 = subagent, 2 = sub-subagent
 
-        通过 registry 查找：requester 作为 child 被 spawn 时，其 spawn_depth - 1 即为 requester 深度。
+        requester 作为 child 被 spawn 时，创建它的 run.spawn_depth
+        就是该 requester 的深度。
         主会话无对应 run，返回 0。
         """
         key = (requester_session_key or "").strip()
-        if not key or "agent:" not in key:
+        if not key:
             return 0
-        parts = key.split(":")
-        if len(parts) < 3:
-            return 0
-        agent_id = parts[1]
-        session_part = ":".join(parts[2:])
-        if not session_part:
-            return 0
-        if not session_part.startswith("subagent"):
-            return 0
-        child_key_candidate = f"agent:{agent_id}:subagent:{session_part}"
         for r in self.list_runs():
-            if r.child_session_key == child_key_candidate:
-                return max(0, r.spawn_depth - 1)
+            if r.child_session_key == key:
+                return max(0, r.spawn_depth)
         return 0
 
     @staticmethod
     def session_key_from_child_session_key(child_session_key: str) -> str:
-        """agent:id:subagent:session_id -> agent:id:session_id"""
-        parts = (child_session_key or "").split(":")
-        if len(parts) >= 4:
-            return f"{parts[0]}:{parts[1]}:{parts[-1]}"
-        return child_session_key or ""
+        """返回 child 会话可直接作为 requester 使用的 canonical key。"""
+        return (child_session_key or "").strip()
 
     def list_descendant_runs(
         self, root_session_key: str, include_recent_minutes: int = 60

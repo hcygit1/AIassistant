@@ -175,6 +175,32 @@ class SubagentServiceTests(unittest.TestCase):
             "children_limit",
         )
 
+    def test_nested_spawn_uses_parent_run_depth(self) -> None:
+        self.registry.register_run(
+            run_id="run-parent",
+            child_session_key=(
+                "agent:worker:subagent:child-existing"
+            ),
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="inspect files",
+            spawn_depth=1,
+        )
+        self.configs["worker"]["subagents"][
+            "max_spawn_depth"
+        ] = 1
+
+        with self.assertRaises(SubagentServiceError) as raised:
+            self.service.spawn(
+                requester_agent_id="worker",
+                requester_session_id="child-existing",
+                task="inspect nested files",
+                target_agent_id="worker",
+            )
+
+        self.assertEqual(raised.exception.code, "depth_limit")
+
     def test_list_runs_uses_default_recent_window(self) -> None:
         self._register_run(
             "run-direct",
