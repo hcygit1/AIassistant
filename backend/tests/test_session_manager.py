@@ -8,6 +8,7 @@ import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from unittest.mock import Mock
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -15,9 +16,59 @@ if str(BACKEND_DIR) not in sys.path:
 
 import sessions.session_manager as session_manager_module
 from sessions.session_manager import SessionManager
+from sessions.session_repository import SessionRepository
 
 
 class SessionManagerPersistenceTests(unittest.TestCase):
+    def test_list_sessions_scans_injected_repository_directory(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as repo_tmp,
+            tempfile.TemporaryDirectory() as unrelated_tmp,
+        ):
+            root = Path(repo_tmp)
+            repository = SessionRepository(
+                resolve_sessions_dir=lambda agent_id: root
+            )
+            repository.save_session(
+                "subagent-1",
+                "agent-1",
+                {
+                    "session_id": "subagent-1",
+                    "agent_id": "agent-1",
+                    "created_at": 1,
+                    "updated_at": 2,
+                    "messages": [],
+                },
+            )
+            manager = SessionManager(repository=repository)
+
+            with patch(
+                "sessions.session_manager.resolve_agent_sessions_dir",
+                return_value=Path(unrelated_tmp),
+            ):
+                sessions = manager.list_sessions("agent-1")
+
+        self.assertIn(
+            "subagent-1",
+            {item["session_id"] for item in sessions},
+        )
+
+    def test_manager_loads_sessions_through_injected_repository(self) -> None:
+        repository = Mock()
+        repository.load_session.return_value = {
+            "messages": [],
+            "label": "from repository",
+        }
+        manager = SessionManager(repository=repository)
+
+        data = manager.load_session("session-1", "agent-1")
+
+        repository.load_session.assert_called_once_with(
+            "session-1",
+            "agent-1",
+        )
+        self.assertEqual(data["label"], "from repository")
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.sessions_dir = Path(self.temp_dir.name)
@@ -26,11 +77,11 @@ class SessionManagerPersistenceTests(unittest.TestCase):
             return_value=self.sessions_dir,
         )
         self.path_patch.start()
-        SessionManager._cache.clear()
         self.manager = SessionManager()
+        self.manager._repository.clear_cache()
 
     def tearDown(self) -> None:
-        SessionManager._cache.clear()
+        self.manager._repository.clear_cache()
         self.path_patch.stop()
         self.temp_dir.cleanup()
 
@@ -69,7 +120,7 @@ class SessionManagerPersistenceTests(unittest.TestCase):
 
         for content in ("null", '"text"', "1", "true"):
             with self.subTest(content=content):
-                SessionManager._cache.clear()
+                self.manager._repository.clear_cache()
                 path.write_text(content, encoding="utf-8")
                 with self.assertRaises(error_type):
                     self.manager.load_session("session-1", "agent-1")
@@ -205,6 +256,105 @@ class SessionManagerPersistenceTests(unittest.TestCase):
             },
         )
 
+    def test_session_write_keeps_transcript_and_index_in_one_lock(self) -> None:
+        original_save = self.manager._repository.save_session
+        first_saved = threading.Event()
+        second_entered = threading.Event()
+        release_first = threading.Event()
+        call_count = 0
+        count_lock = threading.Lock()
+
+        def controlled_save(session_id: str, agent_id: str, data: dict) -> None:
+            nonlocal call_count
+            original_save(session_id, agent_id, data)
+            with count_lock:
+                call_count += 1
+                current = call_count
+            if current == 1:
+                first_saved.set()
+                release_first.wait(timeout=2)
+            else:
+                second_entered.set()
+
+        with patch.object(
+            self.manager._repository,
+            "save_session",
+            side_effect=controlled_save,
+        ):
+            first = threading.Thread(
+                target=self.manager._save_session_data,
+                args=("session-1", "agent-1", {"updated_at": 1}),
+            )
+            second = threading.Thread(
+                target=self.manager._save_session_data,
+                args=("session-1", "agent-1", {"updated_at": 2}),
+            )
+            first.start()
+            self.assertTrue(first_saved.wait(timeout=2))
+            second.start()
+            second_entered_before_release = second_entered.wait(timeout=0.1)
+            release_first.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(second_entered_before_release)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+
+    def test_save_message_locks_before_read_modify_write(self) -> None:
+        self.manager.ensure_session("session-1", "agent-1")
+        second_manager = SessionManager(
+            repository=SessionRepository(
+                resolve_sessions_dir=lambda agent_id: self.sessions_dir
+            )
+        )
+        first_waiting = threading.Event()
+        release_first = threading.Event()
+        second_read = threading.Event()
+        original_first_save = self.manager._save_session_data
+        original_second_load = second_manager._repository.load_session
+
+        def waiting_save(session_id: str, agent_id: str, data: dict) -> None:
+            first_waiting.set()
+            release_first.wait(timeout=2)
+            original_first_save(session_id, agent_id, data)
+
+        def observed_load(session_id: str, agent_id: str):
+            second_read.set()
+            return original_second_load(session_id, agent_id)
+
+        with (
+            patch.object(
+                self.manager,
+                "_save_session_data",
+                side_effect=waiting_save,
+            ),
+            patch.object(
+                second_manager._repository,
+                "load_session",
+                side_effect=observed_load,
+            ),
+        ):
+            first = threading.Thread(
+                target=self.manager.save_message,
+                args=("session-1", "agent-1", "user", "first"),
+            )
+            second = threading.Thread(
+                target=second_manager.save_message,
+                args=("session-1", "agent-1", "user", "second"),
+            )
+            first.start()
+            self.assertTrue(first_waiting.wait(timeout=2))
+            second.start()
+            second_read_before_release = second_read.wait(timeout=0.1)
+            release_first.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(second_read_before_release)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+
     def test_successful_save_writes_valid_json_without_temp_files(self) -> None:
         session_data = {
             "session_id": "session-1",
@@ -244,7 +394,7 @@ class SessionManagerPersistenceTests(unittest.TestCase):
         path.chmod(0o640)
 
         caught_error = None
-        with patch.object(session_manager_module.os, "fchmod", None):
+        with patch("sessions.session_repository.os.fchmod", None):
             try:
                 self.manager._save_session_store("agent-1", {})
             except Exception as exc:

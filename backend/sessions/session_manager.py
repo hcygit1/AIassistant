@@ -5,112 +5,35 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
-import stat
-import tempfile
-import threading
 import time
 import uuid
-from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from config import get_config, resolve_agent_sessions_dir
+from sessions.session_repository import (
+    SessionDataCorruptionError,
+    SessionRepository,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class SessionDataCorruptionError(ValueError):
-    """会话文件存在，但内容无法解析。"""
-
-    def __init__(self, path: Path):
-        self.path = path
-        super().__init__(f"会话文件损坏，无法解析: {path}")
-
-
-def _write_json_atomic(path: Path, data: Any) -> None:
-    """在同一目录写入临时文件，再原子替换目标 JSON。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        existing_mode = stat.S_IMODE(path.stat().st_mode)
-    except FileNotFoundError:
-        existing_mode = None
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            json.dump(data, temp_file, ensure_ascii=False, indent=2)
-            temp_file.flush()
-            if existing_mode is not None:
-                fchmod = getattr(os, "fchmod", None)
-                if callable(fchmod):
-                    fchmod(temp_file.fileno(), existing_mode)
-                else:
-                    os.chmod(temp_path, existing_mode)
-            os.fsync(temp_file.fileno())
-        os.replace(temp_path, path)
-    except Exception:
-        if temp_path is not None:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
-
-
-class _SessionCache:
-    """LRU 缓存: 只保留最近 N 个会话在内存中"""
-
-    def __init__(self, max_size: int = 20):
-        self._cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        self._max_size = max_size
-        self._lock = threading.Lock()
-
-    def get(self, key: str) -> dict[str, Any] | None:
-        with self._lock:
-            if key in self._cache:
-                self._cache.move_to_end(key)
-                return self._cache[key]
-            return None
-
-    def put(self, key: str, value: dict[str, Any]) -> None:
-        with self._lock:
-            self._cache[key] = value
-            self._cache.move_to_end(key)
-            while len(self._cache) > self._max_size:
-                self._cache.popitem(last=False)
-
-    def invalidate(self, key: str) -> None:
-        with self._lock:
-            self._cache.pop(key, None)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._cache.clear()
-
-    @property
-    def size(self) -> int:
-        return len(self._cache)
-
-
 class SessionManager:
-    _locks: dict[str, threading.Lock] = {}
-    _locks_guard = threading.Lock()
-    _store_locks: dict[str, threading.RLock] = {}
-    _store_locks_guard = threading.Lock()
-    _cache = _SessionCache(max_size=30)
     _SESSION_BOOTSTRAP_PREFIXES = (
         "a new session was started via /new or /reset",
         "[system message]",
     )
+
+    def __init__(
+        self,
+        repository: SessionRepository | None = None,
+    ) -> None:
+        self._repository = repository or SessionRepository(
+            resolve_sessions_dir=resolve_agent_sessions_dir
+        )
 
     def _is_bootstrap_text(self, text: str | None) -> bool:
         raw = (text or "").strip()
@@ -119,18 +42,14 @@ class SessionManager:
         lowered = raw.lower()
         return any(lowered.startswith(prefix) for prefix in self._SESSION_BOOTSTRAP_PREFIXES)
 
-    def _get_lock(self, session_id: str, agent_id: str) -> threading.Lock:
-        key = f"{agent_id}:{session_id}"
-        with self._locks_guard:
-            if key not in self._locks:
-                self._locks[key] = threading.Lock()
-            return self._locks[key]
+    def _get_store_lock(self, agent_id: str):
+        return self._repository.get_agent_lock(agent_id)
 
-    def _get_store_lock(self, agent_id: str) -> threading.RLock:
-        with self._store_locks_guard:
-            if agent_id not in self._store_locks:
-                self._store_locks[agent_id] = threading.RLock()
-            return self._store_locks[agent_id]
+    @contextmanager
+    def _session_transaction(self, session_id: str, agent_id: str):
+        with self._repository.get_agent_lock(agent_id):
+            with self._repository.get_session_lock(session_id, agent_id):
+                yield
 
     # ------------------------------------------------------------------
     # 主会话 — 每个 Agent 有且仅有一个主会话
@@ -170,38 +89,15 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def _session_path(self, session_id: str, agent_id: str) -> Path:
-        return resolve_agent_sessions_dir(agent_id) / f"{session_id}.json"
+        return self._repository.session_path(session_id, agent_id)
 
     def session_file_exists(self, session_id: str, agent_id: str) -> bool:
-        return self._session_path(session_id, agent_id).is_file()
+        return self._repository.session_file_exists(session_id, agent_id)
 
     def load_session(self, session_id: str, agent_id: str) -> dict[str, Any] | None:
-        cache_key = f"{agent_id}:{session_id}"
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        path = self._session_path(session_id, agent_id)
-        if not path.exists():
+        data = self._repository.load_session(session_id, agent_id)
+        if data is None:
             return None
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return None
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise SessionDataCorruptionError(path) from exc
-
-        if isinstance(data, list):
-            data = {
-                "label": "未命名",
-                "agent_id": agent_id,
-                "created_at": time.time(),
-                "updated_at": time.time(),
-                "messages": data,
-            }
-        if not isinstance(data, dict):
-            raise SessionDataCorruptionError(path)
 
         current_label = str(data.get("label", "")).strip()
         if current_label and self._is_bootstrap_text(current_label):
@@ -211,7 +107,6 @@ class SessionManager:
             if candidate and not self._is_bootstrap_text(candidate):
                 data["label"] = candidate
 
-        self._cache.put(cache_key, data)
         return data
 
     def load_session_for_agent(
@@ -244,6 +139,21 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def ensure_session(
+        self,
+        session_id: str,
+        agent_id: str,
+        spawned_by: str | None = None,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        with self._session_transaction(session_id, agent_id):
+            return self._ensure_session_locked(
+                session_id,
+                agent_id,
+                spawned_by=spawned_by,
+                label=label,
+            )
+
+    def _ensure_session_locked(
         self,
         session_id: str,
         agent_id: str,
@@ -286,6 +196,14 @@ class SessionManager:
 
     def rollback_last_turn(self, session_id: str, agent_id: str) -> bool:
         """移除最后一轮 user + assistant 消息（用于心跳 HEARTBEAT_OK 时不持久化）"""
+        with self._session_transaction(session_id, agent_id):
+            return self._rollback_last_turn_locked(session_id, agent_id)
+
+    def _rollback_last_turn_locked(
+        self,
+        session_id: str,
+        agent_id: str,
+    ) -> bool:
         data = self.load_session(session_id, agent_id)
         if not data or not data.get("messages"):
             return False
@@ -309,44 +227,28 @@ class SessionManager:
         content: str,
         tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
-        data = self.ensure_session(session_id, agent_id)
-        msg: dict[str, Any] = {"role": role, "content": content}
-        if tool_calls:
-            msg["tool_calls"] = tool_calls
-        data["messages"].append(msg)
-        data["updated_at"] = time.time()
-        self._save_session_data(session_id, agent_id, data)
+        with self._session_transaction(session_id, agent_id):
+            data = self.ensure_session(session_id, agent_id)
+            msg: dict[str, Any] = {"role": role, "content": content}
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+            data["messages"].append(msg)
+            data["updated_at"] = time.time()
+            self._save_session_data(session_id, agent_id, data)
 
     def _session_store_path(self, agent_id: str) -> Path:
         """sessions.json 索引路径"""
-        return resolve_agent_sessions_dir(agent_id) / "sessions.json"
+        return self._repository.index_path(agent_id)
 
     def _load_session_store(self, agent_id: str) -> dict[str, dict[str, Any]]:
         """加载 sessions.json 索引"""
-        lock = self._get_store_lock(agent_id)
-        with lock:
-            path = self._session_store_path(agent_id)
-            if not path.exists():
-                return {}
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except FileNotFoundError:
-                return {}
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise SessionDataCorruptionError(path) from exc
-            if not isinstance(data, dict):
-                raise SessionDataCorruptionError(path)
-            return data
+        return self._repository.load_index(agent_id)
 
     def _save_session_store(
         self, agent_id: str, store: dict[str, dict[str, Any]]
     ) -> None:
         """持久化 sessions.json"""
-        lock = self._get_store_lock(agent_id)
-        with lock:
-            path = self._session_store_path(agent_id)
-            _write_json_atomic(path, store)
+        self._repository.save_index(agent_id, store)
 
     def get_session_index_entry(
         self,
@@ -453,7 +355,7 @@ class SessionManager:
         max_bytes, high_bytes = self._resolve_disk_budget()
         if max_bytes is None or high_bytes is None:
             return None
-        sessions_dir = resolve_agent_sessions_dir(agent_id)
+        sessions_dir = self._repository.sessions_dir(agent_id)
         if not sessions_dir.exists():
             return {"totalBytesBefore": 0, "totalBytesAfter": 0, "removedFiles": 0, "removedEntries": 0, "freedBytes": 0, "maxBytes": max_bytes, "highWaterBytes": high_bytes, "overBudget": False}
 
@@ -539,7 +441,10 @@ class SessionManager:
                 removed_entries += 1
                 if path_f.exists():
                     try:
-                        path_f.unlink()
+                        self._repository.delete_session_file(
+                            str(sid),
+                            agent_id,
+                        )
                     except OSError:
                         pass
                 total -= size
@@ -635,10 +540,18 @@ class SessionManager:
                         try:
                             archive_dir = path.parent / "archive"
                             archive_dir.mkdir(parents=True, exist_ok=True)
-                            path.rename(archive_dir / f"{sid}.deleted.{int(time.time())}.json")
+                            self._repository.archive_session_file(
+                                str(sid),
+                                agent_id,
+                                archive_dir
+                                / f"{sid}.deleted.{int(time.time())}.json",
+                            )
                         except Exception:
                             try:
-                                path.unlink()
+                                self._repository.delete_session_file(
+                                    str(sid),
+                                    agent_id,
+                                )
                             except Exception:
                                 pass
                     try:
@@ -657,21 +570,21 @@ class SessionManager:
     def _save_session_data(
         self, session_id: str, agent_id: str, data: dict[str, Any]
     ) -> None:
-        lock = self._get_lock(session_id, agent_id)
-        with lock:
-            path = self._session_path(session_id, agent_id)
-            _write_json_atomic(path, data)
-            cache_key = f"{agent_id}:{session_id}"
-            self._cache.put(cache_key, data)
-            session_key = self.session_key_from_session_id(agent_id, session_id)
-            self._update_session_store_entry(
-                agent_id,
-                session_key,
-                session_id,
-                data.get("updated_at", time.time()),
-                label=data.get("label", ""),
-                spawned_by=data.get("spawned_by"),
-            )
+        with self._repository.get_agent_lock(agent_id):
+            with self._repository.get_session_lock(session_id, agent_id):
+                self._repository.save_session(session_id, agent_id, data)
+                session_key = self.session_key_from_session_id(
+                    agent_id,
+                    session_id,
+                )
+                self._update_session_store_entry(
+                    agent_id,
+                    session_key,
+                    session_id,
+                    data.get("updated_at", time.time()),
+                    label=data.get("label", ""),
+                    spawned_by=data.get("spawned_by"),
+                )
 
     # ------------------------------------------------------------------
     # 会话管理
@@ -684,7 +597,7 @@ class SessionManager:
     ) -> list[dict[str, Any]]:
         """列出会话。优先从 sessions.json 索引读取并按 updatedAt 排序。
         spawned_by_session_key: 仅返回该 requester 派生的子会话。"""
-        sessions_dir = resolve_agent_sessions_dir(agent_id)
+        sessions_dir = self._repository.sessions_dir(agent_id)
         store = self._load_session_store(agent_id)
         main_sid = self.resolve_main_session_id(agent_id)
         main_key = self.session_key_from_session_id(agent_id, main_sid)
@@ -715,10 +628,9 @@ class SessionManager:
                 sk = self.session_key_from_session_id(agent_id, session_id)
                 if sk not in store:
                     try:
-                        with open(fp, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        if isinstance(data, list):
-                            data = {"messages": data, "label": "未命名"}
+                        data = self.load_session(session_id, agent_id)
+                        if data is None:
+                            continue
                         spawned_by = data.get("spawned_by")
                         if not spawned_by:
                             try:
@@ -789,29 +701,35 @@ class SessionManager:
         return session_id
 
     def rename_session(self, session_id: str, agent_id: str, title: str) -> bool:
-        data = self.load_session(session_id, agent_id)
-        if data is None:
-            return False
-        data["label"] = title
-        data["updated_at"] = time.time()
-        self._save_session_data(session_id, agent_id, data)
-        return True
+        with self._session_transaction(session_id, agent_id):
+            data = self.load_session(session_id, agent_id)
+            if data is None:
+                return False
+            data["label"] = title
+            data["updated_at"] = time.time()
+            self._save_session_data(session_id, agent_id, data)
+            return True
 
     def delete_session(self, session_id: str, agent_id: str) -> bool:
-        path = self._session_path(session_id, agent_id)
-        if path.exists():
-            path.unlink()
-            cache_key = f"{agent_id}:{session_id}"
-            self._cache.invalidate(cache_key)
-            session_key = self.session_key_from_session_id(agent_id, session_id)
-            self._remove_session_store_entry(agent_id, session_key)
-            try:
-                from sessions.session_lock_manager import cleanup_session_runtime
+        with self._repository.get_agent_lock(agent_id):
+            if self._repository.delete_session_file(session_id, agent_id):
+                session_key = self.session_key_from_session_id(
+                    agent_id,
+                    session_id,
+                )
+                self._remove_session_store_entry(agent_id, session_key)
+                try:
+                    from sessions.session_lock_manager import (
+                        cleanup_session_runtime,
+                    )
 
-                cleanup_session_runtime(agent_id, session_id)
-            except Exception as e:
-                logger.warning("cleanup_session_runtime after delete_session: %s", e)
-            return True
+                    cleanup_session_runtime(agent_id, session_id)
+                except Exception as e:
+                    logger.warning(
+                        "cleanup_session_runtime after delete_session: %s",
+                        e,
+                    )
+                return True
         return False
 
     # ------------------------------------------------------------------
@@ -819,6 +737,19 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def compress_history(
+        self,
+        session_id: str,
+        agent_id: str,
+        n_messages: int,
+    ) -> dict[str, int]:
+        with self._session_transaction(session_id, agent_id):
+            return self._compress_history_locked(
+                session_id,
+                agent_id,
+                n_messages,
+            )
+
+    def _compress_history_locked(
         self,
         session_id: str,
         agent_id: str,
@@ -840,7 +771,7 @@ class SessionManager:
         archived = messages[:archive_count]
         remaining = messages[archive_count:]
 
-        archive_dir = resolve_agent_sessions_dir(agent_id) / "archive"
+        archive_dir = self._repository.sessions_dir(agent_id) / "archive"
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = archive_dir / f"{session_id}_{int(time.time())}.json"
         with open(archive_path, "w", encoding="utf-8") as f:
@@ -850,7 +781,9 @@ class SessionManager:
         data["updated_at"] = time.time()
         self._save_session_data(session_id, agent_id, data)
 
-        compactions_path = resolve_agent_sessions_dir(agent_id) / "compactions.jsonl"
+        compactions_path = (
+            self._repository.sessions_dir(agent_id) / "compactions.jsonl"
+        )
         try:
             record = {
                 "session_id": session_id,
@@ -943,33 +876,35 @@ class SessionManager:
 
         result: dict[str, Any] = {"archived": False}
 
-        path = self._session_path(session_id, agent_id)
-        if path.exists():
-            archive_dir = resolve_agent_sessions_dir(agent_id) / "archive"
-            try:
-                archive_dir.mkdir(parents=True, exist_ok=True)
-                ts = int(_time.time())
-                archive_name = f"{session_id}.reset.{ts}.json"
-                archive_path = archive_dir / archive_name
-                path.rename(archive_path)
-                result["archived"] = True
-                result["archive_file"] = f"archive/{archive_name}"
-            except OSError as e:
-                logger.warning(f"Failed to archive session {session_id}: {e}")
-                # 归档失败时尝试直接删除原文件，避免会话无法重置
+        with self._repository.get_agent_lock(agent_id):
+            path = self._session_path(session_id, agent_id)
+            if path.exists():
+                archive_dir = self._repository.sessions_dir(agent_id) / "archive"
                 try:
-                    path.unlink()
-                except OSError:
-                    pass
+                    ts = int(_time.time())
+                    archive_name = f"{session_id}.reset.{ts}.json"
+                    archive_path = archive_dir / archive_name
+                    self._repository.archive_session_file(
+                        session_id,
+                        agent_id,
+                        archive_path,
+                    )
+                    result["archived"] = True
+                    result["archive_file"] = f"archive/{archive_name}"
+                except OSError as e:
+                    logger.warning(f"Failed to archive session {session_id}: {e}")
+                    try:
+                        self._repository.delete_session_file(
+                            session_id,
+                            agent_id,
+                        )
+                    except OSError:
+                        pass
 
-        cache_key = f"{agent_id}:{session_id}"
-        self._cache.invalidate(cache_key)
-
-        # 从索引中移除会话（因为已归档）
-        session_key = self.session_key_from_session_id(agent_id, session_id)
-        self._remove_session_store_entry(agent_id, session_key)
-
-        self.ensure_session(session_id, agent_id)
+            self._repository.invalidate_session(session_id, agent_id)
+            session_key = self.session_key_from_session_id(agent_id, session_id)
+            self._remove_session_store_entry(agent_id, session_key)
+            self.ensure_session(session_id, agent_id)
 
         return result
 
