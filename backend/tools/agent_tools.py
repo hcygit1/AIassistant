@@ -3,9 +3,7 @@ sessions_history, sessions_send, sessions_spawn, subagents"""
 
 from __future__ import annotations
 
-import asyncio
 import uuid
-from pathlib import Path
 from typing import Any, Literal
 
 from langchain_core.tools import BaseTool
@@ -19,28 +17,6 @@ from config import (
 
 ANNOUNCE_ACQUIRE_TIMEOUT_SEC = 10
 ANNOUNCE_RUN_TIMEOUT_SEC = 30
-
-# #region agent log
-def _debug_log(location: str, message: str, data: dict[str, Any], hypothesis_id: str) -> None:
-    try:
-        import json as _json
-        import time as _time
-        payload = {
-            "sessionId": "e404f0",
-            "runId": "pre-fix",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(_time.time() * 1000),
-        }
-        log_path = Path(__file__).resolve().parents[2] / ".cursor" / "debug-e404f0.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-# #endregion
 
 
 # ---------------------------------------------------------------------------
@@ -235,21 +211,6 @@ class SessionsSpawnTool(BaseTool):
     current_session_id: str = ""
     _agent_manager: Any = None
 
-    _FAILURE_HINTS = (
-        "failure",
-        "error",
-        "exception",
-        "timeout",
-        "not found",
-        "return none",
-        "no results",
-        "cannot",
-        "failed",
-        "无结果",
-        "无法",
-        "失败",
-    )
-
     def _run(self, **kwargs: Any) -> str:
         raise NotImplementedError("Use _arun for async execution")
 
@@ -325,20 +286,25 @@ class SessionsSpawnTool(BaseTool):
 
         if self._agent_manager:
             try:
+                from subagents.subagent_runner import (
+                    SubagentRunner,
+                )
+
                 raw = subagent_cfg.get("run_timeout_seconds", 0)
                 run_timeout_seconds = int(raw) if raw is not None else 0
                 if run_timeout_seconds < 0:
                     run_timeout_seconds = 0
-                coro = self._run_subagent(
-                    run_id,
-                    child_session_id,
-                    target_id,
-                    task,
-                    requester_key,
+                SubagentRunner(
+                    agent_manager=self._agent_manager,
+                    requester_agent_id=self.current_agent_id,
+                ).start(
+                    run_id=run_id,
+                    session_id=child_session_id,
+                    agent_id=target_id,
+                    task=task,
+                    requester_key=requester_key,
                     run_timeout_seconds=run_timeout_seconds,
                 )
-                t = asyncio.create_task(coro)
-                registry.set_task(run_id, t)
             except Exception as e:
                 return f"Failed to start sub-agent: {e}"
 
@@ -348,229 +314,6 @@ class SessionsSpawnTool(BaseTool):
             f"  session_key: {child_session_key}\n"
             f"  Task: {task}"
         )
-
-    def _looks_like_failure_output(self, text: str) -> bool:
-        normalized = (text or "").strip().lower()
-        if not normalized:
-            return False
-        return any(h in normalized for h in self._FAILURE_HINTS)
-
-    def _collect_latest_subagent_output(
-        self,
-        session_id: str,
-        agent_id: str,
-        streamed_text: str,
-        tool_calls: list[dict[str, Any]],
-    ) -> tuple[str, bool]:
-        """优先使用流式文本；若为空则回读会话最后一条 assistant 消息与工具输出。"""
-        from sessions.session_manager import session_manager
-
-        if (streamed_text or "").strip():
-            return streamed_text.strip(), self._looks_like_failure_output(streamed_text)
-
-        data = session_manager.load_session(session_id, agent_id) or {}
-        messages = data.get("messages", []) if isinstance(data, dict) else []
-        latest_assistant: dict[str, Any] | None = None
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant":
-                latest_assistant = msg
-                break
-
-        content = (latest_assistant or {}).get("content", "") if latest_assistant else ""
-        tool_calls_payload = (latest_assistant or {}).get("tool_calls", []) if latest_assistant else []
-        merged_tool_calls = [*tool_calls, *tool_calls_payload]
-
-        snippets: list[str] = []
-        failure_count = 0
-        for tc in merged_tool_calls:
-            tool = str(tc.get("tool", "")).strip() or "tool"
-            output = str(tc.get("output", "")).strip()
-            if not output:
-                continue
-            if self._looks_like_failure_output(output):
-                failure_count += 1
-            snippets.append(f"[{tool}] {output[:280]}")
-
-        parts = []
-        if (content or "").strip():
-            parts.append(content.strip())
-        if snippets:
-            parts.append("Summary of tool outputs:\n" + "\n".join(snippets[:4]))
-
-        merged = "\n\n".join(parts).strip()
-        has_failure = failure_count > 0 and failure_count >= max(1, len(snippets))
-        return merged, has_failure
-
-    async def _run_subagent(
-        self,
-        run_id: str,
-        session_id: str,
-        agent_id: str,
-        task: str,
-        requester_key: str,
-        run_timeout_seconds: int = 0,
-    ) -> None:
-        from subagents.subagent_registry import registry
-        from infra.event_bus import Events, event_bus
-
-        started_at: float | None = None
-        result_parts: list[str] = []
-        tool_calls_log: list[dict[str, Any]] = []
-        child_session_key = f"agent:{agent_id}:subagent:{session_id}"
-        try:
-            registry.mark_started(run_id)
-            started_at = __import__("time").time()
-            event_bus.emit(
-                self.current_agent_id,
-                Events.subagent_start(run_id=run_id, agent_id=agent_id, task=task[:200]),
-            )
-
-            async def _stream_child() -> None:
-                import time as _time
-                last_progress_emit = 0.0
-                async for event in self._agent_manager.astream(
-                    message=task,
-                    session_id=session_id,
-                    agent_id=agent_id,
-                    prompt_mode="minimal",
-                ):
-                    if event.get("type") == "token":
-                        token = event.get("content", "") or ""
-                        result_parts.append(token)
-                        now_ts = _time.time()
-                        if now_ts - last_progress_emit >= 1.0:
-                            last_progress_emit = now_ts
-                            event_bus.emit(
-                                self.current_agent_id,
-                                Events.subagent_progress(
-                                    run_id=run_id,
-                                    chars=len("".join(result_parts)),
-                                    elapsed_s=int(now_ts - (started_at or now_ts)),
-                                ),
-                            )
-                    elif event.get("type") == "tool_start":
-                        event_bus.emit(
-                            self.current_agent_id,
-                            Events.subagent_tool(run_id=run_id, tool=event.get("tool", "")),
-                        )
-                    elif event.get("type") == "tool_end":
-                        output = event.get("output", "") or ""
-                        tool_calls_log.append({
-                            "tool": event.get("tool", ""),
-                            "output": output,
-                        })
-                        event_bus.emit(
-                            self.current_agent_id,
-                            Events.subagent_tool_end(
-                                run_id=run_id,
-                                tool=event.get("tool", ""),
-                                output_preview=str(output)[:160],
-                            ),
-                        )
-
-            if run_timeout_seconds > 0:
-                await asyncio.wait_for(_stream_child(), timeout=run_timeout_seconds)
-            else:
-                await _stream_child()
-
-            streamed = "".join(result_parts).strip()
-            result, all_failed = self._collect_latest_subagent_output(
-                session_id=session_id,
-                agent_id=agent_id,
-                streamed_text=streamed,
-                tool_calls=tool_calls_log,
-            )
-            ended_at = __import__("time").time()
-            outcome_key = "completed-empty" if not result else "completed-with-errors" if all_failed else "completed"
-            registry.mark_completed(
-                run_id,
-                result,
-                outcome=outcome_key,
-                terminal_reason="all-tools-failed" if all_failed else None,
-            )
-            # #region agent log
-            _debug_log(
-                "backend/tools/agent_tools.py:_run_subagent",
-                "subagent_done_emit_pre_announce",
-                {"run_id": run_id, "requester_key": requester_key},
-                "H2B",
-            )
-            # #endregion
-            event_bus.emit(
-                self.current_agent_id,
-                Events.subagent_done(run_id=run_id, result=result[:300]),
-            )
-
-            record = registry.get_run(run_id)
-            label = record.label if record else None
-            announce_outcome = "completed successfully"
-            if outcome_key == "completed-empty":
-                announce_outcome = "completed with empty output"
-            elif outcome_key == "completed-with-errors":
-                announce_outcome = "completed with tool errors"
-            # #region agent log
-            _debug_log(
-                "backend/tools/agent_tools.py:_run_subagent",
-                "deliver_announce_call",
-                {"run_id": run_id, "requester_key": requester_key},
-                "H2B",
-            )
-            # #endregion
-            from subagents.subagent_delivery import subagent_announce_delivery
-
-            await subagent_announce_delivery.deliver_to_requester(
-                requester_key=requester_key,
-                child_session_key=child_session_key,
-                run_id=run_id,
-                task=task,
-                result=result,
-                outcome=announce_outcome,
-                label=label,
-                started_at=started_at,
-                ended_at=ended_at,
-                debug_log=_debug_log,
-            )
-        except asyncio.TimeoutError:
-            timeout_secs = run_timeout_seconds
-            partial_stream = "".join(result_parts).strip()
-            result, _ = self._collect_latest_subagent_output(
-                session_id=session_id,
-                agent_id=agent_id,
-                streamed_text=partial_stream,
-                tool_calls=tool_calls_log,
-            )
-            fallback_result = result or f"Sub-agent execution timed out ({timeout_secs}s)"
-            registry.mark_terminated(run_id, "timeout")
-            event_bus.emit(
-                self.current_agent_id,
-                Events.subagent_error(run_id=run_id, error=f"timeout after {timeout_secs}s"),
-            )
-            record = registry.get_run(run_id)
-            label = record.label if record else None
-            from subagents.subagent_delivery import subagent_announce_delivery
-
-            await subagent_announce_delivery.deliver_to_requester(
-                requester_key=requester_key,
-                child_session_key=child_session_key,
-                run_id=run_id,
-                task=task,
-                result=fallback_result,
-                outcome="timed out",
-                label=label,
-                started_at=started_at,
-                ended_at=__import__("time").time(),
-                debug_log=_debug_log,
-            )
-        except asyncio.CancelledError:
-            registry.mark_terminated(run_id, "killed")
-            event_bus.emit(self.current_agent_id, Events.subagent_killed(run_id=run_id))
-        except Exception as e:
-            registry.mark_terminated(run_id, f"error: {e}")
-            event_bus.emit(
-                self.current_agent_id,
-                Events.subagent_error(run_id=run_id, error=str(e)[:200]),
-            )
-
 
 # ---------------------------------------------------------------------------
 # subagents
@@ -597,7 +340,6 @@ class SubagentsTool(BaseTool):
     current_agent_id: str = "main"
     current_session_id: str = ""
     _agent_manager: Any = None
-    _spawn_tool: Any = None
 
     def _run(self, **kwargs: Any) -> str:
         raise NotImplementedError("Use _arun for async execution")
@@ -688,13 +430,22 @@ class SubagentsTool(BaseTool):
             )
             if not new_record:
                 return "Steer failed: unable to replace run."
-            if self._spawn_tool and self._agent_manager:
+            if self._agent_manager:
                 try:
-                    coro = self._spawn_tool._run_subagent(
-                        new_run_id, target_session_id, target_agent_id, message, requester_key
+                    from subagents.subagent_runner import (
+                        SubagentRunner,
                     )
-                    t = asyncio.create_task(coro)
-                    registry.set_task(new_run_id, t)
+
+                    SubagentRunner(
+                        agent_manager=self._agent_manager,
+                        requester_agent_id=self.current_agent_id,
+                    ).start(
+                        run_id=new_run_id,
+                        session_id=target_session_id,
+                        agent_id=target_agent_id,
+                        task=message,
+                        requester_key=requester_key,
+                    )
                 except Exception as e:
                     return f"New instruction saved, but failed to start new run: {e}"
             label = entry.label or entry.task[:50] or "No Label"
@@ -725,7 +476,6 @@ def get_agent_tools(
         effective_session_id = session_manager.resolve_main_session_id(agent_id)
     subagents_tool = SubagentsTool(current_agent_id=agent_id, current_session_id=effective_session_id)
     subagents_tool._agent_manager = agent_manager
-    subagents_tool._spawn_tool = spawn_tool
     return [
         AgentsListTool(current_agent_id=agent_id),
         SessionsListTool(current_agent_id=agent_id),

@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
-
 from subagents.subagent_registry import SubagentRunRecord
 
 
@@ -139,21 +137,12 @@ class SubagentAnnounceDelivery:
         label: str | None = None,
         started_at: float | None = None,
         ended_at: float | None = None,
-        debug_log: Callable[[str, str, dict[str, Any], str], None] | None = None,
     ) -> None:
         """向 requester 交付 announce；若 requester 是子会话则触发其新 run 并递归向上。"""
         from sessions.session_dispatcher import PRIORITY_ANNOUNCE
         from sessions.session_manager import session_manager
         from sessions.session_work_delivery import session_work_delivery
         from subagents.subagent_registry import registry
-
-        if debug_log:
-            debug_log(
-                "backend/graph/subagent_delivery.py:deliver_to_requester",
-                "enter",
-                {"run_id": run_id, "requester_key": requester_key},
-                "H2A",
-            )
 
         parsed = self.parse_requester_key(requester_key)
         if not parsed:
@@ -211,7 +200,6 @@ class SubagentAnnounceDelivery:
                     label=label,
                     started_at=started_at,
                     ended_at=ended_at,
-                    debug_log=debug_log,
                 )
 
         async def _sub_session_announce_fail(exc: Exception) -> None:
@@ -235,7 +223,6 @@ class SubagentAnnounceDelivery:
                     label=label,
                     started_at=started_at,
                     ended_at=ended_at,
-                    debug_log=debug_log,
                 )
 
         session_work_delivery.deliver(

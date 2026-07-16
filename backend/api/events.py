@@ -263,7 +263,7 @@ async def steer_subagent(agent_id: str, req: SubagentSteerRequest):
     from subagents.subagent_registry import registry
     from sessions.session_manager import session_manager
     from runtime.agent import agent_manager
-    from tools.agent_tools import SessionsSpawnTool
+    from subagents.subagent_runner import SubagentRunner
 
     run_id = (req.run_id or "").strip()
     message = (req.message or "").strip()
@@ -302,21 +302,16 @@ async def steer_subagent(agent_id: str, req: SubagentSteerRequest):
     if not next_record:
         return {"ok": False, "error": "failed to replace run after steer"}
 
-    spawn_tool = SessionsSpawnTool(
-        current_agent_id=requester_agent_id,
-        current_session_id=requester_session_id,
+    SubagentRunner(
+        agent_manager=agent_manager,
+        requester_agent_id=requester_agent_id,
+    ).start(
+        run_id=new_run_id,
+        session_id=target_session_id,
+        agent_id=target_agent_id,
+        task=message,
+        requester_key=entry.requester_session_key,
     )
-    spawn_tool._agent_manager = agent_manager
-
-    coro = spawn_tool._run_subagent(
-        new_run_id,
-        target_session_id,
-        target_agent_id,
-        message,
-        entry.requester_session_key,
-    )
-    t = asyncio.create_task(coro)
-    registry.set_task(new_run_id, t)
     return {"ok": True, "run_id": new_run_id, "replaced_run_id": run_id}
 
 
