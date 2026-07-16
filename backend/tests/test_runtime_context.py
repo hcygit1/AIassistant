@@ -186,6 +186,86 @@ class CompactionLevelTests(unittest.TestCase):
 
 
 class AgentOverflowRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_astream_does_not_retry_after_partial_output(
+        self,
+    ) -> None:
+        manager = AgentManager()
+        attempts = {"count": 0}
+
+        async def _fake_run_with_fallback_stream(
+            _candidates,
+            _run_fn,
+            _agent_id,
+        ):
+            attempts["count"] += 1
+            yield {"type": "token", "content": "partial"}
+            error = RuntimeError("503 upstream unavailable")
+            error.committed = True
+            raise error
+
+        with (
+            patch.object(manager, "_build_tools", return_value=[]),
+            patch(
+                "tools.skills_scanner.write_skills_snapshot",
+                return_value=None,
+            ),
+            patch(
+                "runtime.workspace.has_bootstrap",
+                return_value=False,
+            ),
+            patch(
+                "runtime.agent.resolve_fallback_candidates",
+                return_value=[],
+            ),
+            patch(
+                "runtime.agent.run_with_fallback_stream",
+                side_effect=_fake_run_with_fallback_stream,
+            ),
+            patch(
+                "runtime.agent.resolve_agent_config",
+                return_value={"recursion_limit": 10},
+            ),
+            patch(
+                "runtime.agent.prompt_builder.build_system_prompt_with_report",
+                return_value=(
+                    "system prompt",
+                    _PromptReport(),
+                ),
+            ),
+            patch(
+                "runtime.agent.session_manager.load_session_for_agent",
+                return_value=[],
+            ),
+            patch(
+                "runtime.agent.prune_messages",
+                side_effect=(
+                    lambda history, agent_id=None: history
+                ),
+            ),
+            patch(
+                "runtime.agent.count_tokens",
+                return_value=0,
+            ),
+            patch(
+                "runtime.agent.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            events = [
+                event
+                async for event in manager.astream(
+                    "hello",
+                    "s1",
+                    agent_id="main",
+                )
+            ]
+
+        self.assertEqual(attempts["count"], 1)
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["token", "lifecycle", "error"],
+        )
+
     async def test_astream_retries_once_after_forced_compaction_on_context_overflow(self) -> None:
         manager = AgentManager()
         attempts = {"count": 0}

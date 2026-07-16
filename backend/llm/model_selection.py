@@ -26,6 +26,24 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+
+class ModelCandidateError(RuntimeError):
+    """A model-specific failure that may switch candidates."""
+
+
+class FallbackStreamError(RuntimeError):
+    """A failed fallback stream with client-commit state."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        committed: bool,
+    ) -> None:
+        super().__init__(message)
+        self.committed = committed
+
+
 # ---------------------------------------------------------------------------
 # Agent 模型配置解析
 # ---------------------------------------------------------------------------
@@ -243,14 +261,23 @@ async def run_with_fallback_stream(
     fallback_chain: list[str] = [str(c) for c in candidates]
 
     for i, candidate in enumerate(candidates):
+        emitted_item = False
         try:
             async for item in run_fn(candidate.provider, candidate.model):
+                emitted_item = True
                 yield item
             return
         except Exception as e:
+            if emitted_item:
+                raise FallbackStreamError(
+                    str(e),
+                    committed=True,
+                ) from e
             last_error = e
             error_msg = str(e)
             if is_likely_context_overflow_error(error_msg):
+                raise
+            if not isinstance(e, ModelCandidateError):
                 raise
             reason = resolve_failover_reason_from_error(e)
 
@@ -287,7 +314,12 @@ async def run_with_fallback_stream(
                 "last_error": str(last_error)[:500] if last_error else None,
             }
         )
-    raise RuntimeError(summary) from last_error
+    if last_error:
+        raise FallbackStreamError(
+            str(last_error),
+            committed=False,
+        ) from last_error
+    raise RuntimeError(summary)
 
 
 # ---------------------------------------------------------------------------

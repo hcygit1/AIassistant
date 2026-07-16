@@ -695,6 +695,10 @@ class AgentManager:
                 break
             except Exception as e:
                 msg = str(e)
+                if bool(getattr(e, "committed", False)):
+                    yield Events.turn_error(error=msg)
+                    yield {"type": "error", "error": msg}
+                    return
                 if is_transient_http_error(msg) and not did_retry_transient:
                     did_retry_transient = True
                     logger.warning(
