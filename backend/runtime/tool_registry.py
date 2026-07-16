@@ -28,8 +28,8 @@ class ToolNameCacheEntry:
 
 
 class ToolRegistry:
-    def __init__(self, owner: Any) -> None:
-        self._owner = owner
+    def __init__(self, subagent_service: Any) -> None:
+        self._subagent_service = subagent_service
         self.name_cache: dict[tuple[Any, ...], ToolNameCacheEntry] = {}
 
     def collect_tools(self, agent_id: str, session_id: str = "") -> list:
@@ -51,7 +51,13 @@ class ToolRegistry:
         tools.extend(get_web_tools())
         tools.extend(get_memory_tools(agent_id=agent_id))
         tools.extend(get_knowledge_tools(agent_dir))
-        tools.extend(get_agent_tools(agent_id, self._owner, session_id))
+        tools.extend(
+            get_agent_tools(
+                agent_id,
+                self._subagent_service,
+                session_id,
+            )
+        )
         tools.extend(get_cron_tools(agent_id))
         tools.extend(get_status_tools(agent_id, session_id))
         return tools

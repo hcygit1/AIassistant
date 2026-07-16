@@ -123,8 +123,35 @@ def _run_to_item(r, session_manager, time_module) -> dict:
     }
 
 
+def _count_active_descendants(
+    records,
+    subagent_service,
+    requester_key: str,
+    visited: set[str] | None = None,
+) -> int:
+    seen = set(visited or ())
+    count = 0
+    for record in records:
+        if (
+            record.requester_session_key != requester_key
+            or record.run_id in seen
+        ):
+            continue
+        seen.add(record.run_id)
+        if record.ended_at is None:
+            count += 1
+        count += _count_active_descendants(
+            records,
+            subagent_service,
+            subagent_service.child_requester_key(record),
+            seen,
+        )
+    return count
+
+
 def _build_subagent_tree(
-    registry,
+    records,
+    subagent_service,
     session_manager,
     agent_id: str,
     root_session_key: str,
@@ -133,9 +160,8 @@ def _build_subagent_tree(
     cutoff: float | None = None,
 ) -> list[dict]:
     """递归构建子 Agent 树。cutoff 为 None 时不过滤；否则只包含 ended_at is None 或 ended_at >= cutoff 的 run"""
-    children_sk = registry.session_key_from_child_session_key
     tree: list[dict] = []
-    for r in registry.list_runs():
+    for r in records:
         if r.requester_session_key != root_session_key:
             continue
         if session_id_filter and session_id_filter not in r.requester_session_key:
@@ -143,10 +169,17 @@ def _build_subagent_tree(
         if cutoff is not None and r.ended_at is not None and r.ended_at < cutoff:
             continue
         item = _run_to_item(r, session_manager, time_module)
-        child_sk = children_sk(r.child_session_key)
-        item["descendants_active_count"] = registry.count_active_descendant_runs(child_sk)
+        child_sk = subagent_service.child_requester_key(r)
+        item["descendants_active_count"] = (
+            _count_active_descendants(
+                records,
+                subagent_service,
+                child_sk,
+            )
+        )
         item["children"] = _build_subagent_tree(
-            registry,
+            records,
+            subagent_service,
             session_manager,
             agent_id,
             child_sk,
@@ -171,41 +204,27 @@ async def list_subagents(
     默认从 config.agents.defaults.subagents.recent_minutes 读取（30），API 参数可覆盖。
     """
     import time as time_module
-    from config import get_config
-    from subagents.subagent_registry import registry
+    from runtime.agent import agent_manager
     from sessions.session_manager import session_manager
 
-    cfg = get_config()
-    default_recent = (
-        cfg.get("agents", {}).get("defaults", {}).get("subagents", {}).get("recent_minutes")
-    )
-    if default_recent is not None and isinstance(default_recent, (int, float)):
-        default_recent = max(1, min(24 * 60, int(default_recent)))
-    else:
-        default_recent = 30
-    minutes = (
-        include_recent_minutes
-        if include_recent_minutes is not None and include_recent_minutes > 0
-        else default_recent
-    )
-    minutes = max(1, min(24 * 60, minutes))  # 限制 1 ~ 1440
-    cutoff = time_module.time() - minutes * 60
-
     main_sid = session_manager.resolve_main_session_id(agent_id)
-    if not session_id or not (session_id or "").strip():
-        root_session_key = session_manager.session_key_from_session_id(agent_id, main_sid)
-    else:
-        root_session_key = session_manager.session_key_from_session_id(
-            agent_id, session_id.strip()
-        )
+    effective_session_id = (
+        (session_id or "").strip() or main_sid
+    )
+    result = agent_manager.subagent_service.list_runs(
+        requester_agent_id=agent_id,
+        requester_session_id=effective_session_id,
+        recent_minutes=include_recent_minutes,
+        recursive=True,
+    )
     tree = _build_subagent_tree(
-        registry,
+        result.records,
+        agent_manager.subagent_service,
         session_manager,
         agent_id,
-        root_session_key,
+        result.requester_key,
         None,
         time_module,
-        cutoff=cutoff,
     )
 
     flat: list[dict] = []
@@ -219,100 +238,57 @@ async def list_subagents(
     flatten(tree)
     flat.sort(key=lambda x: x["created_at"], reverse=True)
 
-    return {"tree": tree, "flat": flat, "include_recent_minutes": minutes}
+    return {
+        "tree": tree,
+        "flat": flat,
+        "include_recent_minutes": result.recent_minutes,
+    }
 
 
 @router.post("/agents/{agent_id}/subagents/kill")
 async def kill_subagents(agent_id: str, req: SubagentKillRequest):
-    from subagents.subagent_registry import registry
+    from runtime.agent import agent_manager
     from sessions.session_manager import session_manager
+    from subagents.subagent_service import SubagentServiceError
 
     session_id = (req.session_id or "").strip() or session_manager.resolve_main_session_id(agent_id)
-    root_session_key = session_manager.session_key_from_session_id(agent_id, session_id)
     target = (req.target or "").strip()
-    if not target:
-        return {"ok": False, "error": "missing target"}
-
-    descendants = registry.list_descendant_runs(root_session_key, include_recent_minutes=24 * 60)
-    allowed_run_ids = {r.run_id for r in descendants}
-
+    try:
+        result = agent_manager.subagent_service.kill(
+            requester_agent_id=agent_id,
+            requester_session_id=session_id,
+            target=target,
+        )
+    except SubagentServiceError as exc:
+        return {"ok": False, "error": str(exc)}
     if target in ("all", "*"):
-        killed = 0
-        for run in descendants:
-            if run.ended_at is None and registry.kill(run.run_id):
-                killed += 1
-        return {"ok": True, "killed": killed, "scope": root_session_key}
-
-    if target not in allowed_run_ids:
-        return {"ok": False, "error": "run not found in current session scope"}
-    entry = registry.get_run(target)
-    if not entry:
-        return {"ok": False, "error": "run not found"}
-    if entry.ended_at is not None:
-        return {"ok": False, "error": "run already finished"}
-    killed = registry.kill(target)
-    if not killed:
-        return {"ok": False, "error": "failed to kill run"}
-    return {"ok": True, "run_id": target}
+        return {
+            "ok": True,
+            "killed": result.killed,
+            "scope": result.scope,
+        }
+    return {"ok": True, "run_id": result.run_id}
 
 
 @router.post("/agents/{agent_id}/subagents/steer")
 async def steer_subagent(agent_id: str, req: SubagentSteerRequest):
-    import uuid
-
-    from subagents.subagent_registry import registry
-    from sessions.session_manager import session_manager
     from runtime.agent import agent_manager
-    from subagents.subagent_runner import SubagentRunner
+    from subagents.subagent_service import SubagentServiceError
 
-    run_id = (req.run_id or "").strip()
-    message = (req.message or "").strip()
-    if not run_id or not message:
-        return {"ok": False, "error": "run_id and message are required"}
-    if len(message) > 4000:
-        return {"ok": False, "error": "message too long (>4000)"}
-
-    entry = registry.get_run(run_id)
-    if not entry:
-        return {"ok": False, "error": f"run_id not found: {run_id}"}
-    if entry.ended_at is not None:
-        return {"ok": False, "error": "run already finished"}
-
-    parsed_requester = session_manager.session_id_from_session_key(entry.requester_session_key)
-    if not parsed_requester:
-        return {"ok": False, "error": "invalid requester session key"}
-    requester_agent_id, requester_session_id = parsed_requester
-    if requester_agent_id != agent_id:
-        return {"ok": False, "error": "run does not belong to current agent scope"}
-
-    parsed_child = session_manager.session_id_from_session_key(entry.child_session_key)
-    if not parsed_child:
-        return {"ok": False, "error": "invalid child session key"}
-    target_agent_id, target_session_id = parsed_child
-
-    session_manager.save_message(target_session_id, target_agent_id, "user", message)
-    registry.kill(run_id)
-    new_run_id = uuid.uuid4().hex[:12]
-    next_record = registry.replace_run_after_steer(
-        previous_run_id=run_id,
-        next_run_id=new_run_id,
-        task=message,
-        fallback=entry,
-    )
-    if not next_record:
-        return {"ok": False, "error": "failed to replace run after steer"}
-
-    SubagentRunner(
-        agent_manager=agent_manager,
-        requester_agent_id=requester_agent_id,
-    ).start(
-        run_id=new_run_id,
-        session_id=target_session_id,
-        agent_id=target_agent_id,
-        task=message,
-        requester_key=entry.requester_session_key,
-    )
-    return {"ok": True, "run_id": new_run_id, "replaced_run_id": run_id}
+    try:
+        result = agent_manager.subagent_service.steer(
+            requester_agent_id=agent_id,
+            requester_session_id=None,
+            run_id=req.run_id,
+            message=req.message,
+        )
+    except SubagentServiceError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {
+        "ok": True,
+        "run_id": result.record.run_id,
+        "replaced_run_id": result.replaced_run_id,
+    }
 
 
 @router.get("/agents/{agent_id}/status")

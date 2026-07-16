@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 
-def get_all_tools(agent_id: str, agent_manager: object | None = None, session_id: str = "") -> list:
+def get_all_tools(
+    agent_id: str,
+    subagent_service: object | None = None,
+    session_id: str = "",
+) -> list:
     """为指定 Agent 构建完整工具集"""
     from config import resolve_agent_workspace, resolve_agent_dir
 
@@ -25,7 +29,13 @@ def get_all_tools(agent_id: str, agent_manager: object | None = None, session_id
     tools.extend(get_web_tools())
     tools.extend(get_memory_tools(agent_id=agent_id))
     tools.extend(get_knowledge_tools(agent_dir))
-    tools.extend(get_agent_tools(agent_id, agent_manager, session_id))
+    tools.extend(
+        get_agent_tools(
+            agent_id,
+            subagent_service,
+            session_id,
+        )
+    )
     tools.extend(get_cron_tools(agent_id))
     tools.extend(get_status_tools(agent_id, session_id))
 

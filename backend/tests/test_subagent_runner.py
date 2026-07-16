@@ -56,7 +56,7 @@ class SubagentRunnerTests(unittest.IsolatedAsyncioTestCase):
 
     def _runner(self, manager) -> SubagentRunner:
         return SubagentRunner(
-            agent_manager=manager,
+            astream=manager.astream,
             requester_agent_id="main",
             registry=self.registry,
             session_manager=self.session_manager,

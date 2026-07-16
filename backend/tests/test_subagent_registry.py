@@ -11,7 +11,10 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from subagents.subagent_registry import SubagentRegistry
+from subagents.subagent_registry import (
+    SubagentCapacityError,
+    SubagentRegistry,
+)
 
 
 class SubagentRegistryTests(unittest.TestCase):
@@ -227,6 +230,74 @@ class SubagentRegistryTests(unittest.TestCase):
             self.assertIsNone(
                 self.registry._runs["run-1"].asyncio_task
             )
+
+    def test_capacity_check_and_registration_are_atomic(self) -> None:
+        with patch.object(SubagentRegistry, "_restore_from_disk"):
+            registry = SubagentRegistry()
+        registry._persist_to_disk = Mock()
+        barrier = threading.Barrier(3)
+        results: list[str] = []
+
+        def register(run_id: str) -> None:
+            barrier.wait()
+            try:
+                registry.register_run(
+                    run_id=run_id,
+                    child_session_key=(
+                        f"agent:worker:subagent:{run_id}"
+                    ),
+                    requester_session_key="agent:main:main",
+                    requester_agent_id="main",
+                    target_agent_id="worker",
+                    task="inspect files",
+                    max_active_for_requester=1,
+                )
+                results.append("registered")
+            except SubagentCapacityError:
+                results.append("full")
+
+        threads = [
+            threading.Thread(target=register, args=("run-a",)),
+            threading.Thread(target=register, args=("run-b",)),
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=1)
+
+        self.assertEqual(sorted(results), ["full", "registered"])
+        self.assertEqual(len(registry.list_runs()), 1)
+
+    def test_replace_active_run_for_steer_is_atomic(self) -> None:
+        class ObservedTask:
+            def __init__(inner_self) -> None:
+                inner_self.cancelled = False
+                inner_self.lock_owned = False
+
+            def cancel(inner_self) -> None:
+                inner_self.cancelled = True
+                inner_self.lock_owned = (
+                    self.registry._lock._is_owned()
+                )
+
+        task = ObservedTask()
+        self.registry.set_task("run-1", task)
+        self.registry._persist_to_disk.reset_mock()
+
+        result = self.registry.replace_active_run_for_steer(
+            previous_run_id="run-1",
+            next_run_id="run-2",
+            task="inspect tests",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIsNone(self.registry.get_run("run-1"))
+        self.assertEqual(result.run_id, "run-2")  # type: ignore[union-attr]
+        self.assertEqual(result.task, "inspect tests")  # type: ignore[union-attr]
+        self.registry._persist_to_disk.assert_called_once_with()
+        self.assertTrue(task.cancelled)
+        self.assertFalse(task.lock_owned)
 
 
 if __name__ == "__main__":

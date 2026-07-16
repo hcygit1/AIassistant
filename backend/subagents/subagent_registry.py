@@ -11,11 +11,14 @@ from typing import Any, Callable, Literal
 from infra.state_machine import (
     SUBAGENT_ANNOUNCE_TRANSITIONS,
     SUBAGENT_RUN_TRANSITIONS,
-    InvalidTransitionError,
     transition,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class SubagentCapacityError(Exception):
+    pass
 
 
 @dataclass
@@ -96,6 +99,7 @@ class SubagentRegistry:
         model: str | None = None,
         cleanup: str = "keep",
         spawn_depth: int = 0,
+        max_active_for_requester: int | None = None,
     ) -> SubagentRunRecord:
         now = time.time()
         archive_after_ms = _resolve_archive_after_ms()
@@ -115,8 +119,20 @@ class SubagentRegistry:
             archive_at_ms=archive_at_ms,
         )
         with self._lock:
+            if max_active_for_requester is not None:
+                active = sum(
+                    1
+                    for current in self._runs.values()
+                    if current.requester_session_key
+                    == requester_session_key
+                    and current.ended_at is None
+                )
+                if active >= max_active_for_requester:
+                    raise SubagentCapacityError(
+                        "active sub-agent capacity reached"
+                    )
             self._runs[run_id] = record
-        self._persist_to_disk()
+            self._persist_to_disk()
         return self._snapshot_record(record)
 
     def set_task(self, run_id: str, task: Any) -> bool:
@@ -463,40 +479,52 @@ class SubagentRegistry:
             self._persist_to_disk()
         return len(to_remove)
 
-    def replace_run_after_steer(
+    def replace_active_run_for_steer(
         self,
         previous_run_id: str,
         next_run_id: str,
         task: str,
-        fallback: SubagentRunRecord | None = None,
     ) -> SubagentRunRecord | None:
-        """steer 后替换 run，新 run 继承原 run 的上下文"""
+        """原子接管活跃 run，并在锁外取消旧任务。"""
+        old_task: Any = None
         now = time.time()
         archive_after_ms = _resolve_archive_after_ms()
-        archive_at_ms = (now * 1000 + archive_after_ms) if archive_after_ms else None
+        archive_at_ms = (
+            now * 1000 + archive_after_ms
+            if archive_after_ms
+            else None
+        )
         with self._lock:
-            prev = self._runs.get(previous_run_id) or fallback
-            if not prev:
+            previous = self._runs.get(previous_run_id)
+            if previous is None or previous.ended_at is not None:
                 return None
             record = SubagentRunRecord(
                 run_id=next_run_id,
-                child_session_key=prev.child_session_key,
-                requester_session_key=prev.requester_session_key,
-                requester_agent_id=prev.requester_agent_id,
-                target_agent_id=prev.target_agent_id,
+                child_session_key=previous.child_session_key,
+                requester_session_key=(
+                    previous.requester_session_key
+                ),
+                requester_agent_id=previous.requester_agent_id,
+                target_agent_id=previous.target_agent_id,
                 task=task,
-                label=prev.label,
-                model=prev.model,
-                cleanup=prev.cleanup,
-                spawn_depth=prev.spawn_depth,
+                label=previous.label,
+                model=previous.model,
+                cleanup=previous.cleanup,
+                spawn_depth=previous.spawn_depth,
                 created_at=now,
                 started_at=now,
                 archive_at_ms=archive_at_ms,
             )
-            if previous_run_id != next_run_id:
-                self._runs.pop(previous_run_id, None)
+            old_task = previous.asyncio_task
+            self._runs.pop(previous_run_id, None)
             self._runs[next_run_id] = record
-        self._persist_to_disk()
+            self._persist_to_disk()
+
+        try:
+            if old_task is not None and hasattr(old_task, "cancel"):
+                old_task.cancel()
+        except Exception:
+            pass
         return self._snapshot_record(record)
 
     def sweep_expired(

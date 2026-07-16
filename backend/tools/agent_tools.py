@@ -3,7 +3,6 @@ sessions_history, sessions_send, sessions_spawn, subagents"""
 
 from __future__ import annotations
 
-import uuid
 from typing import Any, Literal
 
 from langchain_core.tools import BaseTool
@@ -12,7 +11,6 @@ from pydantic import BaseModel, Field
 from config import (
     list_agents,
     resolve_agent_config,
-    get_config,
 )
 
 ANNOUNCE_ACQUIRE_TIMEOUT_SEC = 10
@@ -209,7 +207,7 @@ class SessionsSpawnTool(BaseTool):
     args_schema: type[BaseModel] = SessionsSpawnInput
     current_agent_id: str = "main"
     current_session_id: str = ""
-    _agent_manager: Any = None
+    _subagent_service: Any = None
 
     def _run(self, **kwargs: Any) -> str:
         raise NotImplementedError("Use _arun for async execution")
@@ -222,96 +220,39 @@ class SessionsSpawnTool(BaseTool):
         model: str | None = None,
     ) -> str:
         target_id = agent_id or self.current_agent_id
+        if self._subagent_service is None:
+            return "Failed to start sub-agent: service unavailable"
+        from subagents.subagent_service import (
+            SubagentServiceError,
+        )
 
-        # 基于 subagents.allow_agents 做目标 Agent 允许性校验
-        requester_id = self.current_agent_id or "main"
-        requester_cfg = resolve_agent_config(requester_id) or {}
-        subagents_cfg = requester_cfg.get("subagents") or {}
-        allow = subagents_cfg.get("allow_agents") or []
-
-        allow_any = "*" in allow
-        allow_set = {a for a in allow if a and a != "*"}
-
-        if not allow_any and target_id != requester_id and target_id not in allow_set:
-            return (
-                f"Error: Current agent is not allowed to spawn tasks for '{target_id}'. "
-                f"Please explicitly add this agent to agents.list[].subagents.allow_agents in the configuration."
+        try:
+            result = self._subagent_service.spawn(
+                requester_agent_id=self.current_agent_id,
+                requester_session_id=self.current_session_id,
+                task=task,
+                target_agent_id=target_id,
+                label=label,
+                model=model,
             )
-        from sessions.session_manager import session_manager
-        from subagents.subagent_registry import registry
-
-        requester_key = session_manager.session_key_from_session_id(
-            self.current_agent_id,
-            self.current_session_id or session_manager.resolve_main_session_id(self.current_agent_id),
-        )
-        requester_depth = registry.get_requester_depth(requester_key)
-        child_depth = requester_depth + 1
-        cfg = resolve_agent_config(target_id)
-        subagent_cfg = cfg.get("subagents", {})
-        max_spawn_depth = subagent_cfg.get("max_spawn_depth", 1)
-        max_children = subagent_cfg.get("max_children_per_agent", 5)
-
-        if child_depth > max_spawn_depth:
-            return (
-                f"Error: Current depth limit reached (maxSpawnDepth={max_spawn_depth}), "
-                f"cannot spawn more sub-agents."
-            )
-
-        child_session_id = f"subagent-{uuid.uuid4().hex[:12]}"
-        child_session_key = f"agent:{target_id}:subagent:{child_session_id}"
-        run_id = uuid.uuid4().hex[:12]
-
-        active = registry.count_active_for_requester(requester_key)
-        if active >= max_children:
-            return f"Error: Active sub-agents limit reached ({max_children})"
-
-        registry.register_run(
-            run_id=run_id,
-            child_session_key=child_session_key,
-            requester_session_key=requester_key,
-            requester_agent_id=self.current_agent_id,
-            target_agent_id=target_id,
-            task=task,
-            label=label,
-            model=model,
-            spawn_depth=child_depth,
-        )
-
-        session_manager.ensure_session(
-            child_session_id,
-            target_id,
-            spawned_by=requester_key,
-            label=(label or task[:60] or "Sub-agent task"),
-        )
-
-        if self._agent_manager:
-            try:
-                from subagents.subagent_runner import (
-                    SubagentRunner,
+        except SubagentServiceError as exc:
+            if exc.code == "target_forbidden":
+                return (
+                    "Error: Current agent is not allowed to "
+                    f"spawn tasks for '{target_id}'. Please "
+                    "explicitly add this agent to agents.list[]"
+                    ".subagents.allow_agents in the configuration."
                 )
-
-                raw = subagent_cfg.get("run_timeout_seconds", 0)
-                run_timeout_seconds = int(raw) if raw is not None else 0
-                if run_timeout_seconds < 0:
-                    run_timeout_seconds = 0
-                SubagentRunner(
-                    agent_manager=self._agent_manager,
-                    requester_agent_id=self.current_agent_id,
-                ).start(
-                    run_id=run_id,
-                    session_id=child_session_id,
-                    agent_id=target_id,
-                    task=task,
-                    requester_key=requester_key,
-                    run_timeout_seconds=run_timeout_seconds,
-                )
-            except Exception as e:
-                return f"Failed to start sub-agent: {e}"
+            if exc.code == "depth_limit":
+                return f"Error: {exc}, cannot spawn more sub-agents."
+            if exc.code == "children_limit":
+                return f"Error: {exc}"
+            return str(exc)
 
         return (
             f"Sub-agent spawned:\n"
-            f"  run_id: {run_id}\n"
-            f"  session_key: {child_session_key}\n"
+            f"  run_id: {result.record.run_id}\n"
+            f"  session_key: {result.record.child_session_key}\n"
             f"  Task: {task}"
         )
 
@@ -339,7 +280,7 @@ class SubagentsTool(BaseTool):
     args_schema: type[BaseModel] = SubagentsInput
     current_agent_id: str = "main"
     current_session_id: str = ""
-    _agent_manager: Any = None
+    _subagent_service: Any = None
 
     def _run(self, **kwargs: Any) -> str:
         raise NotImplementedError("Use _arun for async execution")
@@ -351,29 +292,22 @@ class SubagentsTool(BaseTool):
         message: str | None = None,
         recent_minutes: int | None = None,
     ) -> str:
-        from config import get_config
-        from sessions.session_manager import session_manager
-        from subagents.subagent_registry import registry
-
-        requester_key = session_manager.session_key_from_session_id(
-            self.current_agent_id,
-            self.current_session_id or session_manager.resolve_main_session_id(self.current_agent_id),
+        if self._subagent_service is None:
+            return "Error: Sub-agent service unavailable"
+        from subagents.subagent_service import (
+            SubagentServiceError,
         )
 
         if action == "list":
-            cfg = get_config()
-            default_recent = (
-                cfg.get("agents", {}).get("defaults", {}).get("subagents", {}).get("recent_minutes")
+            result = self._subagent_service.list_runs(
+                requester_agent_id=self.current_agent_id,
+                requester_session_id=self.current_session_id,
+                recent_minutes=recent_minutes,
             )
-            default_recent = default_recent if isinstance(default_recent, (int, float)) else 30
-            default_recent = max(1, min(24 * 60, int(default_recent)))
-            minutes = recent_minutes if recent_minutes is not None and recent_minutes > 0 else default_recent
-            minutes = max(1, min(24 * 60, minutes))
-            runs = registry.list_runs_for_requester(requester_key, include_recent_minutes=minutes)
-            if not runs:
+            if not result.records:
                 return "No sub-agents found."
             lines = []
-            for r in runs:
+            for r in result.records:
                 status = "Running" if r.ended_at is None else f"Completed({r.outcome})"
                 elapsed = ""
                 if r.started_at and not r.ended_at:
@@ -386,70 +320,58 @@ class SubagentsTool(BaseTool):
                 )
             return "\n".join(lines)
 
-        elif action == "kill":
+        if action == "kill":
             if not target:
                 return "Error: kill action requires target parameter (run_id or 'all')"
+            try:
+                result = self._subagent_service.kill(
+                    requester_agent_id=self.current_agent_id,
+                    requester_session_id=self.current_session_id,
+                    target=target,
+                )
+            except SubagentServiceError as exc:
+                if exc.code in ("out_of_scope", "not_found"):
+                    return f"Error: Sub-agent run_id={target} not found"
+                if exc.code == "already_ended":
+                    return f"Error: Sub-agent {target} has already ended."
+                return f"Error: {exc}"
             if target in ("all", "*"):
-                runs = registry.list_runs_for_requester(requester_key)
-                killed = 0
-                for r in runs:
-                    if r.ended_at is None:
-                        registry.kill(r.run_id)
-                        killed += 1
-                return f"Terminated {killed} sub-agent(s)."
-            else:
-                registry.kill(target)
-                return f"Terminated sub-agent: {target}"
+                return f"Terminated {result.killed} sub-agent(s)."
+            return f"Terminated sub-agent: {target}"
 
-        elif action == "steer":
+        if action == "steer":
             if not target or not message:
                 return "Error: steer action requires target (run_id) and message parameters"
-            MAX_STEER_MESSAGE_CHARS = 4000
-            if len(message) > MAX_STEER_MESSAGE_CHARS:
-                return f"Error: steer message is too long ({len(message)} chars, limit {MAX_STEER_MESSAGE_CHARS})."
-            entry = registry.get_run(target)
-            if not entry:
-                return f"Error: Sub-agent run_id={target} not found"
-            if entry.ended_at is not None:
-                return f"Sub-agent {target} has already ended, no need to steer."
-            # 禁止子 Agent steer 自身
-            if requester_key == entry.child_session_key:
-                return "Error: Sub-agent cannot steer itself."
-            parsed = session_manager.session_id_from_session_key(entry.child_session_key)
-            if not parsed:
-                return f"Error: Unable to parse child_session_key: {entry.child_session_key}"
-            target_agent_id, target_session_id = parsed
-            session_manager.save_message(target_session_id, target_agent_id, "user", message)
-            registry.kill(target)
-            new_run_id = uuid.uuid4().hex[:12]
-            new_record = registry.replace_run_after_steer(
-                previous_run_id=target,
-                next_run_id=new_run_id,
-                task=message,
-                fallback=entry,
+            if len(message) > 4000:
+                return (
+                    "Error: steer message is too long "
+                    f"({len(message)} chars, limit 4000)."
+                )
+            try:
+                result = self._subagent_service.steer(
+                    requester_agent_id=self.current_agent_id,
+                    requester_session_id=self.current_session_id,
+                    run_id=target,
+                    message=message,
+                )
+            except SubagentServiceError as exc:
+                if exc.code in ("out_of_scope", "not_found"):
+                    return f"Error: Sub-agent run_id={target} not found"
+                if exc.code == "already_ended":
+                    return (
+                        f"Sub-agent {target} has already ended, "
+                        "no need to steer."
+                    )
+                if exc.code == "self_steer":
+                    return "Error: Sub-agent cannot steer itself."
+                if exc.code == "replace_failed":
+                    return "Steer failed: unable to replace run."
+                return str(exc)
+            return (
+                f"Steered sub-agent [{result.label}]: new "
+                "instruction sent and execution started "
+                f"(run_id={result.record.run_id})."
             )
-            if not new_record:
-                return "Steer failed: unable to replace run."
-            if self._agent_manager:
-                try:
-                    from subagents.subagent_runner import (
-                        SubagentRunner,
-                    )
-
-                    SubagentRunner(
-                        agent_manager=self._agent_manager,
-                        requester_agent_id=self.current_agent_id,
-                    ).start(
-                        run_id=new_run_id,
-                        session_id=target_session_id,
-                        agent_id=target_agent_id,
-                        task=message,
-                        requester_key=requester_key,
-                    )
-                except Exception as e:
-                    return f"New instruction saved, but failed to start new run: {e}"
-            label = entry.label or entry.task[:50] or "No Label"
-            return f"Steered sub-agent [{label}]: new instruction sent and execution started (run_id={new_run_id})."
 
         return f"Unknown action: {action}"
 
@@ -460,14 +382,14 @@ class SubagentsTool(BaseTool):
 
 def get_agent_tools(
     agent_id: str,
-    agent_manager: Any = None,
+    subagent_service: Any = None,
     session_id: str = "",
 ) -> list[BaseTool]:
     spawn_tool = SessionsSpawnTool(
         current_agent_id=agent_id,
         current_session_id=session_id,
     )
-    spawn_tool._agent_manager = agent_manager
+    spawn_tool._subagent_service = subagent_service
 
     # 注入 agentSessionKey/current_session_id，工具从上下文获取当前会话
     effective_session_id = session_id or ""
@@ -475,7 +397,7 @@ def get_agent_tools(
         from sessions.session_manager import session_manager
         effective_session_id = session_manager.resolve_main_session_id(agent_id)
     subagents_tool = SubagentsTool(current_agent_id=agent_id, current_session_id=effective_session_id)
-    subagents_tool._agent_manager = agent_manager
+    subagents_tool._subagent_service = subagent_service
     return [
         AgentsListTool(current_agent_id=agent_id),
         SessionsListTool(current_agent_id=agent_id),

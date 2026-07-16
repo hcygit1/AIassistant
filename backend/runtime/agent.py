@@ -39,6 +39,8 @@ from runtime.model_runtime import ModelRuntime
 from runtime.session_commands import SessionCommands
 from runtime.session_compactor import SessionCompactor
 from runtime.tool_registry import ToolRegistry
+from subagents.subagent_runner import SubagentRunner
+from subagents.subagent_service import SubagentService
 from runtime.turn_recovery import TurnRecovery
 from runtime.turn_executor import (
     TurnExecutor,
@@ -261,7 +263,17 @@ class AgentManager:
                 get_model_display_name(ref)
             ),
         )
-        self._tool_registry = ToolRegistry(self)
+        self.subagent_service = SubagentService(
+            runner_factory=lambda requester_agent_id: (
+                SubagentRunner(
+                    astream=self.astream,
+                    requester_agent_id=requester_agent_id,
+                )
+            )
+        )
+        self._tool_registry = ToolRegistry(
+            self.subagent_service
+        )
         self._turn_context = TurnContext()
         self._session_compactor = SessionCompactor(
             resolve_agent_config=lambda agent_id: resolve_agent_config(

@@ -25,7 +25,7 @@ class SubagentRunner:
 
     def __init__(
         self,
-        agent_manager: Any,
+        astream: Any,
         requester_agent_id: str,
         *,
         registry: Any = None,
@@ -44,7 +44,7 @@ class SubagentRunner:
                 subagent_announce_delivery as delivery,
             )
 
-        self._agent_manager = agent_manager
+        self._astream = astream
         self._requester_agent_id = requester_agent_id
         self._registry = registry
         self._session_manager = session_manager
@@ -180,7 +180,7 @@ class SubagentRunner:
             async def stream_child() -> None:
                 last_progress_emit = 0.0
                 chars_received = 0
-                async for event in self._agent_manager.astream(
+                async for event in self._astream(
                     message=task,
                     session_id=session_id,
                     agent_id=agent_id,

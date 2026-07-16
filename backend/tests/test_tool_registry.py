@@ -74,7 +74,7 @@ class ToolPolicyTests(unittest.TestCase):
 
 class ToolRegistryTests(unittest.TestCase):
     def test_registry_filters_tools_with_shared_policy(self) -> None:
-        registry = ToolRegistry(owner=object())
+        registry = ToolRegistry(subagent_service=object())
         tools = [
             SimpleNamespace(name="read"),
             SimpleNamespace(name="write"),
@@ -97,7 +97,7 @@ class ToolRegistryTests(unittest.TestCase):
         )
 
     def test_tool_name_cache_uses_supplied_compatibility_callbacks(self) -> None:
-        registry = ToolRegistry(owner=object())
+        registry = ToolRegistry(subagent_service=object())
         collect = Mock(
             return_value=[
                 SimpleNamespace(name="read"),
@@ -171,7 +171,7 @@ class ToolRegistryTests(unittest.TestCase):
         wrap.assert_called_once_with("main", "s1", [])
 
     def test_tool_name_cache_invalidates_when_tool_config_changes(self) -> None:
-        registry = ToolRegistry(owner=object())
+        registry = ToolRegistry(subagent_service=object())
         read = SimpleNamespace(name="read")
         apply_patch_tool = SimpleNamespace(name="apply_patch")
         collect = Mock(side_effect=[[read], [read, apply_patch_tool]])
