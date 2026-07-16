@@ -46,6 +46,27 @@ class _RecordingDispatcher(SessionDispatcher):
 
 
 class SessionDispatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_work_removes_queued_item_and_calls_hook(self) -> None:
+        cancelled: list[str] = []
+        dispatcher = SessionDispatcher(lock=asyncio.Lock())
+        dispatcher.submit(
+            SessionWorkItem(
+                kind="cron",
+                priority=PRIORITY_CRON,
+                content="cron",
+                agent_id="main",
+                session_id="main-main",
+                work_id="work-1",
+                on_cancel=lambda: cancelled.append("work-1"),
+            )
+        )
+
+        removed = dispatcher.cancel_work("work-1")
+
+        self.assertTrue(removed)
+        self.assertEqual(dispatcher.pending_count, 0)
+        self.assertEqual(cancelled, ["work-1"])
+
     async def test_user_work_item_has_highest_priority(self) -> None:
         dispatcher = _RecordingDispatcher(expected_count=3)
         dispatcher.start()

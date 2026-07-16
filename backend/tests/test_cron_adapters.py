@@ -3,15 +3,23 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from fastapi import HTTPException
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from api.cron_api import CronJobCreate, create_cron_job
+from api.cron_api import (
+    CronJobCreate,
+    cancel_task,
+    create_cron_job,
+    get_task_history,
+)
 from scheduler.cron_service import ProcessDueResult
+from scheduler.task_history_service import TaskHistoryError
 from scheduler.cron_types import CronJob, CronPayload, CronSchedule
 from scheduler.cron_scheduler import CronScheduler
 from tools.cron_tools import get_cron_tools
@@ -112,6 +120,54 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
             now_ms=1_000_000
         )
         self.assertEqual(sleep_seconds, 5)
+
+    async def test_task_history_api_delegates_to_unified_service(self) -> None:
+        service = Mock()
+        service.query.return_value = SimpleNamespace(
+            items=[{"id": "work-1"}],
+            total=1,
+            limit=10,
+            offset=0,
+        )
+
+        with patch(
+            "scheduler.task_history_service.task_history_service",
+            service,
+        ):
+            result = await get_task_history(
+                agent_id="main",
+                kind="cron",
+                status="pending",
+                limit=10,
+                offset=0,
+            )
+
+        service.query.assert_called_once_with(
+            agent_id="main",
+            kind="cron",
+            status="pending",
+            limit=10,
+            offset=0,
+        )
+        self.assertEqual(result["total"], 1)
+
+    async def test_cancel_api_rejects_running_work(self) -> None:
+        service = Mock()
+        service.cancel.side_effect = TaskHistoryError(
+            "running",
+            "Running session work cannot be cancelled",
+        )
+
+        with (
+            patch(
+                "scheduler.task_history_service.task_history_service",
+                service,
+            ),
+            self.assertRaises(HTTPException) as raised,
+        ):
+            await cancel_task("work-1")
+
+        self.assertEqual(raised.exception.status_code, 409)
 
     @staticmethod
     def _job() -> CronJob:

@@ -72,6 +72,7 @@ class SessionWorkItem:
     on_success: Callable[[], Any] | None = None
     on_failure: Callable[[], Any] | None = None
     on_failure_async: Callable[[Exception], Awaitable[None]] | None = None
+    on_cancel: Callable[[], Any] | None = None
     turn_id: str | None = None
     stream_queue: asyncio.Queue[TurnEvent | None] | None = None
 
@@ -115,6 +116,16 @@ class SessionDispatcher:
             if t.turn_id == turn_id:
                 return i + 1
         return None
+
+    def cancel_work(self, work_id: str) -> bool:
+        for index, task in enumerate(self._queue):
+            if task.work_id != work_id:
+                continue
+            removed = self._queue.pop(index)
+            if removed.on_cancel:
+                _safe_call(removed.on_cancel)
+            return True
+        return False
 
     @property
     def pending_count(self) -> int:
@@ -227,8 +238,11 @@ class SessionDispatcher:
 
         timeout = ANNOUNCE_TIMEOUT_SEC if task.kind == "announce" else SYSTEM_TIMEOUT_SEC
         lock_acquired = False
-        if task.work_id:
-            session_work_store.mark_running(task.work_id)
+        if (
+            task.work_id
+            and not session_work_store.mark_running(task.work_id)
+        ):
+            return
 
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=timeout)
@@ -324,6 +338,19 @@ class DispatcherManager:
         d = self._dispatchers.pop(key, None)
         if d:
             d.stop()
+
+    def cancel_work(
+        self,
+        agent_id: str,
+        session_id: str,
+        work_id: str,
+    ) -> bool:
+        dispatcher = self._dispatchers.get(
+            f"{agent_id}:{session_id}"
+        )
+        if dispatcher is None:
+            return False
+        return dispatcher.cancel_work(work_id)
 
 
 dispatcher_manager = DispatcherManager()

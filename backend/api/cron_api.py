@@ -26,6 +26,22 @@ def _raise_cron_error(exc) -> None:
     raise HTTPException(status, str(exc))
 
 
+def _task_history_service():
+    from scheduler.task_history_service import task_history_service
+
+    return task_history_service
+
+
+def _raise_task_history_error(exc) -> None:
+    if exc.code == "invalid_filter":
+        status = 400
+    elif exc.code == "not_found":
+        status = 404
+    else:
+        status = 409
+    raise HTTPException(status, str(exc))
+
+
 class CronJobCreate(BaseModel):
     name: str = Field(..., description="任务名称")
     description: str = Field(default="", description="描述")
@@ -148,12 +164,24 @@ async def get_task_history(
     offset: int = Query(default=0, ge=0),
 ):
     """查询任务执行历史"""
-    from scheduler.task_store import task_store, TaskKind, TaskStatus
-    tk = TaskKind(kind) if kind else None
-    ts = TaskStatus(status) if status else None
-    records = task_store.query(agent_id=agent_id, kind=tk, status=ts, limit=limit, offset=offset)
-    total = task_store.count(agent_id=agent_id)
-    return {"items": records, "total": total, "limit": limit, "offset": offset}
+    from scheduler.task_history_service import TaskHistoryError
+
+    try:
+        page = _task_history_service().query(
+            agent_id=agent_id,
+            kind=kind,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+    except TaskHistoryError as exc:
+        _raise_task_history_error(exc)
+    return {
+        "items": page.items,
+        "total": page.total,
+        "limit": page.limit,
+        "offset": page.offset,
+    }
 
 
 @router.get("/system-work/history")
@@ -212,9 +240,13 @@ async def get_system_work_history(
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str):
     """取消任务"""
-    from scheduler.lifecycle import task_runner
-    ok = task_runner.cancel(task_id)
-    return {"ok": ok}
+    from scheduler.task_history_service import TaskHistoryError
+
+    try:
+        result = _task_history_service().cancel(task_id)
+    except TaskHistoryError as exc:
+        _raise_task_history_error(exc)
+    return {"ok": result.ok, "status": result.status}
 
 
 # ---------------------------------------------------------------------------

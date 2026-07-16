@@ -96,6 +96,47 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         session_manager.save_message.assert_called_once()
         registry.mark_result_delivery_dropped.assert_called_once_with("run-2")
 
+    async def test_main_requester_cancel_callback_marks_delivery_dropped(self) -> None:
+        dispatcher = _FakeDispatcher()
+        registry = Mock()
+        event_bus = Mock()
+        session_manager = Mock()
+        session_manager.session_id_from_session_key.return_value = (
+            "main",
+            "main-main",
+        )
+        session_manager.resolve_main_session_id.return_value = "main-main"
+
+        with (
+            patch("config.get_config", return_value={"app": {"locale": "en"}}),
+            patch("sessions.session_manager.session_manager", session_manager),
+            patch(
+                "sessions.session_lock_manager.session_lock_manager.get_lock",
+                return_value=_FakeLock(),
+            ),
+            patch(
+                "sessions.session_dispatcher.dispatcher_manager.get",
+                return_value=dispatcher,
+            ),
+            patch("subagents.subagent_registry.registry", registry),
+            patch("infra.event_bus.event_bus", event_bus),
+        ):
+            await self.delivery.deliver_to_requester(
+                requester_key="agent:main:main",
+                child_session_key="agent:main:subagent:child-1",
+                run_id="run-cancelled",
+                task="check docs",
+                result="done",
+            )
+            work_item = dispatcher.submitted[0]
+            self.assertIsNotNone(work_item.on_cancel)
+            work_item.on_cancel()
+
+        registry.mark_result_delivery_dropped.assert_called_once_with(
+            "run-cancelled"
+        )
+        session_manager.save_message.assert_not_called()
+
     async def test_deliver_recovered_run_submits_announce_work_item(self) -> None:
         dispatcher = _FakeDispatcher()
         registry = Mock()

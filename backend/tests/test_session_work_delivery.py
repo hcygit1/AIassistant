@@ -86,6 +86,40 @@ class SessionWorkDeliveryTests(unittest.TestCase):
         self.assertEqual(len(dispatcher.submitted), 1)
         self.assertEqual(dispatcher.submitted[0].work_id, record.id)
 
+    def test_recovery_requeues_interrupted_running_record(self) -> None:
+        dispatcher = _FakeDispatcher()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            record = store.create_record(
+                kind="cron",
+                agent_id="main",
+                session_id="main-main",
+                content="recover running",
+                priority=2,
+                recover_on_restart=True,
+            )
+            record.status = "running"
+            record.started_at_ms = 123
+            store.insert(record)
+
+            with (
+                patch("sessions.session_work_delivery.session_work_store", store),
+                patch(
+                    "sessions.session_lock_manager.session_lock_manager.get_lock",
+                    return_value=_FakeLock(),
+                ),
+                patch(
+                    "sessions.session_dispatcher.dispatcher_manager.get",
+                    return_value=dispatcher,
+                ),
+            ):
+                recovered = self.delivery.recover_pending_work()
+                current = store.get(record.id)
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(current.status, "queued")
+        self.assertIsNone(current.started_at_ms)
+
     def test_store_query_can_find_failed_announce_by_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SessionWorkStore(Path(tmpdir) / "session_work.db")
@@ -108,6 +142,26 @@ class SessionWorkDeliveryTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].run_id, "run-announce-1")
         self.assertEqual(items[0].last_error, "dispatcher timeout")
+
+    def test_cancelled_record_cannot_be_marked_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            record = store.create_record(
+                kind="cron",
+                agent_id="main",
+                session_id="main-main",
+                content="cancel me",
+                priority=2,
+            )
+            store.insert(record)
+
+            cancelled = store.cancel_queued(record.id)
+            claimed = store.mark_running(record.id)
+
+            current = store.get(record.id)
+        self.assertTrue(cancelled)
+        self.assertFalse(claimed)
+        self.assertEqual(current.status, "cancelled")
 
     def test_store_prune_finished_older_than_deletes_only_old_terminal_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

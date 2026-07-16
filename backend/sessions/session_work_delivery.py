@@ -24,6 +24,7 @@ class SessionWorkDelivery:
         on_success: Callable[[], Any] | None = None,
         on_failure: Callable[[], Any] | None = None,
         on_failure_async: Callable[[Exception], Awaitable[None]] | None = None,
+        on_cancel: Callable[[], Any] | None = None,
     ) -> int:
         session_lock = session_lock_manager.get_lock(record.agent_id, record.session_id)
         dispatcher = dispatcher_manager.get(record.agent_id, record.session_id, session_lock.lock)
@@ -42,6 +43,7 @@ class SessionWorkDelivery:
                 on_success=on_success,
                 on_failure=on_failure,
                 on_failure_async=on_failure_async,
+                on_cancel=on_cancel,
             )
         )
 
@@ -60,6 +62,7 @@ class SessionWorkDelivery:
         on_success: Callable[[], Any] | None = None,
         on_failure: Callable[[], Any] | None = None,
         on_failure_async: Callable[[Exception], Awaitable[None]] | None = None,
+        on_cancel: Callable[[], Any] | None = None,
         on_record_created: Callable[[SessionWorkRecord], Any] | None = None,
         recover_on_restart: bool = False,
     ) -> int:
@@ -83,11 +86,18 @@ class SessionWorkDelivery:
             on_success=on_success,
             on_failure=on_failure,
             on_failure_async=on_failure_async,
+            on_cancel=on_cancel,
         )
 
     def recover_pending_work(self) -> int:
         recovered = 0
         for record in session_work_store.get_recoverable_pending():
+            if not session_work_store.requeue_for_recovery(record.id):
+                continue
+            record.status = "queued"
+            record.started_at_ms = None
+            record.finished_at_ms = None
+            record.last_error = None
             self._submit_record(record)
             recovered += 1
         return recovered

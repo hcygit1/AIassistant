@@ -138,16 +138,64 @@ class SessionWorkStore:
             finally:
                 conn.close()
 
-    def mark_running(self, work_id: str) -> None:
+    def get(self, work_id: str) -> SessionWorkRecord | None:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM session_work WHERE id = ?",
+                    (work_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+        return self._record_from_row(row) if row else None
+
+    def mark_running(self, work_id: str) -> bool:
         now_ms = int(time.time() * 1000)
         with self._lock:
             conn = self._get_conn()
             try:
-                conn.execute(
-                    "UPDATE session_work SET status='running', started_at_ms=?, last_error=NULL WHERE id=?",
+                cursor = conn.execute(
+                    """UPDATE session_work
+                    SET status='running', started_at_ms=?, last_error=NULL
+                    WHERE id=? AND status IN ('queued', 'running')""",
                     (now_ms, work_id),
                 )
                 conn.commit()
+                return cursor.rowcount == 1
+            finally:
+                conn.close()
+
+    def cancel_queued(self, work_id: str) -> bool:
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cursor = conn.execute(
+                    """UPDATE session_work
+                    SET status='cancelled', finished_at_ms=?
+                    WHERE id=? AND status='queued'""",
+                    (now_ms, work_id),
+                )
+                conn.commit()
+                return cursor.rowcount == 1
+            finally:
+                conn.close()
+
+    def requeue_for_recovery(self, work_id: str) -> bool:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cursor = conn.execute(
+                    """UPDATE session_work
+                    SET status='queued', started_at_ms=NULL,
+                        finished_at_ms=NULL, last_error=NULL
+                    WHERE id=? AND recover_on_restart=1
+                        AND status IN ('queued', 'running')""",
+                    (work_id,),
+                )
+                conn.commit()
+                return cursor.rowcount == 1
             finally:
                 conn.close()
 
@@ -188,35 +236,19 @@ class SessionWorkStore:
                 ).fetchall()
             finally:
                 conn.close()
-        return [
-            SessionWorkRecord(
-                id=row["id"],
-                kind=row["kind"],
-                agent_id=row["agent_id"],
-                session_id=row["session_id"],
-                content=row["content"],
-                priority=row["priority"],
-                prompt_mode=row["prompt_mode"],
-                persist_role=row["persist_role"],
-                run_id=row["run_id"],
-                status=row["status"],
-                recover_on_restart=bool(row["recover_on_restart"]),
-                created_at_ms=row["created_at_ms"],
-                started_at_ms=row["started_at_ms"],
-                finished_at_ms=row["finished_at_ms"],
-                last_error=row["last_error"],
-            )
-            for row in rows
-        ]
+        return [self._record_from_row(row) for row in rows]
 
     def query(
         self,
         *,
         kind: str | None = None,
+        kinds: list[str] | None = None,
         status: str | None = None,
         agent_id: str | None = None,
         session_id: str | None = None,
         run_id: str | None = None,
+        run_id_prefix: str | None = None,
+        exclude_run_id_prefix: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[SessionWorkRecord]:
@@ -225,6 +257,10 @@ class SessionWorkStore:
         if kind:
             conditions.append("kind = ?")
             params.append(kind)
+        if kinds:
+            placeholders = ", ".join("?" for _ in kinds)
+            conditions.append(f"kind IN ({placeholders})")
+            params.extend(kinds)
         if status:
             conditions.append("status = ?")
             params.append(status)
@@ -237,11 +273,17 @@ class SessionWorkStore:
         if run_id:
             conditions.append("run_id = ?")
             params.append(run_id)
+        if run_id_prefix:
+            conditions.append("run_id LIKE ?")
+            params.append(f"{run_id_prefix}%")
+        if exclude_run_id_prefix:
+            conditions.append("(run_id IS NULL OR run_id NOT LIKE ?)")
+            params.append(f"{exclude_run_id_prefix}%")
 
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = (
             f"SELECT * FROM session_work WHERE {where} "
-            "ORDER BY created_at_ms DESC LIMIT ? OFFSET ?"
+            "ORDER BY created_at_ms DESC, id DESC LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
 
@@ -252,41 +294,29 @@ class SessionWorkStore:
             finally:
                 conn.close()
 
-        return [
-            SessionWorkRecord(
-                id=row["id"],
-                kind=row["kind"],
-                agent_id=row["agent_id"],
-                session_id=row["session_id"],
-                content=row["content"],
-                priority=row["priority"],
-                prompt_mode=row["prompt_mode"],
-                persist_role=row["persist_role"],
-                run_id=row["run_id"],
-                status=row["status"],
-                recover_on_restart=bool(row["recover_on_restart"]),
-                created_at_ms=row["created_at_ms"],
-                started_at_ms=row["started_at_ms"],
-                finished_at_ms=row["finished_at_ms"],
-                last_error=row["last_error"],
-            )
-            for row in rows
-        ]
+        return [self._record_from_row(row) for row in rows]
 
     def count(
         self,
         *,
         kind: str | None = None,
+        kinds: list[str] | None = None,
         status: str | None = None,
         agent_id: str | None = None,
         session_id: str | None = None,
         run_id: str | None = None,
+        run_id_prefix: str | None = None,
+        exclude_run_id_prefix: str | None = None,
     ) -> int:
         conditions: list[str] = []
         params: list[object] = []
         if kind:
             conditions.append("kind = ?")
             params.append(kind)
+        if kinds:
+            placeholders = ", ".join("?" for _ in kinds)
+            conditions.append(f"kind IN ({placeholders})")
+            params.extend(kinds)
         if status:
             conditions.append("status = ?")
             params.append(status)
@@ -299,6 +329,12 @@ class SessionWorkStore:
         if run_id:
             conditions.append("run_id = ?")
             params.append(run_id)
+        if run_id_prefix:
+            conditions.append("run_id LIKE ?")
+            params.append(f"{run_id_prefix}%")
+        if exclude_run_id_prefix:
+            conditions.append("(run_id IS NULL OR run_id NOT LIKE ?)")
+            params.append(f"{exclude_run_id_prefix}%")
 
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = f"SELECT COUNT(*) as cnt FROM session_work WHERE {where}"
@@ -309,6 +345,26 @@ class SessionWorkStore:
             finally:
                 conn.close()
         return int(row["cnt"]) if row else 0
+
+    @staticmethod
+    def _record_from_row(row: sqlite3.Row) -> SessionWorkRecord:
+        return SessionWorkRecord(
+            id=row["id"],
+            kind=row["kind"],
+            agent_id=row["agent_id"],
+            session_id=row["session_id"],
+            content=row["content"],
+            priority=row["priority"],
+            prompt_mode=row["prompt_mode"],
+            persist_role=row["persist_role"],
+            run_id=row["run_id"],
+            status=row["status"],
+            recover_on_restart=bool(row["recover_on_restart"]),
+            created_at_ms=row["created_at_ms"],
+            started_at_ms=row["started_at_ms"],
+            finished_at_ms=row["finished_at_ms"],
+            last_error=row["last_error"],
+        )
 
     def prune_finished_older_than(
         self,

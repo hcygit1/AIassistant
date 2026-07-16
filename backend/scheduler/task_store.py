@@ -205,7 +205,10 @@ class TaskStore:
             params.append(status.value)
 
         where = " AND ".join(conditions) if conditions else "1=1"
-        sql = f"SELECT * FROM task_history WHERE {where} ORDER BY created_at_ms DESC LIMIT ? OFFSET ?"
+        sql = (
+            f"SELECT * FROM task_history WHERE {where} "
+            "ORDER BY created_at_ms DESC, id DESC LIMIT ? OFFSET ?"
+        )
         params.extend([limit, offset])
 
         with self._lock:
@@ -216,14 +219,43 @@ class TaskStore:
             finally:
                 conn.close()
 
-    def count(self, agent_id: str | None = None) -> int:
+    def get(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
             conn = self._get_conn()
             try:
-                if agent_id:
-                    row = conn.execute("SELECT COUNT(*) as cnt FROM task_history WHERE agent_id = ?", (agent_id,)).fetchone()
-                else:
-                    row = conn.execute("SELECT COUNT(*) as cnt FROM task_history").fetchone()
+                row = conn.execute(
+                    "SELECT * FROM task_history WHERE id = ?",
+                    (task_id,),
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
+    def count(
+        self,
+        agent_id: str | None = None,
+        kind: TaskKind | None = None,
+        status: TaskStatus | None = None,
+    ) -> int:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if agent_id:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+        if kind:
+            conditions.append("kind = ?")
+            params.append(kind.value)
+        if status:
+            conditions.append("status = ?")
+            params.append(status.value)
+        where = " AND ".join(conditions) if conditions else "1=1"
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    f"SELECT COUNT(*) as cnt FROM task_history WHERE {where}",
+                    params,
+                ).fetchone()
                 return row["cnt"] if row else 0
             finally:
                 conn.close()

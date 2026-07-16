@@ -173,6 +173,7 @@ class SubagentAnnounceDelivery:
                 run_id=run_id,
                 on_record_created=lambda record: self._state.bind_work(run_id, record.id),
                 on_success=lambda: self._state.delivered(req_agent, run_id),
+                on_cancel=lambda: self._state.dropped(req_agent, run_id),
                 on_failure=lambda: self._save_announce_and_mark_dropped(
                     main_session_id,
                     req_agent,
@@ -235,6 +236,7 @@ class SubagentAnnounceDelivery:
             on_record_created=lambda record: self._state.bind_work(run_id, record.id),
             result_handler=_sub_session_announce_result,
             on_success=lambda: self._state.delivered(req_agent, run_id),
+            on_cancel=lambda: self._state.dropped(req_agent, run_id),
             on_failure_async=_sub_session_announce_fail,
         )
 
@@ -279,6 +281,7 @@ class SubagentAnnounceDelivery:
                 self._state.delivered(req_agent, run_id),
                 self._emit_subagent_done(req_agent, run_id, result_preview),
             ),
+            on_cancel=lambda: self._state.dropped(req_agent, run_id),
             on_failure=lambda: (
                 session_manager.save_message(target_sid, req_agent, "system", announce_msg),
                 self._state.dropped(req_agent, run_id),
