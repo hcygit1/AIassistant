@@ -49,6 +49,7 @@ from runtime.security_context import mark_recent_untrusted_content, runtime_secu
 from runtime.tool_execution import invoke_tool_async
 from runtime.agent_state import AgentState
 from runtime.memory_runtime import MemoryRuntime
+from runtime.session_commands import SessionCommands
 from runtime.session_compactor import SessionCompactor
 from runtime.tool_registry import ToolRegistry
 from runtime.turn_context import (
@@ -203,6 +204,21 @@ class AgentManager:
             remaining_count,
         )
 
+    @staticmethod
+    def _emit_runtime_event(
+        agent_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        event_bus.emit(agent_id, event)
+
+    @staticmethod
+    def _audit_runtime_event(
+        agent_id: str,
+        event_type: str,
+        data: dict[str, Any],
+    ) -> None:
+        audit_logger.log(agent_id, event_type, data)
+
     def __init__(self):
         self.data_dir: str = ""
         self._memory_runtime = MemoryRuntime()
@@ -224,6 +240,19 @@ class AgentManager:
             ),
             get_llm=lambda agent_id: self.get_llm(agent_id),
             log_compress=self._log_compress,
+        )
+        self._session_commands = SessionCommands(
+            load_session=lambda session_id, agent_id: (
+                session_manager.load_session(session_id, agent_id)
+            ),
+            reset_session=lambda session_id, agent_id: (
+                session_manager.reset_session(session_id, agent_id)
+            ),
+            resolve_agent_config=lambda agent_id: (
+                resolve_agent_config(agent_id)
+            ),
+            emit_event=self._emit_runtime_event,
+            audit_log=self._audit_runtime_event,
         )
         self._states: dict[str, AgentState] = {}
         self._initialized = False
@@ -1197,80 +1226,33 @@ class AgentManager:
     async def _handle_reset(
         self, session_id: str, agent_id: str, model_override: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """/new：重置会话，先将当前 session 消息批量入库（session_end=True）"""
-        yield {"type": "command_response", "response": "正在重置会话..."}
-
-        data = session_manager.load_session(session_id, agent_id)
-        if data:
-            all_msgs = data.get("messages", [])
-            if all_msgs:
-                await self._batch_ingest_messages(agent_id, session_id, all_msgs, session_end=True)
-
-        session_manager.reset_session(session_id, agent_id)
-
-        store = self.mem_stores.get(agent_id)
-        if store:
-            store.delete_session_summary(session_id, agent_id)
-
-        state = self.get_state(agent_id)
-        state.compaction_count = 0
-
-        model_msg = ""
-        if model_override:
-            try:
-                new_name = self.switch_model(agent_id, model_override)
-                model_msg = f" 模型已切换到 {new_name}。"
-            except Exception as e:
-                model_msg = f" 模型切换失败: {e}"
-
-        audit_logger.log(
+        async for event in self._session_commands.handle_reset(
+            session_id,
             agent_id,
-            "session_reset",
-            {
-                "session_id": session_id,
-                "model_override": model_override,
-            },
-        )
-
-        msg = "会话已重置。" + model_msg
-
-        yield {"type": "command_response", "response": msg}
-        yield {"type": "session_reset", "session_id": session_id}
-        # 不 yield done：主流程会接着用 BARE_SESSION_RESET_PROMPT 跑问候，由 agent 流产出 done
+            model_override=model_override,
+            get_store=lambda target_agent_id: self.mem_stores.get(
+                target_agent_id
+            ),
+            get_state=self.get_state,
+            batch_ingest_messages=self._batch_ingest_messages,
+            switch_model=self.switch_model,
+        ):
+            yield event
 
     async def _handle_reset_noflush(
         self, session_id: str, agent_id: str,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """/reset：不写入 session-memory 的轻量重置，仅归档会话文件。"""
-        yield {"type": "command_response", "response": "正在重置会话（不写入长期记忆）..."}
-
-        session_manager.reset_session(session_id, agent_id)
-
-        store = self.mem_stores.get(agent_id)
-        if store:
-            store.delete_session_summary(session_id, agent_id)
-
-        state = self.get_state(agent_id)
-        state.compaction_count = 0
-
-        audit_logger.log(
-            agent_id,
-            "session_reset",
-            {
-                "session_id": session_id,
-                "memory_saved": False,
-                "mode": "no_memory",
-            },
-        )
-
-        msg = "会话已重置（本轮对话未写入长期记忆）。"
-        yield {"type": "command_response", "response": msg}
-        yield {
-            "type": "session_reset",
-            "session_id": session_id,
-            "memory": {"saved": False, "reason": "no-flush"},
-        }
-        # 不 yield done：主流程会接着用 BARE_SESSION_RESET_PROMPT 跑问候，由 agent 流产出 done
+        async for event in (
+            self._session_commands.handle_reset_noflush(
+                session_id,
+                agent_id,
+                get_store=lambda target_agent_id: self.mem_stores.get(
+                    target_agent_id
+                ),
+                get_state=self.get_state,
+            )
+        ):
+            yield event
 
     # ------------------------------------------------------------------
     # /compact 命令处理
@@ -1279,84 +1261,15 @@ class AgentManager:
     async def _handle_compact(
         self, session_id: str, agent_id: str
     ) -> AsyncGenerator[dict[str, Any], None]:
-        yield {"type": "command_response", "response": "正在执行压缩..."}
-        event_bus.emit(agent_id, Events.manual_compact_start(session_id=session_id))
-
-        try:
-            result = await self.compress_session(session_id, agent_id)
-            if "error" in result:
-                reason = str(result.get("error") or "未知原因")
-                session_data = session_manager.load_session(session_id, agent_id) or {}
-                messages = session_data.get("messages", []) or []
-                msg_tokens = 0
-                total_tokens = 0
-                threshold = 0
-                keep_recent_tokens = 8000
-                compressible_count = 0
-                try:
-                    from infra.token_counter import (
-                        count_messages_tokens,
-                        resolve_compaction_threshold,
-                    )
-                    msg_tokens = count_messages_tokens(messages)
-                    total_tokens = msg_tokens
-                    threshold = resolve_compaction_threshold(agent_id)
-                except Exception:
-                    pass
-                try:
-                    compaction_cfg = resolve_agent_config(agent_id).get("compaction", {})
-                    keep_recent_turns = int(compaction_cfg.get("keepRecentTurns", 12) or 12)
-                except Exception:
-                    keep_recent_turns = 8
-                try:
-                    compressible_count = self._calc_compress_count_by_turns(messages, keep_recent_turns)
-                except Exception:
-                    compressible_count = 0
-
-                suggestion = "建议：继续对话累积上下文，或降低 compaction.keepRecentTurns。"
-                if reason == "消息过少，无需压缩":
-                    suggestion = "建议：至少累积到 4 条以上消息后再尝试。"
-                elif reason == "无足够消息可压缩":
-                    suggestion = (
-                        f"建议：当前轮次不足 keepRecentTurns({keep_recent_turns})，"
-                        "可继续对话后重试，或调低 compaction.keepRecentTurns。"
-                    )
-                elif reason == "会话不存在":
-                    suggestion = "建议：先发送一条消息创建会话，再执行 /compact。"
-
-                msg = (
-                    f"压缩未执行：{reason}\n"
-                    f"\n当前状态（动态）:\n"
-                    f"- 消息数: {len(messages)}\n"
-                    f"- 消息 tokens: {msg_tokens}\n"
-                    f"- 总 tokens: {total_tokens}\n"
-                    f"- 压缩阈值(sliding threshold): {threshold}\n"
-                    f"- 保留轮次(compaction.keepRecentTurns): {keep_recent_turns}\n"
-                    f"- 当前可压缩消息数: {compressible_count}\n"
-                    f"\n{suggestion}"
-                )
-                yield {"type": "command_response", "response": msg}
-                event_bus.emit(agent_id, Events.manual_compact_skipped(session_id=session_id, reason=result.get("error", "")))
-                yield {"type": "done", "content": msg, "session_id": session_id}
-                return
-
-            c = result.get("compress", {}) or {}
-
-            msg = (
-                f"压缩完成。\n"
-                f"- 归档消息：{c.get('archived_count', 0)} 条\n"
-                f"- 剩余消息：{c.get('remaining_count', 0)} 条"
-            )
-            yield {"type": "command_response", "response": msg}
-            yield {"type": "session_compacted", "result": result}
-            event_bus.emit(agent_id, Events.manual_compact_done(
-                session_id=session_id,
-                data={"archived_count": c.get("archived_count", 0), "remaining_count": c.get("remaining_count", 0)},
-            ))
-            yield {"type": "done", "content": msg, "session_id": session_id}
-        except Exception as e:
-            event_bus.emit(agent_id, Events.manual_compact_error(session_id=session_id, error=str(e)[:200]))
-            yield {"type": "error", "error": f"压缩失败: {e}"}
+        async for event in self._session_commands.handle_compact(
+            session_id,
+            agent_id,
+            compress_session=self.compress_session,
+            calc_compress_count_by_turns=(
+                self._calc_compress_count_by_turns
+            ),
+        ):
+            yield event
 
     # ------------------------------------------------------------------
     # Compress
