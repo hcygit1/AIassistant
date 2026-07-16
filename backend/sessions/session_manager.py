@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -17,6 +16,7 @@ from sessions.session_repository import (
     SessionDataCorruptionError,
     SessionRepository,
 )
+from sessions.session_maintenance import SessionMaintenanceService
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,14 @@ class SessionManager:
     def __init__(
         self,
         repository: SessionRepository | None = None,
+        maintenance: SessionMaintenanceService | None = None,
     ) -> None:
         self._repository = repository or SessionRepository(
             resolve_sessions_dir=resolve_agent_sessions_dir
+        )
+        self._maintenance = maintenance or SessionMaintenanceService(
+            repository=self._repository,
+            get_config=get_config,
         )
 
     def _is_bootstrap_text(self, text: str | None) -> bool:
@@ -302,271 +307,19 @@ class SessionManager:
             store.pop(session_key, None)
             self._save_session_store(agent_id, store)
 
-    def _parse_byte_size(self, raw: str | int | float | None, default_unit: str = "b") -> int | None:
-        """解析字节大小，如 '500mb'、'1gb'。支持 b/kb/mb/gb。返回 None 表示无效或未设置。"""
-        if raw is None or raw == "":
-            return None
-        s = str(raw).strip().lower()
-        if not s:
-            return None
-        units: dict[str, int] = {
-            "b": 1,
-            "kb": 1024,
-            "k": 1024,
-            "mb": 1024**2,
-            "m": 1024**2,
-            "gb": 1024**3,
-            "g": 1024**3,
-        }
-        m = re.match(r"^(\d+(?:\.\d+)?)\s*([a-z]+)?$", s)
-        if not m:
-            return None
-        try:
-            val = float(m.group(1))
-            unit = (m.group(2) or default_unit).lower()
-            mult = units.get(unit, 1)
-            return int(val * mult)
-        except (ValueError, TypeError):
-            return None
-
-    def _resolve_disk_budget(self) -> tuple[int | None, int | None]:
-        """解析 maxDiskBytes、highWaterBytes。highWaterBytes 未设时默认为 maxDiskBytes 的 80%。"""
-        cfg = get_config()
-        maint = (cfg.get("session") or {}).get("maintenance") or {}
-        max_raw = maint.get("maxDiskBytes")
-        high_raw = maint.get("highWaterBytes")
-        max_bytes = self._parse_byte_size(max_raw) if max_raw is not None else None
-        if max_bytes is not None and max_bytes <= 0:
-            max_bytes = None
-        if high_raw is not None and str(high_raw).strip():
-            high_bytes = self._parse_byte_size(high_raw)
-            if high_bytes is not None and max_bytes is not None:
-                high_bytes = min(high_bytes, max_bytes)
-        elif max_bytes is not None:
-            high_bytes = max(1, int(max_bytes * 0.8))
-        else:
-            high_bytes = None
-        return max_bytes, high_bytes
-
-    def _enforce_disk_budget(
-        self, agent_id: str, store: dict, dry_run: bool = False
-    ) -> dict[str, Any] | None:
-        """按 updatedAt 从最旧开始删除直到低于 highWaterBytes"""
-        max_bytes, high_bytes = self._resolve_disk_budget()
-        if max_bytes is None or high_bytes is None:
-            return None
-        sessions_dir = self._repository.sessions_dir(agent_id)
-        if not sessions_dir.exists():
-            return {"totalBytesBefore": 0, "totalBytesAfter": 0, "removedFiles": 0, "removedEntries": 0, "freedBytes": 0, "maxBytes": max_bytes, "highWaterBytes": high_bytes, "overBudget": False}
-
-        def _dir_size(p: Path) -> int:
-            total = 0
-            for f in p.rglob("*"):
-                if f.is_file():
-                    try:
-                        total += f.stat().st_size
-                    except OSError:
-                        pass
-            return total
-
-        total = _dir_size(sessions_dir)
-        total_before = total
-        if total <= max_bytes:
-            return {
-                "totalBytesBefore": total_before,
-                "totalBytesAfter": total,
-                "removedFiles": 0,
-                "removedEntries": 0,
-                "freedBytes": 0,
-                "maxBytes": max_bytes,
-                "highWaterBytes": high_bytes,
-                "overBudget": False,
-            }
-
-        removed_files = 0
-        removed_entries = 0
-        freed = 0
-
-        # 1. 先删 archive 目录下最旧的文件
-        archive_dir = sessions_dir / "archive"
-        if archive_dir.exists():
-            archive_files: list[tuple[Path, float, int]] = []
-            for f in archive_dir.iterdir():
-                if f.is_file():
-                    try:
-                        st = f.stat()
-                        archive_files.append((f, st.st_mtime, st.st_size))
-                    except OSError:
-                        pass
-            archive_files.sort(key=lambda x: x[1])
-            for path_f, _, size in archive_files:
-                if total <= high_bytes:
-                    break
-                if not dry_run:
-                    try:
-                        path_f.unlink()
-                        total -= size
-                        freed += size
-                        removed_files += 1
-                    except OSError:
-                        pass
-
-        # 2. 若仍超限，按 updatedAt 从最旧开始删 store 条目及对应 transcript
-        main_sid = self.resolve_main_session_id(agent_id)
-        main_key = self.session_key_from_session_id(agent_id, main_sid)
-        keys_sorted = sorted(
-            store.keys(),
-            key=lambda k: store.get(k, {}).get("updatedAt") or 0,
-        )
-        for key in keys_sorted:
-            if total <= high_bytes:
-                break
-            if key == main_key:
-                continue
-            entry = store.get(key, {})
-            if not entry:
-                continue
-            sid = entry.get("sessionId")
-            if not sid:
-                continue
-            path_f = self._session_path(sid, agent_id)
-            size = 0
-            if path_f.exists():
-                try:
-                    size = path_f.stat().st_size
-                except OSError:
-                    pass
-            if not dry_run:
-                store.pop(key, None)
-                removed_entries += 1
-                if path_f.exists():
-                    try:
-                        self._repository.delete_session_file(
-                            str(sid),
-                            agent_id,
-                        )
-                    except OSError:
-                        pass
-                total -= size
-                freed += size
-                removed_files += 1
-
-        if not dry_run and removed_entries:
-            self._save_session_store(agent_id, store)
-
-        return {
-            "totalBytesBefore": total_before,
-            "totalBytesAfter": total,
-            "removedFiles": removed_files,
-            "removedEntries": removed_entries,
-            "freedBytes": freed,
-            "maxBytes": max_bytes,
-            "highWaterBytes": high_bytes,
-            "overBudget": total > high_bytes,
-        }
-
-    def _parse_prune_after_ms(self) -> int:
-        """解析 session.maintenance.pruneAfter（如 30d、7d）为毫秒"""
-        cfg = get_config()
-        raw = (cfg.get("session") or {}).get("maintenance") or {}
-        s = str(raw.get("pruneAfter", "30d")).strip().lower()
-        m = re.match(r"^(\d+)\s*(d|h|m|s)?$", s)
-        if not m:
-            return 30 * 24 * 3600 * 1000
-        num = int(m.group(1))
-        unit = (m.group(2) or "d").lower()
-        if unit == "d":
-            return num * 24 * 3600 * 1000
-        if unit == "h":
-            return num * 3600 * 1000
-        if unit == "m":
-            return num * 60 * 1000
-        return num * 1000
-
     def run_maintenance(
-        self, agent_id: str, store: dict | None = None, enforce: bool = False, dry_run: bool = False
+        self,
+        agent_id: str,
+        store: dict | None = None,
+        enforce: bool = False,
+        dry_run: bool = False,
     ) -> tuple[dict, dict[str, Any]]:
-        """prune 过期 + cap 超限 + 磁盘预算。返回 (store, report)"""
-        lock = self._get_store_lock(agent_id)
-        with lock:
-            return self._run_session_maintenance_unlocked(
-                agent_id,
-                store=store,
-                enforce=enforce,
-                dry_run=dry_run,
-            )
-
-    def _run_session_maintenance_unlocked(
-        self, agent_id: str, store: dict | None = None, enforce: bool = False, dry_run: bool = False
-    ) -> tuple[dict, dict[str, Any]]:
-        if store is None:
-            store = self._load_session_store(agent_id)
-        cfg = get_config()
-        maint = (cfg.get("session") or {}).get("maintenance") or {}
-        mode = maint.get("mode", "warn")
-        if not enforce and not dry_run and mode == "warn":
-            disk_budget = self._enforce_disk_budget(agent_id, store, dry_run=True)
-            return store, {"pruned": 0, "capped": 0, "diskBudget": disk_budget}
-        prune_after_ms = self._parse_prune_after_ms()
-        max_entries = int(maint.get("maxEntries", 500))
-        now_ms = int(time.time() * 1000)
-        cutoff_ms = now_ms - prune_after_ms
-        to_remove: set[str] = set()
-
-        for key, entry in list(store.items()):
-            updated = entry.get("updatedAt")
-            if isinstance(updated, (int, float)) and updated < cutoff_ms:
-                to_remove.add(key)
-        pruned = len(to_remove)
-
-        keys_sorted = sorted(
-            store.keys(),
-            key=lambda k: store.get(k, {}).get("updatedAt") or 0,
-            reverse=True,
+        return self._maintenance.run(
+            agent_id,
+            store=store,
+            enforce=enforce,
+            dry_run=dry_run,
         )
-        if len(keys_sorted) > max_entries:
-            for k in keys_sorted[max_entries:]:
-                if k not in to_remove:
-                    to_remove.add(k)
-        capped = len(to_remove) - pruned
-
-        if not dry_run:
-            for key in to_remove:
-                entry = store.get(key, {})
-                sid = entry.get("sessionId")
-                if sid:
-                    path = self._session_path(sid, agent_id)
-                    if path.exists():
-                        try:
-                            archive_dir = path.parent / "archive"
-                            archive_dir.mkdir(parents=True, exist_ok=True)
-                            self._repository.archive_session_file(
-                                str(sid),
-                                agent_id,
-                                archive_dir
-                                / f"{sid}.deleted.{int(time.time())}.json",
-                            )
-                        except Exception:
-                            try:
-                                self._repository.delete_session_file(
-                                    str(sid),
-                                    agent_id,
-                                )
-                            except Exception:
-                                pass
-                    try:
-                        from sessions.session_lock_manager import cleanup_session_runtime
-
-                        cleanup_session_runtime(agent_id, sid)
-                    except Exception as e:
-                        logger.warning("cleanup_session_runtime after session prune: %s", e)
-                store.pop(key, None)
-            if to_remove:
-                self._save_session_store(agent_id, store)
-
-        disk_budget = self._enforce_disk_budget(agent_id, store, dry_run=dry_run)
-        return store, {"pruned": pruned, "capped": capped, "diskBudget": disk_budget}
-
     def _save_session_data(
         self, session_id: str, agent_id: str, data: dict[str, Any]
     ) -> None:

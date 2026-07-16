@@ -125,8 +125,67 @@ class SessionRepository:
     def index_path(self, agent_id: str) -> Path:
         return self.sessions_dir(agent_id) / "sessions.json"
 
+    def archive_path(self, agent_id: str, filename: str) -> Path:
+        return self.sessions_dir(agent_id) / "archive" / filename
+
     def session_file_exists(self, session_id: str, agent_id: str) -> bool:
         return self.session_path(session_id, agent_id).is_file()
+
+    def session_file_size(self, session_id: str, agent_id: str) -> int:
+        path = self.session_path(session_id, agent_id)
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    def directory_size(self, agent_id: str) -> int:
+        root = self.sessions_dir(agent_id)
+        if not root.exists():
+            return 0
+        total = 0
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    def prune_oldest_archives(
+        self,
+        agent_id: str,
+        *,
+        current_total: int,
+        target_total: int,
+    ) -> tuple[int, int, int]:
+        archive = self.archive_path(agent_id, "placeholder").parent
+        if not archive.exists():
+            return current_total, 0, 0
+        files: list[tuple[Path, float, int]] = []
+        for path in archive.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                stats = path.stat()
+                files.append((path, stats.st_mtime, stats.st_size))
+            except OSError:
+                continue
+        files.sort(key=lambda item: item[1])
+        removed = 0
+        freed = 0
+        total = current_total
+        for path, _, size in files:
+            if total <= target_total:
+                break
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            total -= size
+            freed += size
+            removed += 1
+        return total, removed, freed
 
     def get_agent_lock(self, agent_id: str) -> threading.RLock:
         key = self._agent_key(agent_id)
