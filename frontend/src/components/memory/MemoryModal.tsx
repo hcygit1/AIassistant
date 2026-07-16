@@ -136,18 +136,18 @@ function EmptyState({ message }: { message: string }) {
    Tab: 概览 (Overview)
    ================================================================ */
 
-function OverviewTab() {
+function OverviewTab({ agentId }: { agentId: string }) {
   const [stats, setStats] = useState<MemStats | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.memStats();
+      const r = await api.memStats(agentId);
       if (r.ok) setStats(r);
     } catch { /* ignore */ }
     setLoading(false);
-  }, []);
+  }, [agentId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -231,7 +231,7 @@ function OverviewTab() {
    Tab: 任务 (Tasks)
    ================================================================ */
 
-function TasksTab() {
+function TasksTab({ agentId }: { agentId: string }) {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -244,18 +244,18 @@ function TasksTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.memTasks({ status: statusFilter || undefined, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+      const r = await api.memTasks(agentId, { status: statusFilter || undefined, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
       if (r.ok) { setTasks(r.tasks); setTotal(r.total); }
     } catch { /* ignore */ }
     setLoading(false);
-  }, [page, statusFilter]);
+  }, [agentId, page, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
 
   const openDetail = async (id: string) => {
     setDetailLoading(true);
     try {
-      const r = await api.memTaskDetail(id);
+      const r = await api.memTaskDetail(agentId, id);
       if (r.ok) setDetail(r);
     } catch { /* ignore */ }
     setDetailLoading(false);
@@ -377,7 +377,7 @@ function TasksTab() {
    Tab: 技能 (Skills)
    ================================================================ */
 
-function SkillsTab() {
+function SkillsTab({ agentId }: { agentId: string }) {
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("");
@@ -385,11 +385,11 @@ function SkillsTab() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.memSkills({ status: statusFilter || undefined });
+      const r = await api.memSkills(agentId, { status: statusFilter || undefined });
       if (r.ok) setSkills(r.skills);
     } catch { /* ignore */ }
     setLoading(false);
-  }, [statusFilter]);
+  }, [agentId, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -444,7 +444,7 @@ function SkillsTab() {
    Tab: 记忆搜索 (Memory Search)
    ================================================================ */
 
-function SearchTab() {
+function SearchTab({ agentId }: { agentId: string }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -459,11 +459,11 @@ function SearchTab() {
   const loadMemories = useCallback(async () => {
     setMemLoading(true);
     try {
-      const r = await api.memMemories({ page: memPage, limit: 30, role: roleFilter || undefined });
+      const r = await api.memMemories(agentId, { page: memPage, limit: 30, role: roleFilter || undefined });
       if (r.ok) { setMemories(r.memories); setMemTotal(r.totalPages); }
     } catch { /* ignore */ }
     setMemLoading(false);
-  }, [memPage, roleFilter]);
+  }, [agentId, memPage, roleFilter]);
 
   useEffect(() => { loadMemories(); }, [loadMemories]);
 
@@ -472,7 +472,7 @@ function SearchTab() {
     setLoading(true);
     setSearched(true);
     try {
-      const r = await api.memSearch(query.trim());
+      const r = await api.memSearch(agentId, query.trim());
       if (r.ok) setResults(r.results || []);
     } catch { /* ignore */ }
     setLoading(false);
@@ -604,7 +604,7 @@ const TABS = [
 type TabKey = (typeof TABS)[number]["key"];
 
 export default function MemoryModal() {
-  const { showMemoryModal, setShowMemoryModal } = useApp();
+  const { currentAgentId, showMemoryModal, setShowMemoryModal } = useApp();
   const [tab, setTab] = useState<TabKey>("overview");
 
   useEffect(() => {
@@ -661,10 +661,10 @@ export default function MemoryModal() {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5">
-          {tab === "overview" && <OverviewTab />}
-          {tab === "tasks" && <TasksTab />}
-          {tab === "skills" && <SkillsTab />}
-          {tab === "search" && <SearchTab />}
+          {tab === "overview" && <OverviewTab key={currentAgentId} agentId={currentAgentId} />}
+          {tab === "tasks" && <TasksTab key={currentAgentId} agentId={currentAgentId} />}
+          {tab === "skills" && <SkillsTab key={currentAgentId} agentId={currentAgentId} />}
+          {tab === "search" && <SearchTab key={currentAgentId} agentId={currentAgentId} />}
         </div>
       </div>
     </>

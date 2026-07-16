@@ -720,13 +720,14 @@ export async function updateSkillEnabled(agentId: string, skillName: string, ena
 
 // ---- Memory API ----
 
-export async function memStats(): Promise<any> {
-  const r = await fetch(`${API_BASE}/mem/stats`);
+export async function memStats(agentId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/stats?${q}`);
   return r.json();
 }
 
-export async function memTasks(params?: { status?: string; limit?: number; offset?: number }): Promise<any> {
-  const q = new URLSearchParams();
+export async function memTasks(agentId: string, params?: { status?: string; limit?: number; offset?: number }): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
   if (params?.status) q.set("status", params.status);
   if (params?.limit) q.set("limit", String(params.limit));
   if (params?.offset) q.set("offset", String(params.offset));
@@ -734,25 +735,27 @@ export async function memTasks(params?: { status?: string; limit?: number; offse
   return r.json();
 }
 
-export async function memTaskDetail(taskId: string): Promise<any> {
-  const r = await fetch(`${API_BASE}/mem/task/${taskId}`);
+export async function memTaskDetail(agentId: string, taskId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/task/${taskId}?${q}`);
   return r.json();
 }
 
-export async function memSkills(params?: { status?: string }): Promise<any> {
-  const q = new URLSearchParams();
+export async function memSkills(agentId: string, params?: { status?: string }): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
   if (params?.status) q.set("status", params.status);
   const r = await fetch(`${API_BASE}/mem/skills?${q}`);
   return r.json();
 }
 
-export async function memSkillDetail(skillId: string): Promise<any> {
-  const r = await fetch(`${API_BASE}/mem/skill/${skillId}`);
+export async function memSkillDetail(agentId: string, skillId: string): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
+  const r = await fetch(`${API_BASE}/mem/skill/${skillId}?${q}`);
   return r.json();
 }
 
-export async function memMemories(params?: { limit?: number; page?: number; session?: string; role?: string }): Promise<any> {
-  const q = new URLSearchParams();
+export async function memMemories(agentId: string, params?: { limit?: number; page?: number; session?: string; role?: string }): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId });
   if (params?.limit) q.set("limit", String(params.limit));
   if (params?.page) q.set("page", String(params.page));
   if (params?.session) q.set("session", params.session);
@@ -761,8 +764,8 @@ export async function memMemories(params?: { limit?: number; page?: number; sess
   return r.json();
 }
 
-export async function memSearch(query: string, limit?: number): Promise<any> {
-  const q = new URLSearchParams({ q: query });
+export async function memSearch(agentId: string, query: string, limit?: number): Promise<any> {
+  const q = new URLSearchParams({ agent_id: agentId, q: query });
   if (limit) q.set("limit", String(limit));
   const r = await fetch(`${API_BASE}/mem/search?${q}`);
   return r.json();
