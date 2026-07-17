@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Clock, Play, XCircle, RefreshCw, Filter,
+  Clock, XCircle, RefreshCw,
   CheckCircle2, AlertCircle, Loader2, Timer, Bell, Zap,
 } from "lucide-react";
 import { API_BASE } from "@/lib/api";

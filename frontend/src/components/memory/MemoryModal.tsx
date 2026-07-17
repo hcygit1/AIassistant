@@ -6,7 +6,7 @@ import * as api from "@/lib/api";
 import {
   X, BrainCircuit, BarChart3, ListTodo, Sparkles, Search,
   ChevronRight, ChevronLeft, Loader2, Database, Clock,
-  FileText, MessageSquare, Bot, User, Filter, RefreshCw,
+  FileText, MessageSquare, Bot, User, RefreshCw,
 } from "lucide-react";
 
 /* ================================================================
@@ -132,6 +132,13 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
+function useDeferredLoad(load: () => void) {
+  useEffect(() => {
+    const timer = window.setTimeout(() => load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+}
+
 /* ================================================================
    Tab: 概览 (Overview)
    ================================================================ */
@@ -149,7 +156,7 @@ function OverviewTab({ agentId }: { agentId: string }) {
     setLoading(false);
   }, [agentId]);
 
-  useEffect(() => { load(); }, [load]);
+  useDeferredLoad(load);
 
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-5 h-5 animate-spin" style={{ color: "var(--accent)" }} /></div>;
   if (!stats) return <EmptyState message="记忆系统尚未初始化" />;
@@ -250,7 +257,7 @@ function TasksTab({ agentId }: { agentId: string }) {
     setLoading(false);
   }, [agentId, page, statusFilter]);
 
-  useEffect(() => { load(); }, [load]);
+  useDeferredLoad(load);
 
   const openDetail = async (id: string) => {
     setDetailLoading(true);
@@ -391,7 +398,7 @@ function SkillsTab({ agentId }: { agentId: string }) {
     setLoading(false);
   }, [agentId, statusFilter]);
 
-  useEffect(() => { load(); }, [load]);
+  useDeferredLoad(load);
 
   return (
     <div className="space-y-3">
@@ -465,7 +472,7 @@ function SearchTab({ agentId }: { agentId: string }) {
     setMemLoading(false);
   }, [agentId, memPage, roleFilter]);
 
-  useEffect(() => { loadMemories(); }, [loadMemories]);
+  useDeferredLoad(loadMemories);
 
   const doSearch = async () => {
     if (!query.trim()) return;

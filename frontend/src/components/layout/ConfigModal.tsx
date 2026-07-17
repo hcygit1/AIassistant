@@ -43,14 +43,14 @@ function Input({ label, value, onChange, type = "text", disabled = false, hint, 
   label: string; value: string; onChange: (v: string) => void;
   type?: string; disabled?: boolean; hint?: string; placeholder?: string;
 }) {
-  const [local, setLocal] = useState(value);
-  useEffect(() => setLocal(value), [value]);
+  const [draft, setDraft] = useState({ source: value, value });
+  const local = draft.source === value ? draft.value : value;
   return (
     <div>
       <label className="text-xs block mb-0.5" style={{ color: "var(--text)" }}>{label}</label>
       <input
         type={type} value={local}
-        onChange={(e) => setLocal(e.target.value)}
+        onChange={(e) => setDraft({ source: value, value: e.target.value })}
         onBlur={() => { if (local !== value) onChange(local); }}
         disabled={disabled} placeholder={placeholder}
         className={`input text-xs ${disabled ? "opacity-55" : ""}`}
@@ -168,12 +168,12 @@ function Textarea({ label, value, onChange, rows = 3, hint }: {
   label: string; value: string; onChange: (v: string) => void;
   rows?: number; hint?: string;
 }) {
-  const [local, setLocal] = useState(value);
-  useEffect(() => setLocal(value), [value]);
+  const [draft, setDraft] = useState({ source: value, value });
+  const local = draft.source === value ? draft.value : value;
   return (
     <div>
       <label className="text-xs block mb-0.5" style={{ color: "var(--text)" }}>{label}</label>
-      <textarea value={local} onChange={(e) => setLocal(e.target.value)}
+      <textarea value={local} onChange={(e) => setDraft({ source: value, value: e.target.value })}
         onBlur={() => { if (local !== value) onChange(local); }}
         rows={rows} className="input text-xs resize-y" />
       {hint && <p className="text-[10px] mt-0.5" style={{ color: "var(--text-secondary)" }}>{hint}</p>}
@@ -284,9 +284,9 @@ function ProviderEditor({ providerId, provider, onUpdate, onDelete, onSecretSave
 
 /* ───────────────────── Agent Card ───────────────────── */
 
-function AgentCard({ agent, models, config, currentAgentId, onConfigChange, onDelete, onError }: {
+function AgentCard({ agent, models, config, onConfigChange, onDelete, onError }: {
   agent: any; models: { id: string; name: string; provider: string }[];
-  config: any; currentAgentId: string;
+  config: any;
   onConfigChange: (newConfig: any) => void; onDelete: (id: string) => void;
   onError?: (msg: string) => void;
 }) {
@@ -662,7 +662,7 @@ export default function ConfigModal() {
               <Section title="Agent 列表" icon={<Bot className="w-3.5 h-3.5" style={{ color: "var(--text-secondary)" }} />}>
                 <div className="space-y-2">
                   {(config.agents?.list || []).map((agent: any) => (
-                    <AgentCard key={agent.id} agent={agent} models={models} config={config} currentAgentId={currentAgentId}
+                    <AgentCard key={agent.id} agent={agent} models={models} config={config}
                       onConfigChange={handleConfigChange}
                       onError={(msg) => showNotice({ kind: "error", text: msg })}
                       onDelete={async (id) => {

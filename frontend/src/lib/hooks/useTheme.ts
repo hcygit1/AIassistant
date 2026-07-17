@@ -9,7 +9,7 @@ const STORAGE_KEY = "pipixia-theme";
 
 export function useTheme() {
   const [theme, setThemeState] = useState<ThemeMode>("system");
-  const [effectiveTheme, setEffectiveTheme] = useState<EffectiveTheme>("light");
+  const [systemTheme, setSystemTheme] = useState<EffectiveTheme>("light");
 
   const computeEffective = useCallback((mode: ThemeMode): EffectiveTheme => {
     if (mode === "dark") return "dark";
@@ -26,18 +26,22 @@ export function useTheme() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(STORAGE_KEY) as ThemeMode | null;
-    const initial: ThemeMode = stored || "system";
-    setThemeState(initial);
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    const initial: ThemeMode = stored === "light" || stored === "dark" || stored === "system"
+      ? stored
+      : "system";
     applyTheme(initial);
-    setEffectiveTheme(computeEffective(initial));
+    const timer = window.setTimeout(() => {
+      setThemeState(initial);
+      setSystemTheme(computeEffective("system"));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [applyTheme, computeEffective]);
 
   useEffect(() => {
-    setEffectiveTheme(computeEffective(theme));
     if (theme === "system" && typeof window !== "undefined") {
       const mql = window.matchMedia?.("(prefers-color-scheme: dark)");
-      const handler = () => setEffectiveTheme(computeEffective("system"));
+      const handler = () => setSystemTheme(computeEffective("system"));
       mql?.addEventListener?.("change", handler);
       return () => mql?.removeEventListener?.("change", handler);
     }
@@ -48,8 +52,11 @@ export function useTheme() {
     if (typeof window !== "undefined") {
       window.localStorage.setItem(STORAGE_KEY, mode);
     }
+    if (mode === "system") setSystemTheme(computeEffective("system"));
     applyTheme(mode);
-  }, [applyTheme]);
+  }, [applyTheme, computeEffective]);
+
+  const effectiveTheme: EffectiveTheme = theme === "system" ? systemTheme : theme;
 
   return { theme, effectiveTheme, setTheme };
 }

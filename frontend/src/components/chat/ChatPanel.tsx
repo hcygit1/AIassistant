@@ -5,7 +5,7 @@ import { useApp } from "@/lib/store";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
 import RetrievalCard from "./RetrievalCard";
-import { Bot, Activity } from "lucide-react";
+import { Activity } from "lucide-react";
 import PIPIXIAMark from "@/components/icons/PipixiaMark";
 
 export default function ChatPanel() {

@@ -633,7 +633,7 @@ export function subscribeAgentEvents(
       }
     };
 
-    es.onerror = (err) => {
+    es.onerror = () => {
       if (closed) return;
 
       if (retryCount >= maxRetries) {

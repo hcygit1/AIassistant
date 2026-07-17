@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useApp } from "@/lib/store";
-import { FileText, Save, FolderOpen, Sparkles, Users, Wrench, Heart, ChevronRight, RefreshCw, PanelRightClose, ListTodo, ToggleLeft, ToggleRight } from "lucide-react";
+import { FileText, Save, FolderOpen, Sparkles, Users, Wrench, Heart, ChevronRight, PanelRightClose, ListTodo, ToggleLeft, ToggleRight } from "lucide-react";
 import * as api from "@/lib/api";
 import type { Messages } from "@/lib/i18n/locales";
 import dynamic from "next/dynamic";
@@ -50,23 +50,9 @@ const TAB_DEFS: { id: TabId; labelKey: string; icon: any }[] = [
 export default function InspectorPanel() {
   const {
     currentAgentId, inspectorFile, inspectorFileLoading, openFile, saveInspectorFile,
-    inspectorTab, setInspectorTab, effectiveTheme, inspectorPanelMode, setInspectorPanelMode,
+    inspectorTab, effectiveTheme, setInspectorPanelMode,
     showNotice, t,
   } = useApp();
-  const [editedContent, setEditedContent] = useState("");
-  const [hasChanges, setHasChanges] = useState(false);
-
-  useEffect(() => {
-    if (inspectorFile) {
-      setEditedContent(inspectorFile.content);
-      setHasChanges(false);
-    }
-  }, [inspectorFile]);
-
-  const handleSave = async () => {
-    await saveInspectorFile(editedContent);
-    setHasChanges(false);
-  };
 
   const activeTab = inspectorTab as TabId;
   const activeDef = TAB_DEFS.find((tab) => tab.id === activeTab);
@@ -103,11 +89,7 @@ export default function InspectorPanel() {
             inspectorFile={inspectorFile}
             inspectorFileLoading={inspectorFileLoading}
             openFile={openFile}
-            editedContent={editedContent}
-            setEditedContent={setEditedContent}
-            hasChanges={hasChanges}
-            setHasChanges={setHasChanges}
-            handleSave={handleSave}
+            saveInspectorFile={saveInspectorFile}
             effectiveTheme={effectiveTheme}
             t={t}
           />
@@ -152,20 +134,25 @@ export default function InspectorPanel() {
 
 function FilesTab({
   inspectorFile, inspectorFileLoading, openFile,
-  editedContent, setEditedContent, hasChanges, setHasChanges,
-  handleSave, effectiveTheme, t,
+  saveInspectorFile, effectiveTheme, t,
 }: {
   inspectorFile: { path: string; content: string } | null;
   inspectorFileLoading: boolean;
   openFile: (path: string) => Promise<void>;
-  editedContent: string;
-  setEditedContent: (v: string) => void;
-  hasChanges: boolean;
-  setHasChanges: (v: boolean) => void;
-  handleSave: () => Promise<void>;
+  saveInspectorFile: (content: string) => Promise<void>;
   effectiveTheme: "light" | "dark";
   t: Messages;
 }) {
+  const sourceKey = inspectorFile ? `${inspectorFile.path}\u0000${inspectorFile.content}` : "";
+  const [draft, setDraft] = useState({ sourceKey, value: inspectorFile?.content || "", dirty: false });
+  const editedContent = draft.sourceKey === sourceKey ? draft.value : (inspectorFile?.content || "");
+  const hasChanges = draft.sourceKey === sourceKey && draft.dirty;
+
+  const handleSave = async () => {
+    await saveInspectorFile(editedContent);
+    setDraft({ sourceKey, value: editedContent, dirty: false });
+  };
+
   return (
     <div className="h-full flex flex-col">
       <div className="p-3 overflow-y-auto flex-shrink-0" style={{ maxHeight: "38%", borderBottom: "1px solid var(--border)" }}>
@@ -217,8 +204,7 @@ function FilesTab({
                 theme={effectiveTheme === "dark" ? "vs-dark" : "vs"}
                 value={editedContent}
                 onChange={(val: string | undefined) => {
-                  setEditedContent(val || "");
-                  setHasChanges(true);
+                  setDraft({ sourceKey, value: val || "", dirty: true });
                 }}
                 loading={<div className="flex items-center justify-center h-full text-[var(--text-secondary)] text-xs">加载编辑器...</div>}
                 options={{

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useApp } from "@/lib/store";
 import * as api from "@/lib/api";
 import {
-  Bot, ChevronDown, Sun, Moon, Monitor,
+  ChevronDown, Sun, Moon, Monitor,
   Activity, RefreshCw, Languages,
 } from "lucide-react";
 import type { Locale } from "@/lib/i18n/locales";

@@ -19,7 +19,6 @@ export default function HomePage() {
     inspectorWidth,
     setInspectorWidth,
     inspectorPanelMode,
-    setInspectorPanelMode,
     uiNotice,
     clearNotice,
     sessionError,

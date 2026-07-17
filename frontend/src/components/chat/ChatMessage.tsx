@@ -3,7 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { User, Bot, Copy, Check, Loader2, Info } from "lucide-react";
+import { User, Copy, Check, Loader2, Info } from "lucide-react";
 import type { ChatMessage as ChatMsgType } from "@/lib/store";
 import { useApp } from "@/lib/store";
 import ThoughtChain from "./ThoughtChain";

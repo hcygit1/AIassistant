@@ -4,8 +4,8 @@ import { useEffect, useState, useCallback } from "react";
 import { useApp } from "@/lib/store";
 import * as api from "@/lib/api";
 import {
-  Sparkles, ToggleLeft, ToggleRight, AlertCircle, CheckCircle2,
-  XCircle, RefreshCw, ExternalLink, Search,
+  Sparkles, ToggleLeft, ToggleRight, AlertCircle,
+  XCircle, RefreshCw, Search,
 } from "lucide-react";
 
 interface SkillDetail {
