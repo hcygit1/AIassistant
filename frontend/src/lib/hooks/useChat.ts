@@ -4,6 +4,7 @@ import { useCallback, useRef, useEffect, useReducer } from "react";
 import * as api from "../api";
 import type { SSEEvent } from "../api";
 import { createChatStreamEventHandler } from "../chatStreamEvents";
+import { startPendingTurnRecovery } from "../chatTurnRecovery";
 import {
   chatStateReducer,
   clearAgentChatRuntime,
@@ -76,6 +77,20 @@ export function useChat(
         data: event.usage || event,
       } });
     }
+  }, []);
+
+  const getTimeoutMs = useCallback(async (): Promise<number | undefined> => {
+    if (chatTimeoutRef.current === null) {
+      try {
+        const config = await api.fetchChatTimeout();
+        chatTimeoutRef.current = config.timeoutSeconds ?? 120;
+      } catch {
+        chatTimeoutRef.current = 120;
+      }
+    }
+    return chatTimeoutRef.current > 0
+      ? chatTimeoutRef.current * 1000
+      : undefined;
   }, []);
 
   const loadMessages = useCallback(async (agentId: string, sessionId: string): Promise<ChatMessage[] | null> => {
@@ -251,18 +266,7 @@ export function useChat(
 
     const streamState = { doneReceived: false, terminalErrorReceived: false };
 
-    let timeoutMs: number | undefined;
-    if (chatTimeoutRef.current === null) {
-      try {
-        const cfg = await api.fetchChatTimeout();
-        chatTimeoutRef.current = cfg.timeoutSeconds ?? 120;
-      } catch {
-        chatTimeoutRef.current = 120;
-      }
-    }
-    if (chatTimeoutRef.current !== null && chatTimeoutRef.current > 0) {
-      timeoutMs = chatTimeoutRef.current * 1000;
-    }
+    const timeoutMs = await getTimeoutMs();
 
     try {
       const sub = await api.submitChat(normalized, resolvedSessionId, agentId);
@@ -304,6 +308,7 @@ export function useChat(
     createStreamEventHandler,
     currentAgentId,
     finalizeStreamTurn,
+    getTimeoutMs,
     loadMessages,
     patchAgentState,
     setCurrentSessionId,
@@ -324,118 +329,32 @@ export function useChat(
     const agentId = currentAgentId;
     const sessionId = currentSessionId;
     const runtime = getAgentChatRuntime(runtimeRegistryRef.current, agentId);
-    runtime.sessionId = sessionId;
-    let cancelled = false;
-
-    void (async () => {
-      const streamState = { doneReceived: false, terminalErrorReceived: false };
-      let streamAssistantId = "";
-      try {
-        const p = await api.fetchPendingTurn(sessionId, agentId);
-        if (cancelled) return;
-        if (!p.turn_id || (p.status !== "queued" && p.status !== "running")) return;
-        if (runtime.controller) return;
-
-        const msgs = await loadMessages(agentId, sessionId);
-        if (cancelled || msgs === null) return;
-
-        const last = msgs[msgs.length - 1];
-        const resumeAssistantId = `assistant-resume-${p.turn_id}`;
-
-        if (last?.role === "user") {
-          streamAssistantId = resumeAssistantId;
-          runtime.assistantMessageId = resumeAssistantId;
-          setMessagesForAgent(agentId, prev => [...prev, {
-            id: resumeAssistantId,
-            role: "assistant",
-            content: "",
-            createdAt: Date.now(),
-            toolCalls: [],
-            retrievals: [],
-            isStreaming: true,
-          }]);
-        } else if (last?.role === "assistant") {
-          streamAssistantId = last.id;
-          runtime.assistantMessageId = last.id;
-          setMessagesForAgent(agentId, prev =>
-            prev.map((m, i) =>
-              i === prev.length - 1 ? { ...m, isStreaming: true } : m
-            )
-          );
-        } else {
-          streamAssistantId = resumeAssistantId;
-          runtime.assistantMessageId = resumeAssistantId;
-          setMessagesForAgent(agentId, prev => [...prev, {
-            id: resumeAssistantId,
-            role: "assistant",
-            content: "",
-            createdAt: Date.now(),
-            toolCalls: [],
-            retrievals: [],
-            isStreaming: true,
-          }]);
-        }
-
-        patchAgentState(agentId, { isStreaming: true });
-        const controller = new AbortController();
-        runtime.controller = controller;
-        runtime.turnId = p.turn_id;
-        runtime.userStopped = false;
-
-        let timeoutMs: number | undefined;
-        if (chatTimeoutRef.current === null) {
-          try {
-            const cfg = await api.fetchChatTimeout();
-            chatTimeoutRef.current = cfg.timeoutSeconds ?? 120;
-          } catch {
-            chatTimeoutRef.current = 120;
-          }
-        }
-        if (chatTimeoutRef.current !== null && chatTimeoutRef.current > 0) {
-          timeoutMs = chatTimeoutRef.current * 1000;
-        }
-
-        if (p.status === "queued") {
-          const shouldStream = await api.waitUntilTurnRunning(p.turn_id, controller.signal);
-          if (!shouldStream) {
-            streamState.doneReceived = true;
-            await loadMessages(agentId, sessionId);
-            return;
-          }
-        }
-        if (cancelled) return;
-
-        const onEvent = createStreamEventHandler(agentId, streamAssistantId, streamState);
-        await api.streamTurn(p.turn_id, onEvent, { signal: controller.signal, timeoutMs });
-      } catch (error: unknown) {
-        if (!(error instanceof Error && error.name === "AbortError")) {
-          streamState.terminalErrorReceived = true;
-          streamState.doneReceived = true;
-          try {
-            await loadMessages(agentId, sessionId);
-          } catch { /* ignore */ }
-        }
-      } finally {
-        if (!streamAssistantId) return;
-        if (cancelled) {
-          if (runtime.assistantMessageId === streamAssistantId) {
-            runtime.turnId = null;
-            runtime.assistantMessageId = null;
-            runtime.controller = null;
-            patchAgentState(agentId, { isStreaming: false });
-          }
-          return;
-        }
-        await finalizeStreamTurn(agentId, streamAssistantId, sessionId, streamState, false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-    // 仅随会话变化重试恢复；避免 createStreamEventHandler 等引用变化导致反复执行
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 同上
-  }, [currentAgentId, currentSessionId]);
+    const recovery = startPendingTurnRecovery({
+      agentId,
+      sessionId,
+      runtime,
+      loadMessages: () => loadMessages(agentId, sessionId),
+      updateMessages: (updater) => setMessagesForAgent(agentId, updater),
+      patchState: (patch) => patchAgentState(agentId, patch),
+      getTimeoutMs,
+      createEventHandler: (assistantMessageId, streamState) => (
+        createStreamEventHandler(agentId, assistantMessageId, streamState)
+      ),
+      finalize: (assistantMessageId, streamState) => (
+        finalizeStreamTurn(agentId, assistantMessageId, sessionId, streamState, false)
+      ),
+    });
+    return recovery.cancel;
+  }, [
+    createStreamEventHandler,
+    currentAgentId,
+    currentSessionId,
+    finalizeStreamTurn,
+    getTimeoutMs,
+    loadMessages,
+    patchAgentState,
+    setMessagesForAgent,
+  ]);
 
   const stopStreaming = useCallback(async () => {
     const agentId = currentAgentId;

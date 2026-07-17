@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from "react";
 import * as api from "./api";
 import type { TokenUsage } from "./api";
 import { useChat } from "./hooks/useChat";
@@ -286,16 +286,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [loadMainSession]);
 
+  const chatOptions = useMemo(() => ({
+    onAgentCreated: loadAgents,
+    onSessionCompacted: handleSessionCompacted,
+    onTurnComplete: triggerSkillsRefresh,
+    formatCommandResponse,
+  }), [formatCommandResponse, handleSessionCompacted, loadAgents, triggerSkillsRefresh]);
+
   const chat = useChat(
     currentAgentId,
     currentSessionId,
     setCurrentSessionId,
-    {
-      onAgentCreated: loadAgents,
-      onSessionCompacted: handleSessionCompacted,
-      onTurnComplete: triggerSkillsRefresh,
-      formatCommandResponse,
-    },
+    chatOptions,
   );
 
   const {
