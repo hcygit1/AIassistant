@@ -4,18 +4,17 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 import * as api from "./api";
 import type { TokenUsage } from "./api";
 import { useChat } from "./hooks/useChat";
-import { useTheme } from "./hooks/useTheme";
 import { useSubagents } from "./hooks/useSubagents";
-import { type Locale, type Messages, getMessages } from "./i18n/locales";
+import { useInspectorState } from "./hooks/useInspectorState";
+import { useAppUiState } from "./hooks/useAppUiState";
+import type { UiNotice } from "./hooks/useAppUiState";
+import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
+import type { Locale, Messages } from "./i18n/locales";
 
 export type { ChatMessage, LifecycleEvent } from "./hooks/useChat";
 export type { ThemeMode, EffectiveTheme } from "./hooks/useTheme";
 export type { Locale, Messages } from "./i18n/locales";
-
-export interface UiNotice {
-  kind: "success" | "error" | "info";
-  text: string;
-}
+export type { UiNotice } from "./hooks/useAppUiState";
 
 interface AppState {
   // Agent
@@ -95,35 +94,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState<any | null>(null);
   const [ragMode, setRagModeState] = useState(false);
-  const [inspectorWidth, setInspectorWidth] = useState(380);
-  const [inspectorPanelMode, setInspectorPanelMode] = useState<"docked" | "overlay" | "hidden">("docked");
-  const [inspectorFile, setInspectorFile] = useState<{ path: string; content: string } | null>(null);
-  const [inspectorFileLoading, setInspectorFileLoading] = useState(false);
-  const [inspectorTab, setInspectorTab] = useState<string>("files");
-  const [showConfigModal, setShowConfigModal] = useState(false);
-  const [showMemoryModal, setShowMemoryModal] = useState(false);
-  const [uiNotice, setUiNotice] = useState<UiNotice | null>(null);
   const [skillsRefreshTrigger, setSkillsRefreshTrigger] = useState(0);
   const [pendingApproval, setPendingApproval] = useState<{ approval_id: string; tool: string; input_preview: string } | null>(null);
   const lastLifecycleNoticeKeyRef = useRef("");
   const loadMainSessionReqRef = useRef(0);
   const currentAgentIdRef = useRef("main");
 
-  const [locale, setLocaleState] = useState<Locale>("zh-CN");
-  const t = getMessages(locale);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const saved = window.localStorage.getItem("pipixia.locale");
-      if (saved === "zh-CN" || saved === "en-US") setLocaleState(saved);
-    } catch {}
-  }, []);
-
-  const setLocale = useCallback((l: Locale) => {
-    setLocaleState(l);
-    try { window.localStorage.setItem("pipixia.locale", l); } catch {}
-  }, []);
+  const {
+    locale,
+    setLocale,
+    t,
+    theme,
+    effectiveTheme,
+    setTheme,
+    showConfigModal,
+    setShowConfigModal,
+    showMemoryModal,
+    setShowMemoryModal,
+    uiNotice,
+    showNotice,
+    clearNotice,
+  } = useAppUiState();
+  const {
+    inspectorWidth,
+    setInspectorWidth,
+    inspectorPanelMode,
+    setInspectorPanelMode,
+    inspectorTab,
+    setInspectorTab,
+    inspectorFile,
+    inspectorFileLoading,
+    openFile,
+    saveInspectorFile,
+    resetInspector,
+  } = useInspectorState(currentAgentId);
 
   // 持久化 currentAgentId（Hydration 安全：初始 "main"，useEffect 恢复）
   useEffect(() => {
@@ -140,114 +144,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // 持久化侧栏布局偏好（模式 + 宽度）
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const savedMode = window.localStorage.getItem("pipixia.inspector.mode");
-      if (savedMode === "docked" || savedMode === "overlay" || savedMode === "hidden") {
-        setInspectorPanelMode(savedMode);
-      }
-      const savedWidth = Number(window.localStorage.getItem("pipixia.inspector.width") || "");
-      if (Number.isFinite(savedWidth) && savedWidth >= 280 && savedWidth <= 720) {
-        setInspectorWidth(savedWidth);
-      }
-    } catch {
-      // ignore localStorage errors
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem("pipixia.inspector.mode", inspectorPanelMode);
-    } catch {
-      // ignore localStorage errors
-    }
-  }, [inspectorPanelMode]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem("pipixia.inspector.width", String(inspectorWidth));
-    } catch {
-      // ignore localStorage errors
-    }
-  }, [inspectorWidth]);
-
   const triggerSkillsRefresh = useCallback(() => setSkillsRefreshTrigger((n) => n + 1), []);
-  const formatCommandResponse = useCallback((raw: string) => {
-    const s = (raw || "").trim();
-    if (!s) return s;
-
-    const helpLines = [
-      `## ${t.helpListTitle}`,
-      `- \`/new\` — ${t.cmdNewDesc}`,
-      `- \`/reset\` — ${t.cmdResetDesc}`,
-      `- \`/compact\` — ${t.cmdCompactDesc}`,
-      `- \`/help\` — ${t.cmdHelpDesc}`,
-      `- \`/status\` — ${t.cmdStatusDesc}`,
-      `- \`/context\` — ${t.cmdContextDesc}`,
-      `- \`/usage\` — ${t.cmdUsageDesc}`,
-      `- \`/model\` — ${t.cmdModelDesc}`,
-      `- \`/subagents\` — ${t.cmdSubagentsDesc}`,
-      `- \`/whoami\` — ${t.cmdWhoamiDesc}`,
-    ].join("\n");
-
-    if (
-      s.startsWith("## 可用命令") ||
-      s.startsWith("## Available Commands") ||
-      (s.includes("`/new`") && s.includes("`/reset`") && s.includes("`/help`"))
-    ) {
-      return helpLines;
-    }
-
-    const low = s.toLowerCase();
-
-    if (s.includes("正在执行压缩") || low.includes("compaction in progress")) {
-      return t.cmdCompactProgress;
-    }
-    if (s.startsWith("压缩未执行：") || low.startsWith("compaction skipped:")) {
-      const lines = s.split("\n");
-      const first = lines[0] || s;
-      const reasonRaw = first.split("：").slice(1).join("：").trim() || first.split(":").slice(1).join(":").trim();
-      let reason = reasonRaw;
-      if (reasonRaw.includes("消息过少")) reason = t.cmdCompactReasonTooFewMessages;
-      else if (reasonRaw.includes("无足够消息可压缩")) reason = t.cmdCompactReasonNoEnoughCompressible;
-      else if (reasonRaw.includes("会话不存在")) reason = t.cmdCompactReasonSessionMissing;
-      const rest = lines.slice(1).join("\n").trim();
-      return `${t.cmdCompactSkipped}\n${reason ? `- ${reason}` : ""}${rest ? `\n\n${rest}` : ""}`.trim();
-    }
-    if (s.startsWith("压缩完成。") || low.startsWith("compaction completed")) {
-      // 保留后端详细数字信息，仅统一首行标题。
-      const lines = s.split("\n");
-      if (lines.length > 1) return `${t.cmdCompactDone}\n${lines.slice(1).join("\n")}`;
-      return t.cmdCompactDone;
-    }
-    if (s.startsWith("压缩失败") || low.startsWith("compaction failed")) {
-      return `${t.cmdCompactFailed}\n${s}`;
-    }
-
-    // /new /reset progress + result messages from backend; normalize to locale text
-    if (s.includes("正在重置会话（写入长期记忆") || low.includes("resetting session and saving long-term memory")) {
-      return t.cmdResetProgressWithMemory;
-    }
-    if (s.includes("正在重置会话（不写入长期记忆") || low.includes("resetting session (without writing long-term memory")) {
-      return t.cmdResetProgressNoMemory;
-    }
-    if (s.includes("会话已重置（本轮对话未写入长期记忆）") || low.includes("session has been reset (this round was not written")) {
-      return t.cmdResetDoneNoMemory;
-    }
-    if (s.includes("会话已重置")) {
-      const queued = s.includes("长期记忆将在后台保存") || low.includes("saved in the background");
-      return queued
-        ? `${t.cmdResetDoneWithMemory}\n${t.cmdResetDoneQueued}`
-        : t.cmdResetDoneWithMemory;
-    }
-    return s;
-  }, [t]);
-
-  const { theme, effectiveTheme, setTheme } = useTheme();
+  const formatCommandResponse = useCallback(
+    (raw: string) => formatLocalizedCommandResponse(raw, t),
+    [t],
+  );
 
   const loadAgents = useCallback(async () => {
     const data = await api.fetchAgents();
@@ -341,8 +242,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setCurrentAgentId(agentId);
     try { window.localStorage.setItem("pipixia.agent", agentId); } catch {}
     setCurrentSessionId(null);
-    setInspectorFile(null);
-    setInspectorFileLoading(false);
+    resetInspector();
 
     // 加载新 Agent 的会话和消息
     try {
@@ -368,28 +268,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await api.updateRagMode(enabled);
     setRagModeState(enabled);
   }, []);
-
-  const openFile = useCallback(async (path: string) => {
-    setInspectorFileLoading(true);
-    setInspectorTab("files");
-    try {
-      const data = await api.readFile(currentAgentId, path);
-      setInspectorFile(data);
-    } catch {
-      setInspectorFile({ path, content: "（无法读取文件）" });
-    } finally {
-      setInspectorFileLoading(false);
-    }
-  }, [currentAgentId]);
-
-  const saveInspectorFile = useCallback(async (content: string) => {
-    if (!inspectorFile) return;
-    await api.saveFile(currentAgentId, inspectorFile.path, content);
-    setInspectorFile({ ...inspectorFile, content });
-  }, [currentAgentId, inspectorFile]);
-
-  const showNotice = useCallback((notice: UiNotice) => setUiNotice(notice), []);
-  const clearNotice = useCallback(() => setUiNotice(null), []);
 
   useEffect(() => {
     if (!chat.lifecycleEvents.length) return;
