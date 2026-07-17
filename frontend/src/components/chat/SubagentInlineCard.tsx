@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "@/lib/store";
-import * as api from "@/lib/api";
+import { deriveSubagentViews } from "@/lib/subagentState";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronRight, Loader2, CheckCircle, XCircle, Wrench, Bot, User } from "lucide-react";
@@ -19,61 +19,16 @@ interface Props {
 }
 
 export default function SubagentInlineCard({ runId, task }: Props) {
-  const { currentAgentId, currentSessionId, showNotice, t } = useApp();
+  const { subagents, subagentsLoading } = useApp();
   const [expanded, setExpanded] = useState(true);
-  const [messages, setMessages] = useState<SubagentMessage[]>([]);
-  const [status, setStatus] = useState<string>("running");
-  const [elapsed, setElapsed] = useState<number | null>(null);
-  const [resultSummary, setResultSummary] = useState("");
-  const [label, setLabel] = useState("子 Agent");
-  const [announceState, setAnnounceState] = useState<string>("pending");
-  const [terminalReason, setTerminalReason] = useState<string>("");
-  const prevMsgCountRef = useRef(0);
-  const missingCountRef = useRef(0);
-  const pollErrorNotifiedRef = useRef(false);
-
-  useEffect(() => {
-    let active = true;
-    const poll = async () => {
-      if (!active) return;
-      try {
-        const resp = await api.fetchSubagents(currentAgentId, currentSessionId || undefined);
-        const data = resp.flat || [];
-        const match = data.find((s: any) => s.run_id === runId);
-        if (match) {
-          pollErrorNotifiedRef.current = false;
-          missingCountRef.current = 0;
-          setMessages(match.messages || []);
-          setStatus(match.state || match.status);
-          setElapsed(match.elapsed);
-          setResultSummary(match.result_summary || "");
-          setAnnounceState(match.result_delivery_state || "pending");
-          setTerminalReason(match.terminal_reason || "");
-          if (match.label) setLabel(match.label);
-          if (match.messages?.length > prevMsgCountRef.current) {
-            prevMsgCountRef.current = match.messages.length;
-          }
-        } else {
-          missingCountRef.current += 1;
-          if (missingCountRef.current >= 2) {
-            setStatus("archived");
-          }
-        }
-      } catch (e: any) {
-        if (!pollErrorNotifiedRef.current) {
-          pollErrorNotifiedRef.current = true;
-          showNotice({
-            kind: "error",
-            text: `刷新子Agent状态失败: ${e?.message || "Network error"}`,
-          });
-        }
-      }
-    };
-
-    poll();
-    const interval = setInterval(poll, 1500);
-    return () => { active = false; clearInterval(interval); };
-  }, [currentAgentId, currentSessionId, runId, showNotice]);
+  const match = deriveSubagentViews(subagents, runId).inline;
+  const messages = (match?.messages || []) as SubagentMessage[];
+  const status = match?.state || match?.status || (subagentsLoading ? "running" : "archived");
+  const elapsed = match?.elapsed ?? null;
+  const resultSummary = match?.result_summary || "";
+  const label = match?.label || "子 Agent";
+  const announceState = match?.result_delivery_state || "pending";
+  const terminalReason = match?.terminal_reason || "";
 
   useEffect(() => {
     if (status !== "running" && !["pending", "queued", "delivering", "retrying"].includes(announceState)) {

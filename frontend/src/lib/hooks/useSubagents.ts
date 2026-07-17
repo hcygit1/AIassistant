@@ -1,46 +1,49 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useMemo, useReducer } from "react";
 import * as api from "../api";
-
-interface SubagentInfo {
-  run_id: string;
-  task: string;
-  status: string;
-}
+import {
+  createSubagentState,
+  deriveSubagentViews,
+  mapSubagentEvent,
+  subagentStateReducer,
+} from "../subagentState";
 
 export function useSubagents(
   currentAgentId: string,
   currentSessionId: string | null,
   onSubagentDone?: () => void,
 ) {
-  const [runningSubagents, setRunningSubagents] = useState<SubagentInfo[]>([]);
+  const scopeKey = `${currentAgentId}\u0000${currentSessionId || ""}`;
+  const [state, dispatch] = useReducer(
+    subagentStateReducer,
+    scopeKey,
+    createSubagentState,
+  );
   const refreshTimerRef = useRef<number | null>(null);
   const doneTimerRef = useRef<number | null>(null);
 
   const refreshSubagents = useCallback(async () => {
     if (!currentSessionId) return;
+    dispatch({ type: "loading", scopeKey });
     try {
       const resp = await api.fetchSubagents(currentAgentId, currentSessionId);
-      const data = resp.flat || [];
-      const running = data
-        .filter((s: any) => (s.state || s.status) === "running")
-        .map((s: any) => ({
-          run_id: s.run_id,
-          task: s.task?.slice(0, 60) || "",
-          status: s.state || s.status,
-        }));
-      setRunningSubagents(running);
+      const tree = resp.tree || [];
+      const flat = resp.flat || [];
+      dispatch({ type: "success", scopeKey, tree, flat });
     } catch {
-      setRunningSubagents([]);
+      dispatch({ type: "failure", scopeKey });
     }
-  }, [currentAgentId, currentSessionId]);
+  }, [currentAgentId, currentSessionId, scopeKey]);
 
   useEffect(() => {
     if (!currentSessionId) return;
-    refreshSubagents();
+    const initial = window.setTimeout(() => void refreshSubagents(), 0);
     const id = setInterval(refreshSubagents, 2500);
-    return () => clearInterval(id);
+    return () => {
+      window.clearTimeout(initial);
+      clearInterval(id);
+    };
   }, [currentSessionId, refreshSubagents]);
 
   useEffect(() => {
@@ -52,15 +55,20 @@ export function useSubagents(
     const unsubscribe = api.subscribeAgentEvents(
       currentAgentId,
       (event) => {
-        const type = event.type || "";
-        if (!type.startsWith("subagent_")) return;
-        const announceState = String((event as any).result_delivery_state || "").trim();
-        triggerRefresh();
-        if (type === "subagent_announce" && (announceState === "delivered" || announceState === "dropped")) {
+        const mapped = mapSubagentEvent(event, Date.now());
+        if (!mapped) return;
+        dispatch({
+          type: "trace",
+          scopeKey,
+          runId: mapped.runId,
+          trace: mapped.trace,
+        });
+        if (mapped.shouldRefresh) triggerRefresh();
+        if (mapped.doneDelayMs !== null) {
           if (doneTimerRef.current) window.clearTimeout(doneTimerRef.current);
           doneTimerRef.current = window.setTimeout(() => {
             onSubagentDone?.();
-          }, announceState === "delivered" ? 250 : 100);
+          }, mapped.doneDelayMs);
         }
       },
       () => { },
@@ -77,7 +85,22 @@ export function useSubagents(
         doneTimerRef.current = null;
       }
     };
-  }, [currentAgentId, currentSessionId, onSubagentDone, refreshSubagents]);
+  }, [currentAgentId, onSubagentDone, refreshSubagents, scopeKey]);
 
-  return { runningSubagents };
+  const visibleState = state.scopeKey === scopeKey
+    ? state
+    : { ...createSubagentState(scopeKey), loading: Boolean(currentSessionId) };
+  const { runningSubagents } = useMemo(
+    () => deriveSubagentViews(visibleState.flat),
+    [visibleState.flat],
+  );
+
+  return {
+    tree: visibleState.tree,
+    flat: visibleState.flat,
+    runningSubagents,
+    traceMap: visibleState.traceMap,
+    loading: visibleState.loading,
+    refreshSubagents,
+  };
 }

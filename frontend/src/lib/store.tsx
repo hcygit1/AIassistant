@@ -51,7 +51,12 @@ interface AppState {
   saveInspectorFile: (content: string) => Promise<void>;
 
   // Subagents
-  runningSubagents: { run_id: string; task: string; status: string }[];
+  subagentTree: ReturnType<typeof useSubagents>["tree"];
+  subagents: ReturnType<typeof useSubagents>["flat"];
+  runningSubagents: ReturnType<typeof useSubagents>["runningSubagents"];
+  subagentTraceMap: ReturnType<typeof useSubagents>["traceMap"];
+  subagentsLoading: boolean;
+  refreshSubagents: () => Promise<void>;
 
   // UI
   showConfigModal: boolean;
@@ -284,7 +289,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
   );
 
-  const { runningSubagents } = useSubagents(
+  const {
+    tree: subagentTree,
+    flat: subagents,
+    runningSubagents,
+    traceMap: subagentTraceMap,
+    loading: subagentsLoading,
+    refreshSubagents,
+  } = useSubagents(
     currentAgentId,
     currentSessionId,
     loadMainSession,
@@ -410,7 +422,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     openFile,
     saveInspectorFile,
 
+    subagentTree,
+    subagents,
     runningSubagents,
+    subagentTraceMap,
+    subagentsLoading,
+    refreshSubagents,
 
     showConfigModal,
     setShowConfigModal,

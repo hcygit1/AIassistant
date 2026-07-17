@@ -19,12 +19,14 @@ export const API_BASE = resolveApiBase(
 export interface SSEEvent {
   type: string;
   content?: string;
+  task?: string;
   tool?: string;
   name?: string;
   input?: any;
   input_preview?: string;
   args?: any;
   output?: string;
+  output_preview?: string;
   error?: string;
   session_id?: string;
   title?: string;
@@ -33,6 +35,9 @@ export interface SSEEvent {
   response?: string;
   event?: string;
   run_id?: string;
+  elapsed_s?: number;
+  chars?: number;
+  result_delivery_state?: string;
   usage?: TokenUsage;
   result?: any;
   approval_id?: string;

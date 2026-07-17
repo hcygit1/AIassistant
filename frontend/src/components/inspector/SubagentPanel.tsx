@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useState } from "react";
 import { useApp } from "@/lib/store";
 import * as api from "@/lib/api";
 import type { SubagentTreeItem } from "@/lib/api";
+import type { LiveTraceEntry } from "@/lib/subagentState";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, User, ChevronRight, CheckCircle, XCircle, Loader2, Wrench, Square, Send } from "lucide-react";
@@ -20,129 +21,20 @@ interface SubagentMessage {
   tool_calls?: { tool: string; input: any; output: string }[];
 }
 
-interface LiveTraceEntry {
-  ts: number;
-  type: string;
-  text: string;
-}
-
 export default function SubagentPanel() {
-  const { currentAgentId, loadMainSession, showNotice, t } = useApp();
-  const [tree, setTree] = useState<SubagentTreeItem[]>([]);
-  const [traceMap, setTraceMap] = useState<Record<string, LiveTraceEntry[]>>({});
-  const [loading, setLoading] = useState(false);
+  const {
+    currentAgentId,
+    loadMainSession,
+    showNotice,
+    t,
+    subagentTree: tree,
+    subagentTraceMap: traceMap,
+    subagentsLoading: loading,
+    refreshSubagents,
+  } = useApp();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const prevRunningRef = useRef<Set<string>>(new Set());
   const [killAllBusy, setKillAllBusy] = useState(false);
   const [lastSteerPrompt, setLastSteerPrompt] = useState("");
-  const refreshTimerRef = useRef<number | null>(null);
-
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const data = await api.fetchSubagents(currentAgentId);
-      const flat = data.flat || [];
-      const runningIds = new Set(
-        flat
-          .filter((s: SubagentTreeItem) => (s.state || s.status) === "running")
-          .map((s) => s.run_id)
-      );
-      const prevRunning = prevRunningRef.current;
-      prevRunningRef.current = runningIds;
-      setTree(data.tree || []);
-
-      const justCompleted = [...prevRunning].filter((id) => !runningIds.has(id));
-      if (justCompleted.length > 0 && loadMainSession) {
-        loadMainSession();
-      }
-    } catch {
-      setTree([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    setTree([]);
-    setTraceMap({});
-    setExpanded(new Set());
-  }, [currentAgentId]);
-
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 1000);
-    const unsubscribe = api.subscribeAgentEvents(currentAgentId, (event) => {
-      if ((event.type || "").startsWith("subagent_")) {
-        const triggerRefresh = () => {
-          if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
-          refreshTimerRef.current = window.setTimeout(() => {
-            refreshTimerRef.current = null;
-            fetchData();
-          }, 220);
-        };
-        const runId = String((event as any).run_id || "").trim();
-        if (runId) {
-          const addTrace = (type: string, text: string) => {
-            setTraceMap((prev) => {
-              const list = prev[runId] || [];
-              const next = [...list, { ts: Date.now(), type, text }].slice(-50);
-              return { ...prev, [runId]: next };
-            });
-          };
-          if (event.type === "subagent_start") {
-            const task = String((event as any).task || "").slice(0, 200);
-            addTrace("start", task ? `开始执行：${task}` : "开始执行");
-            triggerRefresh();
-          } else if (event.type === "subagent_tool") {
-            const tool = String((event as any).tool || "").trim();
-            addTrace("tool", tool ? `调用工具：${tool}` : "调用工具");
-            triggerRefresh();
-          } else if (event.type === "subagent_tool_end") {
-            const tool = String((event as any).tool || "").trim();
-            const preview = String((event as any).output_preview || "").trim();
-            addTrace("tool_end", preview ? `工具完成：${tool} -> ${preview}` : `工具完成：${tool}`);
-            triggerRefresh();
-          } else if (event.type === "subagent_progress") {
-            const elapsed = Number((event as any).elapsed_s || 0);
-            const chars = Number((event as any).chars || 0);
-            addTrace("progress", `执行中：${elapsed}s，输出 ${chars} chars`);
-          } else if (event.type === "subagent_done") {
-            const result = String((event as any).result || "").trim();
-            addTrace("done", result ? `执行完成，等待结果合并：${result.slice(0, 160)}` : "执行完成，等待结果合并");
-            triggerRefresh();
-          } else if (event.type === "subagent_error") {
-            const err = String((event as any).error || "").trim();
-            addTrace("error", err ? `执行失败：${err.slice(0, 160)}` : "执行失败");
-            triggerRefresh();
-          } else if (event.type === "subagent_killed") {
-            addTrace("killed", "已终止");
-            triggerRefresh();
-          } else if (event.type === "subagent_announce") {
-            const st = String((event as any).result_delivery_state || "").trim();
-            const label =
-              st === "queued"
-                ? "等待主会话队列"
-                : st === "delivering"
-                  ? "主Agent正在融合结果"
-                  : st === "delivered"
-                    ? "已合并进主会话"
-                    : st === "dropped"
-                      ? "结果合并失败，已写入兜底消息"
-                      : st === "retrying"
-                        ? "结果通知重试中"
-                        : st || "结果通知状态更新";
-            addTrace("announce", label);
-            triggerRefresh();
-          }
-        }
-      }
-    });
-    return () => {
-      clearInterval(interval);
-      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
-      unsubscribe();
-    };
-  }, [currentAgentId, loadMainSession]);
 
   const toggleExpand = (runId: string) => {
     setExpanded((prev) => {
@@ -182,7 +74,7 @@ export default function SubagentPanel() {
                 } else {
                   showNotice({ kind: "error", text: res?.error || "终止失败" });
                 }
-                await fetchData();
+                await refreshSubagents();
                 await loadMainSession();
               } finally {
                 setKillAllBusy(false);
@@ -203,7 +95,7 @@ export default function SubagentPanel() {
           expanded={expanded}
           toggleExpand={toggleExpand}
           onNotice={showNotice}
-          onRefresh={fetchData}
+          onRefresh={refreshSubagents}
           traceMap={traceMap}
           lastSteerPrompt={lastSteerPrompt}
           setLastSteerPrompt={setLastSteerPrompt}
