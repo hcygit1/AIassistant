@@ -119,18 +119,18 @@ backend/
 ### 一键启动（推荐）
 
 ```bash
-python scripts/dev.py
+python3 scripts/dev.py
 ```
 
-首次使用通过 Web 配置中心完成，或先运行 `cd backend && python cli.py onboard`。
+首次使用通过 Web 配置中心完成，或先运行 `cd backend && python3 cli.py onboard`。
 
 ### 单独启动
 
 ```bash
 # 后端
 cd backend
-pip install -r requirements.txt
-python cli.py start
+python3 -m pip install -r requirements.txt
+python3 cli.py start
 
 # 前端
 cd frontend
@@ -139,6 +139,20 @@ npm run dev
 ```
 
 浏览器打开：<http://localhost:3000>
+
+### 质量检查
+
+```bash
+# 后端
+python3 -m pytest backend/tests
+
+# 前端
+cd frontend
+npm test
+npx tsc --noEmit
+npm run lint
+npm run build
+```
 
 ## License
 

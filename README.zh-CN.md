@@ -18,14 +18,16 @@ PIPIXIA 是一个本地优先的 AI Agent 系统，基于 Python + LangChain/Lan
 
 ```bash
 # 一键启动
-python scripts/dev.py
+python3 scripts/dev.py
 
 # 或单独启动
-cd backend && pip install -r requirements.txt && python cli.py start
+cd backend && python3 -m pip install -r requirements.txt && python3 cli.py start
 cd frontend && npm install && npm run dev
 ```
 
 浏览器打开：<http://localhost:3000>
+
+质量检查：后端运行 `python3 -m pytest backend/tests`；前端依次运行 `npm test`、`npx tsc --noEmit`、`npm run lint` 和 `npm run build`。
 
 ---
 

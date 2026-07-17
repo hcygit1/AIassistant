@@ -119,18 +119,18 @@ backend/
 ### One-command start (recommended)
 
 ```bash
-python scripts/dev.py
+python3 scripts/dev.py
 ```
 
-First run: configure via Web UI after startup, or run `cd backend && python cli.py onboard` first.
+First run: configure via Web UI after startup, or run `cd backend && python3 cli.py onboard` first.
 
 ### Manual start
 
 ```bash
 # Backend
 cd backend
-pip install -r requirements.txt
-python cli.py start
+python3 -m pip install -r requirements.txt
+python3 cli.py start
 
 # Frontend
 cd frontend
@@ -139,6 +139,20 @@ npm run dev
 ```
 
 Open: <http://localhost:3000>
+
+### Quality checks
+
+```bash
+# Backend
+python3 -m pytest backend/tests
+
+# Frontend
+cd frontend
+npm test
+npx tsc --noEmit
+npm run lint
+npm run build
+```
 
 ## License
 

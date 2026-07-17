@@ -35,6 +35,12 @@ npm run start
 
 # ESLint 检查
 npm run lint
+
+# TypeScript 检查
+npx tsc --noEmit
+
+# Playwright 测试
+npm test
 ```
 
 ## 目录结构
@@ -53,9 +59,17 @@ frontend/
 │   │   └── editor/       # 编辑器组件
 │   ├── lib/              # 工具库
 │   │   ├── api.ts        # API 客户端
-│   │   ├── store.tsx     # 全局状态管理
-│   │   └── hooks/        # 自定义 Hooks
-│   └── i18n/             # 国际化
+│   │   ├── store.tsx     # App Context 组合层
+│   │   ├── chatState.ts  # 按 Agent 隔离的聊天状态与运行时
+│   │   ├── chatStreamEvents.ts # SSE 消息归约
+│   │   ├── chatTurnRecovery.ts # 未完成 turn 恢复
+│   │   ├── hooks/        # 自定义 Hooks
+│   │   │   ├── useChat.ts
+│   │   │   ├── useSubagents.ts
+│   │   │   ├── useInspectorState.ts
+│   │   │   └── useAppUiState.ts
+│   │   └── i18n/         # 国际化
+├── tests/                # Playwright 单元与结构回归测试
 ├── package.json
 ├── tsconfig.json
 ├── tailwind.config.ts
@@ -78,12 +92,11 @@ frontend/
 
 ## 状态管理
 
-使用 React Context (`AppProvider`) 统一管理：
-- Agent 列表与切换
-- 会话消息与流式状态
-- Inspector 布局与文件操作
-- 主题与国际化
-- 技能热加载通知
+`AppProvider` 仅负责组合并对外提供 Context；具体职责由独立模块承担：
+- `useChat` 与 `chatState`：按 Agent 隔离消息、活跃 turn 和本地队列
+- `useSubagents`：子 Agent 树、运行状态、实时轨迹和唯一轮询/SSE 状态源
+- `useInspectorState`：Inspector 布局、文件读取与保存
+- `useAppUiState`：主题、国际化、弹窗和全局通知
 
 ## API 通信
 
@@ -97,7 +110,7 @@ frontend/
 
 ## 国际化
 
-支持 `zh-CN` 和 `en-US`，配置文件位于 `src/i18n/locales.ts`。
+支持 `zh-CN` 和 `en-US`，配置文件位于 `src/lib/i18n/locales.ts`。
 用户偏好存储在 `localStorage`。
 
 ## 主题
