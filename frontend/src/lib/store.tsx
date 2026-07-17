@@ -107,6 +107,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [pendingApproval, setPendingApproval] = useState<{ approval_id: string; tool: string; input_preview: string } | null>(null);
   const lastLifecycleNoticeKeyRef = useRef("");
   const loadMainSessionReqRef = useRef(0);
+  const currentAgentIdRef = useRef("main");
 
   const [locale, setLocaleState] = useState<Locale>("zh-CN");
   const t = getMessages(locale);
@@ -130,7 +131,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const saved = window.localStorage.getItem("pipixia.agent");
       if (saved && typeof saved === "string" && saved.trim()) {
-        setCurrentAgentId(saved.trim());
+        const agentId = saved.trim();
+        currentAgentIdRef.current = agentId;
+        setCurrentAgentId(agentId);
       }
     } catch {
       // ignore
@@ -277,13 +280,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentAgentId]);
 
+  const handleSessionCompacted = useCallback((agentId: string) => {
+    if (currentAgentIdRef.current === agentId) {
+      void loadMainSession();
+    }
+  }, [loadMainSession]);
+
   const chat = useChat(
     currentAgentId,
     currentSessionId,
     setCurrentSessionId,
     {
       onAgentCreated: loadAgents,
-      onSessionCompacted: loadMainSession,
+      onSessionCompacted: handleSessionCompacted,
       onTurnComplete: triggerSkillsRefresh,
       formatCommandResponse,
     },
@@ -325,6 +334,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const switchAgent = useCallback(async (agentId: string) => {
     // 保存当前 Agent 的状态（不要清空，只是切换）
+    currentAgentIdRef.current = agentId;
+    const reqId = ++loadMainSessionReqRef.current;
     setCurrentAgentId(agentId);
     try { window.localStorage.setItem("pipixia.agent", agentId); } catch {}
     setCurrentSessionId(null);
@@ -334,14 +345,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // 加载新 Agent 的会话和消息
     try {
       const session = await api.fetchMainSession(agentId);
+      if (reqId !== loadMainSessionReqRef.current || currentAgentIdRef.current !== agentId) return;
       setCurrentSessionId(session.session_id);
       // 加载消息时会自动恢复该 Agent 的 isStreaming 状态
       await chat.loadMessages(agentId, session.session_id);
+      if (reqId !== loadMainSessionReqRef.current || currentAgentIdRef.current !== agentId) return;
       const model = await api.fetchCurrentModel(agentId);
+      if (reqId !== loadMainSessionReqRef.current || currentAgentIdRef.current !== agentId) return;
       setCurrentModel(model);
     } catch {
       // 如果加载失败，清空该 Agent 的消息
-      chat.setMessages([]);
+      if (reqId === loadMainSessionReqRef.current && currentAgentIdRef.current === agentId) {
+        chat.clearAgent(agentId);
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat]);

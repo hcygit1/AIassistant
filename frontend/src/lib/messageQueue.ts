@@ -6,7 +6,9 @@
  */
 
 export interface QueuedMessage {
+  agentId: string;
   text: string;
+  messageId?: string;
   timestamp: number;
 }
 
@@ -17,7 +19,19 @@ let queue: QueuedMessage[] = [];
 // 启动时从 sessionStorage 恢复
 try {
   const saved = sessionStorage.getItem(STORAGE_KEY);
-  if (saved) queue = JSON.parse(saved);
+  if (saved) {
+    const parsed = JSON.parse(saved);
+    if (Array.isArray(parsed)) {
+      queue = parsed
+        .filter((item) => item && typeof item.text === "string")
+        .map((item) => ({
+          agentId: typeof item.agentId === "string" && item.agentId ? item.agentId : "main",
+          text: item.text,
+          ...(typeof item.messageId === "string" && item.messageId ? { messageId: item.messageId } : {}),
+          timestamp: Number(item.timestamp) || Date.now(),
+        }));
+    }
+  }
 } catch {
   // ignore
 }
@@ -30,19 +44,26 @@ function persist() {
   }
 }
 
-export function enqueue(text: string): number {
-  queue.push({ text: text.trim(), timestamp: Date.now() });
+export function enqueue(agentId: string, text: string, messageId?: string): number {
+  queue.push({
+    agentId,
+    text: text.trim(),
+    ...(messageId ? { messageId } : {}),
+    timestamp: Date.now(),
+  });
   persist();
-  return queue.length;
+  return queue.filter((item) => item.agentId === agentId).length;
 }
 
-export function dequeue(): QueuedMessage | null {
-  const item = queue.shift() || null;
+export function dequeue(agentId: string): QueuedMessage | null {
+  const index = queue.findIndex((item) => item.agentId === agentId);
+  if (index < 0) return null;
+  const [item] = queue.splice(index, 1);
   persist();
-  return item;
+  return item || null;
 }
 
-export function clear(): void {
-  queue = [];
+export function clear(agentId?: string): void {
+  queue = agentId ? queue.filter((item) => item.agentId !== agentId) : [];
   persist();
 }

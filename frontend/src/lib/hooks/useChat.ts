@@ -1,34 +1,29 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useCallback, useRef, useEffect, useReducer } from "react";
 import * as api from "../api";
-import type { SSEEvent, TokenUsage } from "../api";
+import type { SSEEvent } from "../api";
+import {
+  chatStateReducer,
+  clearAgentChatRuntime,
+  createChatState,
+  getAgentChatRuntime,
+  appendTurnMessages,
+  selectAgentChatState,
+} from "../chatState";
+import { clear as clearQueuedMessages, dequeue, enqueue } from "../messageQueue";
+import type {
+  AgentChatState,
+  ChatMessage,
+  ChatRuntimeRegistry,
+} from "../chatState";
 
-export interface ChatMessage {
-  id: string;
-  role: "user" | "assistant" | "system" | "command";
-  content: string;
-  createdAt: number;
-  finishedAt?: number;
-  streamDurationMs?: number;
-  toolCalls?: { tool?: string; name?: string; input?: any; output?: string; result?: string }[];
-  retrievals?: any[];
-  isStreaming?: boolean;
-  usage?: TokenUsage;
-}
-
-export interface LifecycleEvent {
-  type: string;
-  event: string;
-  run_id?: string;
-  timestamp: number;
-  data?: any;
-}
+export type { ChatMessage, LifecycleEvent } from "../chatState";
 
 interface UseChatOptions {
-  onAgentCreated?: () => void;
-  onSessionCompacted?: () => void;
-  onTurnComplete?: () => void;
+  onAgentCreated?: (agentId: string) => void;
+  onSessionCompacted?: (agentId: string) => void;
+  onTurnComplete?: (agentId: string) => void;
   formatCommandResponse?: (raw: string) => string;
 }
 
@@ -38,55 +33,47 @@ export function useChat(
   setCurrentSessionId: (id: string | null) => void,
   options?: UseChatOptions,
 ) {
-  const [messagesByAgent, setMessagesByAgent] = useState<Map<string, ChatMessage[]>>(new Map());
-  const [isStreamingByAgent, setIsStreamingByAgent] = useState<Map<string, boolean>>(new Map());
+  const [chatState, dispatch] = useReducer(chatStateReducer, undefined, createChatState);
+  const currentState = selectAgentChatState(chatState, currentAgentId);
+  const {
+    messages,
+    isStreaming,
+    lifecycleEvents,
+    lastUsage,
+    contextUtilization,
+    sessionError,
+  } = currentState;
 
-  const messages = messagesByAgent.get(currentAgentId) || [];
-  const isStreaming = isStreamingByAgent.get(currentAgentId) || false;
+  const setMessagesForAgent = useCallback((agentId: string, updater: React.SetStateAction<ChatMessage[]>) => {
+    dispatch({ type: "messages", agentId, updater });
+  }, []);
+
+  const patchAgentState = useCallback((agentId: string, patch: Partial<AgentChatState>) => {
+    dispatch({ type: "patch", agentId, patch });
+  }, []);
 
   const setMessages = useCallback((updater: React.SetStateAction<ChatMessage[]>) => {
-    setMessagesByAgent(prev => {
-      const next = new Map(prev);
-      const current = next.get(currentAgentId) || [];
-      const updated = typeof updater === "function" ? updater(current) : updater;
-      next.set(currentAgentId, updated);
-      return next;
-    });
-  }, [currentAgentId]);
+    setMessagesForAgent(currentAgentId, updater);
+  }, [currentAgentId, setMessagesForAgent]);
 
-  const setIsStreaming = useCallback((value: boolean) => {
-    setIsStreamingByAgent(prev => {
-      const next = new Map(prev);
-      next.set(currentAgentId, value);
-      return next;
-    });
-  }, [currentAgentId]);
-
-  const [lifecycleEvents, setLifecycleEvents] = useState<LifecycleEvent[]>([]);
-  const [lastUsage, setLastUsage] = useState<TokenUsage | null>(null);
-  const [contextUtilization, setContextUtilization] = useState<number | null>(null);
-  const [sessionError, setSessionError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const chatTimeoutRef = useRef<number | null>(null);
-  const userStoppedRef = useRef(false);
-  const streamingAssistantIdRef = useRef<string | null>(null);
-  const currentTurnIdRef = useRef<string | null>(null);
-  const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
-  const segmentToolCallsRef = useRef<{ tool: string; input: any; output: string }[]>([]);
-  const isStreamingRef = useRef(false);
-  useEffect(() => {
-    isStreamingRef.current = isStreaming;
-  }, [isStreaming]);
+  const runtimeRegistryRef = useRef<ChatRuntimeRegistry>(new Map());
+  const queuedSenderRef = useRef<(
+    agentId: string,
+    text: string,
+    sessionId: string | null,
+    displayedMessageId?: string,
+  ) => Promise<void>>(async () => {});
 
-  const addLifecycleEvent = useCallback((event: SSEEvent) => {
+  const addLifecycleEvent = useCallback((agentId: string, event: SSEEvent) => {
     if (event.type === "lifecycle" && event.event) {
-      setLifecycleEvents(prev => [...prev, {
+      dispatch({ type: "lifecycle", agentId, event: {
         type: event.type,
         event: event.event!,
         run_id: event.run_id,
         timestamp: Date.now(),
         data: event.usage || event,
-      }]);
+      } });
     }
   }, []);
 
@@ -101,31 +88,28 @@ export function useChat(
         createdAt: now,
         toolCalls: m.tool_calls,
       }));
-      setMessagesByAgent(prev => {
-        const next = new Map(prev);
-        next.set(agentId, msgs);
-        return next;
-      });
-      setSessionError(null);
+      setMessagesForAgent(agentId, msgs);
+      patchAgentState(agentId, { sessionError: null });
       return msgs;
     } catch {
-      setMessagesByAgent(prev => {
-        const next = new Map(prev);
-        next.set(agentId, []);
-        return next;
-      });
+      setMessagesForAgent(agentId, []);
       return null;
     }
-  }, []);
+  }, [patchAgentState, setMessagesForAgent]);
 
   const createStreamEventHandler = useCallback(
-    (assistantMsgId: string, streamState: { doneReceived: boolean; terminalErrorReceived: boolean }) => {
-      segmentToolCallsRef.current = [];
+    (
+      agentId: string,
+      assistantMsgId: string,
+      streamState: { doneReceived: boolean; terminalErrorReceived: boolean },
+    ) => {
+      const runtime = getAgentChatRuntime(runtimeRegistryRef.current, agentId);
+      runtime.segmentToolCalls = [];
       return (event: SSEEvent) => {
         switch (event.type) {
           case "token":
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant") {
@@ -138,8 +122,8 @@ export function useChat(
             break;
 
           case "clear_content":
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant") {
@@ -152,8 +136,8 @@ export function useChat(
             break;
 
           case "content_refresh":
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant" && typeof event.content === "string") {
@@ -171,14 +155,15 @@ export function useChat(
               input: event.input ?? event.args ?? {},
               output: "",
             };
-            segmentToolCallsRef.current = [...segmentToolCallsRef.current, newTc];
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            runtime.segmentToolCalls = [...runtime.segmentToolCalls, newTc];
+            const toolCalls = runtime.segmentToolCalls;
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant") {
                 const updated = prev.slice();
-                updated[idx] = { ...last, toolCalls: segmentToolCallsRef.current };
+                updated[idx] = { ...last, toolCalls };
                 return updated;
               }
               return prev;
@@ -189,8 +174,8 @@ export function useChat(
           case "tool_end": {
             const output = event.output || event.result || "";
             const toolName = event.tool || event.name || "";
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant" && last.toolCalls?.length) {
@@ -209,13 +194,13 @@ export function useChat(
               }
               return prev;
             });
-            if (segmentToolCallsRef.current.length > 0) {
-              const segIdx = segmentToolCallsRef.current.findIndex(
+            if (runtime.segmentToolCalls.length > 0) {
+              const segIdx = runtime.segmentToolCalls.findIndex(
                 t => !t.output && (!toolName || t.tool === toolName)
               );
-              const segFallback = segIdx >= 0 ? segIdx : segmentToolCallsRef.current.findIndex(t => !t.output);
-              const segToUpdate = segFallback >= 0 ? segFallback : segmentToolCallsRef.current.length - 1;
-              segmentToolCallsRef.current = segmentToolCallsRef.current.map((t, i) =>
+              const segFallback = segIdx >= 0 ? segIdx : runtime.segmentToolCalls.findIndex(t => !t.output);
+              const segToUpdate = segFallback >= 0 ? segFallback : runtime.segmentToolCalls.length - 1;
+              runtime.segmentToolCalls = runtime.segmentToolCalls.map((t, i) =>
                 i === segToUpdate ? { ...t, output } : t
               );
             }
@@ -223,9 +208,9 @@ export function useChat(
           }
 
           case "new_response":
-            segmentToolCallsRef.current = [];
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            runtime.segmentToolCalls = [];
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant") {
@@ -238,8 +223,8 @@ export function useChat(
             break;
 
           case "retrieval":
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant") {
@@ -257,12 +242,12 @@ export function useChat(
               : (event.response || "");
             const text = (formattedResponse || "").trim();
             if (!text) break;
-            setMessages(prev => {
+            setMessagesForAgent(agentId, prev => {
               const idx = prev.length - 1;
               const last = prev[idx];
               const commandMsg: ChatMessage = {
                 id: `command-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                role: "command" as any,
+                role: "command",
                 content: text,
                 createdAt: Date.now(),
                 isStreaming: false,
@@ -278,11 +263,10 @@ export function useChat(
           }
 
           case "session_reset": {
-            setLifecycleEvents([]);
-            setLastUsage(null);
+            patchAgentState(agentId, { lifecycleEvents: [], lastUsage: null });
             const newAssistantId = `assistant-${Date.now()}`;
-            streamingAssistantIdRef.current = newAssistantId;
-            setMessages(prev => {
+            runtime.assistantMessageId = newAssistantId;
+            setMessagesForAgent(agentId, prev => {
               const last = prev[prev.length - 1];
               if (last?.role === "command") {
                 return [...prev, {
@@ -299,11 +283,11 @@ export function useChat(
           }
 
           case "session_compacted":
-            options?.onSessionCompacted?.();
+            options?.onSessionCompacted?.(agentId);
             break;
 
           case "lifecycle":
-            addLifecycleEvent(event);
+            addLifecycleEvent(agentId, event);
             break;
 
           case "title":
@@ -311,10 +295,14 @@ export function useChat(
 
           case "done":
             streamState.doneReceived = true;
-            if (event.usage) setLastUsage(event.usage);
-            if (event.context_utilization != null) setContextUtilization(event.context_utilization);
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            patchAgentState(agentId, {
+              ...(event.usage ? { lastUsage: event.usage } : {}),
+              ...(event.context_utilization != null
+                ? { contextUtilization: event.context_utilization }
+                : {}),
+            });
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last && (last.role === "assistant" || last.role === "command")) {
@@ -340,8 +328,8 @@ export function useChat(
 
           case "aborted":
             streamState.doneReceived = true;
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant") {
@@ -364,8 +352,8 @@ export function useChat(
           case "error":
             streamState.terminalErrorReceived = true;
             streamState.doneReceived = true;
-            setMessages(prev => {
-              const targetId = streamingAssistantIdRef.current || assistantMsgId;
+            setMessagesForAgent(agentId, prev => {
+              const targetId = runtime.assistantMessageId || assistantMsgId;
               const idx = prev.findIndex(m => m.id === targetId);
               const last = idx >= 0 ? prev[idx] : null;
               if (idx >= 0 && last?.role === "assistant") {
@@ -383,33 +371,35 @@ export function useChat(
         }
       };
     },
-    [addLifecycleEvent, options, setMessages],
+    [addLifecycleEvent, options, patchAgentState, setMessagesForAgent],
   );
 
   const finalizeStreamTurn = useCallback(
     async (
+      agentId: string,
       assistantMsgId: string,
       sessionId: string | null,
       streamState: { doneReceived: boolean; terminalErrorReceived: boolean },
       dequeueLocal: boolean,
     ) => {
-      currentTurnIdRef.current = null;
-      const stoppedByUser = userStoppedRef.current;
-      if (streamingAssistantIdRef.current === assistantMsgId) {
-        streamingAssistantIdRef.current = null;
+      const runtime = getAgentChatRuntime(runtimeRegistryRef.current, agentId);
+      runtime.turnId = null;
+      const stoppedByUser = runtime.userStopped;
+      if (runtime.assistantMessageId === assistantMsgId) {
+        runtime.assistantMessageId = null;
       }
-      setIsStreaming(false);
-      abortRef.current = null;
-      userStoppedRef.current = false;
+      patchAgentState(agentId, { isStreaming: false });
+      runtime.controller = null;
+      runtime.userStopped = false;
       if (!streamState.doneReceived) {
         if (!stoppedByUser && !streamState.terminalErrorReceived) {
           try {
-            if (sessionId) await loadMessages(currentAgentId, sessionId);
+            if (sessionId) await loadMessages(agentId, sessionId);
           } catch { /* best-effort reload */ }
         }
       } else {
-        setMessages(prev => {
-          const targetId = streamingAssistantIdRef.current || assistantMsgId;
+        setMessagesForAgent(agentId, prev => {
+          const targetId = runtime.assistantMessageId || assistantMsgId;
           const idx = prev.findIndex(m => m.id === targetId);
           const last = idx >= 0 ? prev[idx] : null;
           if (idx >= 0 && last?.role === "assistant" && last.isStreaming) {
@@ -420,56 +410,74 @@ export function useChat(
           return prev;
         });
       }
-      options?.onTurnComplete?.();
+      options?.onTurnComplete?.(agentId);
       if (dequeueLocal) {
         try {
-          const { dequeue } = await import("../messageQueue");
-          const next = dequeue();
+          const next = dequeue(agentId);
           if (next) {
             setTimeout(() => {
-              void sendMessageRef.current?.(next.text);
+              void queuedSenderRef.current(
+                agentId,
+                next.text,
+                runtime.sessionId,
+                next.messageId,
+              );
             }, 50);
           }
         } catch { /* ignore */ }
       }
     },
-    [currentAgentId, loadMessages, options, setMessages],
+    [loadMessages, options, patchAgentState, setMessagesForAgent],
   );
 
-  const sendMessage = useCallback(async (text: string) => {
-    if (!text.trim()) return;
+  const sendMessageForAgent = useCallback(async (
+    agentId: string,
+    text: string,
+    knownSessionId: string | null,
+    displayedMessageId?: string,
+  ) => {
+    const normalized = text.trim();
+    if (!normalized) return;
 
-    if (isStreaming) {
-      const { enqueue } = await import("../messageQueue");
-      enqueue(text.trim());
+    const runtime = getAgentChatRuntime(runtimeRegistryRef.current, agentId);
+    const agentState = selectAgentChatState(chatState, agentId);
+    if (agentState.isStreaming || runtime.controller) {
       const now = Date.now();
-      setMessages(prev => [...prev, {
-        id: `user-${now}`,
-        role: "user" as const,
-        content: text.trim(),
-        createdAt: now,
-      }]);
+      const messageId = displayedMessageId || `user-${now}`;
+      enqueue(agentId, normalized, messageId);
+      if (!displayedMessageId) {
+        setMessagesForAgent(agentId, (previous) => [...previous, {
+          id: messageId,
+          role: "user",
+          content: normalized,
+          createdAt: now,
+        }]);
+      }
       return;
     }
 
-    let sessionId = currentSessionId;
+    let sessionId = knownSessionId || runtime.sessionId;
     if (!sessionId) {
       try {
-        const session = await api.fetchMainSession(currentAgentId);
+        const session = await api.fetchMainSession(agentId);
         sessionId = session.session_id;
-        setCurrentSessionId(sessionId);
-        setSessionError(null);
-      } catch (e: any) {
-        setSessionError(e.message || "Failed to fetch session");
+        if (agentId === currentAgentId) setCurrentSessionId(sessionId);
+        patchAgentState(agentId, { sessionError: null });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "Failed to fetch session";
+        patchAgentState(agentId, { sessionError: message });
         return;
       }
     }
+    const resolvedSessionId = sessionId;
+    if (!resolvedSessionId) return;
+    runtime.sessionId = resolvedSessionId;
 
     const now = Date.now();
     const userMsg: ChatMessage = {
-      id: `user-${now}`,
+      id: displayedMessageId || `user-${now}`,
       role: "user",
-      content: text,
+      content: normalized,
       createdAt: now,
     };
     const assistantMsg: ChatMessage = {
@@ -482,14 +490,19 @@ export function useChat(
       isStreaming: true,
     };
     const assistantMsgId = assistantMsg.id;
-    streamingAssistantIdRef.current = assistantMsgId;
+    runtime.assistantMessageId = assistantMsgId;
 
-    setMessages(prev => [...prev, userMsg, assistantMsg]);
-    setIsStreaming(true);
+    setMessagesForAgent(agentId, (previous) => appendTurnMessages(
+      previous,
+      userMsg,
+      assistantMsg,
+      displayedMessageId,
+    ));
+    patchAgentState(agentId, { isStreaming: true });
 
     const controller = new AbortController();
-    abortRef.current = controller;
-    userStoppedRef.current = false;
+    runtime.controller = controller;
+    runtime.userStopped = false;
 
     const streamState = { doneReceived: false, terminalErrorReceived: false };
 
@@ -507,68 +520,78 @@ export function useChat(
     }
 
     try {
-      const sub = await api.submitChat(text, sessionId!, currentAgentId);
-      currentTurnIdRef.current = sub.turn_id;
+      const sub = await api.submitChat(normalized, resolvedSessionId, agentId);
+      runtime.turnId = sub.turn_id;
       const shouldStream = await api.waitUntilTurnRunning(sub.turn_id, controller.signal);
       if (!shouldStream) {
         streamState.doneReceived = true;
-        await loadMessages(currentAgentId, sessionId!);
+        await loadMessages(agentId, resolvedSessionId);
       } else {
-        const onEvent = createStreamEventHandler(assistantMsgId, streamState);
+        const onEvent = createStreamEventHandler(agentId, assistantMsgId, streamState);
         await api.streamTurn(sub.turn_id, onEvent, { signal: controller.signal, timeoutMs });
       }
-    } catch (e: any) {
-      if (e.name !== "AbortError") {
+    } catch (error: unknown) {
+      const isAbort = error instanceof Error && error.name === "AbortError";
+      if (!isAbort) {
         streamState.terminalErrorReceived = true;
         streamState.doneReceived = true;
-        const friendly = (e.message || "").includes("timeout")
-          ? e.message
-          : `**Connection error:** ${e.message}`;
-        setMessages(prev => {
-          const targetId = streamingAssistantIdRef.current || assistantMsgId;
-          const idx = prev.findIndex(m => m.id === targetId);
-          const last = idx >= 0 ? prev[idx] : null;
+        const message = error instanceof Error ? error.message : String(error);
+        const friendly = message.includes("timeout")
+          ? message
+          : `**Connection error:** ${message}`;
+        setMessagesForAgent(agentId, (previous) => {
+          const targetId = runtime.assistantMessageId || assistantMsgId;
+          const idx = previous.findIndex((item) => item.id === targetId);
+          const last = idx >= 0 ? previous[idx] : null;
           if (idx >= 0 && last?.role === "assistant") {
-            const updated = prev.slice();
+            const updated = previous.slice();
             updated[idx] = { ...last, content: last.content + `\n\n${friendly}`, isStreaming: false };
             return updated;
           }
-          return prev;
+          return previous;
         });
-      } else if (userStoppedRef.current) {
-        // 用户手动停止
       }
     } finally {
-      await finalizeStreamTurn(assistantMsgId, sessionId, streamState, true);
+      await finalizeStreamTurn(agentId, assistantMsgId, resolvedSessionId, streamState, true);
     }
   }, [
-    currentAgentId,
-    currentSessionId,
-    isStreaming,
+    chatState,
     createStreamEventHandler,
+    currentAgentId,
     finalizeStreamTurn,
     loadMessages,
+    patchAgentState,
     setCurrentSessionId,
+    setMessagesForAgent,
   ]);
 
-  sendMessageRef.current = sendMessage;
+  useEffect(() => {
+    queuedSenderRef.current = sendMessageForAgent;
+  }, [sendMessageForAgent]);
+
+  const sendMessage = useCallback((text: string) => (
+    sendMessageForAgent(currentAgentId, text, currentSessionId)
+  ), [currentAgentId, currentSessionId, sendMessageForAgent]);
 
   /** 刷新后：若服务端仍有未完成的用户 turn，拉历史并续接 SSE */
   useEffect(() => {
     if (!currentSessionId) return;
+    const agentId = currentAgentId;
+    const sessionId = currentSessionId;
+    const runtime = getAgentChatRuntime(runtimeRegistryRef.current, agentId);
+    runtime.sessionId = sessionId;
     let cancelled = false;
 
     void (async () => {
       const streamState = { doneReceived: false, terminalErrorReceived: false };
       let streamAssistantId = "";
       try {
-        const p = await api.fetchPendingTurn(currentSessionId, currentAgentId);
+        const p = await api.fetchPendingTurn(sessionId, agentId);
         if (cancelled) return;
         if (!p.turn_id || (p.status !== "queued" && p.status !== "running")) return;
-        if (abortRef.current) return;
-        if (isStreamingRef.current) return;
+        if (runtime.controller) return;
 
-        const msgs = await loadMessages(currentAgentId, currentSessionId);
+        const msgs = await loadMessages(agentId, sessionId);
         if (cancelled || msgs === null) return;
 
         const last = msgs[msgs.length - 1];
@@ -576,8 +599,8 @@ export function useChat(
 
         if (last?.role === "user") {
           streamAssistantId = resumeAssistantId;
-          streamingAssistantIdRef.current = resumeAssistantId;
-          setMessages(prev => [...prev, {
+          runtime.assistantMessageId = resumeAssistantId;
+          setMessagesForAgent(agentId, prev => [...prev, {
             id: resumeAssistantId,
             role: "assistant",
             content: "",
@@ -588,16 +611,16 @@ export function useChat(
           }]);
         } else if (last?.role === "assistant") {
           streamAssistantId = last.id;
-          streamingAssistantIdRef.current = last.id;
-          setMessages(prev =>
+          runtime.assistantMessageId = last.id;
+          setMessagesForAgent(agentId, prev =>
             prev.map((m, i) =>
               i === prev.length - 1 ? { ...m, isStreaming: true } : m
             )
           );
         } else {
           streamAssistantId = resumeAssistantId;
-          streamingAssistantIdRef.current = resumeAssistantId;
-          setMessages(prev => [...prev, {
+          runtime.assistantMessageId = resumeAssistantId;
+          setMessagesForAgent(agentId, prev => [...prev, {
             id: resumeAssistantId,
             role: "assistant",
             content: "",
@@ -608,11 +631,11 @@ export function useChat(
           }]);
         }
 
-        setIsStreaming(true);
+        patchAgentState(agentId, { isStreaming: true });
         const controller = new AbortController();
-        abortRef.current = controller;
-        currentTurnIdRef.current = p.turn_id;
-        userStoppedRef.current = false;
+        runtime.controller = controller;
+        runtime.turnId = p.turn_id;
+        runtime.userStopped = false;
 
         let timeoutMs: number | undefined;
         if (chatTimeoutRef.current === null) {
@@ -631,32 +654,34 @@ export function useChat(
           const shouldStream = await api.waitUntilTurnRunning(p.turn_id, controller.signal);
           if (!shouldStream) {
             streamState.doneReceived = true;
-            if (currentSessionId) await loadMessages(currentAgentId, currentSessionId);
+            await loadMessages(agentId, sessionId);
             return;
           }
         }
         if (cancelled) return;
 
-        const onEvent = createStreamEventHandler(streamAssistantId, streamState);
+        const onEvent = createStreamEventHandler(agentId, streamAssistantId, streamState);
         await api.streamTurn(p.turn_id, onEvent, { signal: controller.signal, timeoutMs });
-      } catch (e: any) {
-        if (e.name !== "AbortError") {
+      } catch (error: unknown) {
+        if (!(error instanceof Error && error.name === "AbortError")) {
           streamState.terminalErrorReceived = true;
           streamState.doneReceived = true;
           try {
-            if (currentSessionId) await loadMessages(currentAgentId, currentSessionId);
+            await loadMessages(agentId, sessionId);
           } catch { /* ignore */ }
         }
       } finally {
         if (!streamAssistantId) return;
         if (cancelled) {
-          currentTurnIdRef.current = null;
-          streamingAssistantIdRef.current = null;
-          abortRef.current = null;
-          setIsStreaming(false);
+          if (runtime.assistantMessageId === streamAssistantId) {
+            runtime.turnId = null;
+            runtime.assistantMessageId = null;
+            runtime.controller = null;
+            patchAgentState(agentId, { isStreaming: false });
+          }
           return;
         }
-        await finalizeStreamTurn(streamAssistantId, currentSessionId, streamState, false);
+        await finalizeStreamTurn(agentId, streamAssistantId, sessionId, streamState, false);
       }
     })();
 
@@ -668,22 +693,24 @@ export function useChat(
   }, [currentAgentId, currentSessionId]);
 
   const stopStreaming = useCallback(async () => {
-    userStoppedRef.current = true;
-    const sessionId = currentSessionId;
+    const agentId = currentAgentId;
+    const runtime = getAgentChatRuntime(runtimeRegistryRef.current, agentId);
+    runtime.userStopped = true;
+    const sessionId = currentSessionId || runtime.sessionId;
     if (sessionId) {
       try {
-        await api.abortChat(currentAgentId, sessionId, {
+        await api.abortChat(agentId, sessionId, {
           userInitiated: true,
-          turnId: currentTurnIdRef.current ?? undefined,
+          turnId: runtime.turnId ?? undefined,
         });
       } catch {
         // 后端 abort 失败时，降级为前端本地断流。
       }
     }
-    abortRef.current?.abort();
-    setIsStreaming(false);
-    const targetAssistantId = streamingAssistantIdRef.current;
-    setMessages(prev => {
+    runtime.controller?.abort();
+    patchAgentState(agentId, { isStreaming: false });
+    const targetAssistantId = runtime.assistantMessageId;
+    setMessagesForAgent(agentId, prev => {
       if (!targetAssistantId) return prev;
       const idx = prev.findIndex(m => m.id === targetAssistantId);
       const last = idx >= 0 ? prev[idx] : null;
@@ -694,36 +721,24 @@ export function useChat(
       }
       return prev;
     });
-  }, [currentAgentId, currentSessionId]);
+  }, [currentAgentId, currentSessionId, patchAgentState, setMessagesForAgent]);
+
+  const clearAgent = useCallback((agentId: string) => {
+    const runtime = runtimeRegistryRef.current.get(agentId);
+    if (!runtime?.controller) {
+      clearAgentChatRuntime(runtimeRegistryRef.current, agentId);
+    }
+    clearQueuedMessages(agentId);
+    dispatch({ type: "clear", agentId });
+  }, []);
 
   const clearChat = useCallback(() => {
-    setMessagesByAgent(prev => {
-      const next = new Map(prev);
-      next.delete(currentAgentId);
-      return next;
-    });
-    setIsStreamingByAgent(prev => {
-      const next = new Map(prev);
-      next.delete(currentAgentId);
-      return next;
-    });
-    setLifecycleEvents([]);
-    setLastUsage(null);
-    setSessionError(null);
-  }, [currentAgentId]);
+    clearAgent(currentAgentId);
+  }, [clearAgent, currentAgentId]);
 
-  useEffect(() => {
-    const currentStreaming = isStreamingByAgent.get(currentAgentId);
-    if (currentStreaming) {
-      if (!abortRef.current) {
-        setIsStreamingByAgent(prev => {
-          const next = new Map(prev);
-          next.set(currentAgentId, false);
-          return next;
-        });
-      }
-    }
-  }, [currentAgentId]);
+  const setSessionError = useCallback((value: string | null) => {
+    patchAgentState(currentAgentId, { sessionError: value });
+  }, [currentAgentId, patchAgentState]);
 
   return {
     messages,
@@ -738,5 +753,6 @@ export function useChat(
     stopStreaming,
     loadMessages,
     clearChat,
+    clearAgent,
   };
 }
