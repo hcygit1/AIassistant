@@ -27,7 +27,7 @@ cd frontend && npm install && npm run dev
 
 浏览器打开：<http://localhost:3000>
 
-质量检查：后端运行 `python3 -m pytest backend/tests`；前端依次运行 `npm test`、`npx tsc --noEmit`、`npm run lint` 和 `npm run build`。
+质量检查：后端运行 `python3 -m unittest discover -s backend/tests -p "test_*.py"`；前端依次运行 `npm test`、`npx tsc --noEmit`、`npm run lint` 和 `npm run build`。
 
 ---
 

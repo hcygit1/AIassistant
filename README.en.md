@@ -144,7 +144,7 @@ Open: <http://localhost:3000>
 
 ```bash
 # Backend
-python3 -m pytest backend/tests
+python3 -m unittest discover -s backend/tests -p "test_*.py"
 
 # Frontend
 cd frontend

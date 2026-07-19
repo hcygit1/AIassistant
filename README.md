@@ -144,7 +144,7 @@ npm run dev
 
 ```bash
 # 后端
-python3 -m pytest backend/tests
+python3 -m unittest discover -s backend/tests -p "test_*.py"
 
 # 前端
 cd frontend
