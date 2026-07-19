@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -11,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from system_messages.reminder_delivery import ReminderDeliveryService
+from sessions.session_work_store import SessionWorkStore
 
 
 class _FakeLock:
@@ -29,6 +31,15 @@ class _FakeDispatcher:
 
 class ReminderDeliveryServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        store = SessionWorkStore(Path(tempdir.name) / "session_work.db")
+        store_patch = patch(
+            "sessions.session_work_delivery.session_work_store",
+            store,
+        )
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
         self.service = ReminderDeliveryService()
 
     def test_deliver_cron_reminder_submits_cron_work_item_to_main_session(self) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -12,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from subagents.subagent_delivery import SubagentAnnounceDelivery
 from subagents.subagent_registry import SubagentRunRecord
+from sessions.session_work_store import SessionWorkStore
 
 
 class _FakeLock:
@@ -30,6 +32,15 @@ class _FakeDispatcher:
 
 class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        store = SessionWorkStore(Path(tempdir.name) / "session_work.db")
+        store_patch = patch(
+            "sessions.session_work_delivery.session_work_store",
+            store,
+        )
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
         self.delivery = SubagentAnnounceDelivery()
 
     async def test_deliver_to_main_requester_submits_announce_work_item(self) -> None:
