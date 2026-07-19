@@ -568,10 +568,11 @@ input::placeholder {
 
 .toast {
   position: fixed;
-  left: 16px;
+  left: calc(4rem + 24px);
   bottom: 100px;
   z-index: 200;
-  min-width: 260px;
+  width: min(380px, calc(100vw - 112px));
+  min-width: 0;
   max-width: 380px;
   padding: 10px 16px;
   border-radius: var(--radius-md);

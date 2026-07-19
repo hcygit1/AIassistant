@@ -32,3 +32,18 @@ test("keeps locale, theme and modal state outside AppProvider", () => {
   expect(uiState).toContain("showConfigModal");
   expect(uiState).toContain("showMemoryModal");
 });
+
+test("keeps toast notifications clear of the workspace rail", () => {
+  const styles = readFileSync("src/app/globals.css", "utf8");
+
+  expect(styles).toContain("left: calc(4rem + 24px);");
+  expect(styles).toContain("width: min(380px, calc(100vw - 112px));");
+  expect(styles).toContain("min-width: 0;");
+});
+
+test("uses the config drawer as the incomplete initialization notice", () => {
+  const page = readFileSync("src/app/page.tsx", "utf8");
+
+  expect(page).not.toContain("检测到尚未完成初始化");
+  expect(page).toContain("setShowConfigModal(true)");
+});

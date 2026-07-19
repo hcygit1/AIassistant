@@ -40,6 +40,7 @@ interface AppState {
   // Inspector
   inspectorWidth: number;
   setInspectorWidth: (w: number) => void;
+  isCompactLayout: boolean;
   inspectorPanelMode: "docked" | "overlay" | "hidden";
   setInspectorPanelMode: (mode: "docked" | "overlay" | "hidden") => void;
   inspectorTab: string;
@@ -118,6 +119,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const {
     inspectorWidth,
     setInspectorWidth,
+    isCompactLayout,
     inspectorPanelMode,
     setInspectorPanelMode,
     inspectorTab,
@@ -309,6 +311,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     inspectorWidth,
     setInspectorWidth,
+    isCompactLayout,
     inspectorPanelMode,
     setInspectorPanelMode,
     inspectorTab,

@@ -13,6 +13,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useApp } from "@/lib/store";
+import { resolveInspectorOpenMode } from "@/lib/inspectorLayout";
 
 type InspectorTabId = "files" | "tools" | "skills" | "subagents" | "heartbeat" | "tasks";
 
@@ -69,6 +70,7 @@ function RailButton({
 export default function WorkspaceRail() {
   const {
     inspectorPanelMode,
+    isCompactLayout,
     inspectorTab,
     setInspectorPanelMode,
     setInspectorTab,
@@ -79,8 +81,10 @@ export default function WorkspaceRail() {
 
   const openInspectorTab = (tab: InspectorTabId) => {
     setInspectorTab(tab);
-    if (inspectorPanelMode === "hidden") {
-      setInspectorPanelMode("docked");
+    if (isCompactLayout) {
+      setInspectorPanelMode(resolveInspectorOpenMode(true));
+    } else if (inspectorPanelMode === "hidden") {
+      setInspectorPanelMode(resolveInspectorOpenMode(false));
     }
   };
 
@@ -117,7 +121,11 @@ export default function WorkspaceRail() {
         </RailButton>
         <RailButton
           label={inspectorPanelMode === "hidden" ? "展开侧栏" : "收起侧栏"}
-          onClick={() => setInspectorPanelMode(inspectorPanelMode === "hidden" ? "docked" : "hidden")}
+          onClick={() => setInspectorPanelMode(
+            inspectorPanelMode === "hidden"
+              ? resolveInspectorOpenMode(isCompactLayout)
+              : "hidden",
+          )}
         >
           {inspectorPanelMode === "hidden" ? (
             <PanelRightOpen className="h-4 w-4" />

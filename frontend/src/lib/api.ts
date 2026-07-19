@@ -431,6 +431,8 @@ export async function fetchModels() {
 
 export async function fetchCurrentModel(agentId: string) {
   const resp = await fetch(`${API_BASE}/models/current/${agentId}`);
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(await readErrorMessage(resp));
   return resp.json();
 }
 

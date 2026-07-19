@@ -18,12 +18,12 @@ export default function HomePage() {
     loadMainSession,
     inspectorWidth,
     setInspectorWidth,
+    isCompactLayout,
     inspectorPanelMode,
     uiNotice,
     clearNotice,
     sessionError,
     setShowConfigModal,
-    showNotice,
   } = useApp();
   const initCheckedRef = useRef(false);
 
@@ -39,13 +39,9 @@ export default function HomePage() {
     api.fetchInitStatus().then((status) => {
       if (!status.config_ready) {
         setShowConfigModal(true);
-        showNotice({
-          kind: "info",
-          text: "检测到尚未完成初始化，请先在配置中心添加 Provider 并设置默认模型。",
-        });
       }
     }).catch(() => {});
-  }, [setShowConfigModal, showNotice]);
+  }, [setShowConfigModal]);
 
   useEffect(() => {
     if (!uiNotice) return;
@@ -89,15 +85,17 @@ export default function HomePage() {
           className="w-[1px] h-full flex-shrink-0"
           style={{ background: "linear-gradient(to bottom, transparent, var(--border), transparent)" }}
         />
-        {inspectorPanelMode === "docked" && (
+        {inspectorPanelMode === "docked" && !isCompactLayout && (
           <>
             <div
               style={{ width: inspectorWidth, minWidth: 280, borderRight: "1px solid var(--border)" }}
-              className="flex-shrink-0 overflow-hidden flex flex-col bg-[var(--bg)]"
+              className="hidden flex-shrink-0 overflow-hidden bg-[var(--bg)] md:flex md:flex-col"
             >
               <InspectorPanel />
             </div>
-            <ResizeHandle onResize={(delta) => setInspectorWidth(Math.max(280, inspectorWidth + delta))} />
+            <div className="hidden md:block">
+              <ResizeHandle onResize={(delta) => setInspectorWidth(Math.max(280, inspectorWidth + delta))} />
+            </div>
           </>
         )}
         <div className="flex-1 min-w-0 overflow-hidden">
@@ -111,8 +109,8 @@ export default function HomePage() {
           }`}
           style={{
             left: "4rem",
-            width: inspectorWidth,
-            minWidth: 280,
+            width: `min(${inspectorWidth}px, calc(100% - 4rem))`,
+            minWidth: 0,
             background: "var(--bg)",
             borderRight: "1px solid var(--border)",
             boxShadow: "var(--shadow-xl)",

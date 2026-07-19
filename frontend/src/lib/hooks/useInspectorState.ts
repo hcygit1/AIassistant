@@ -3,8 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 
 import * as api from "../api";
+import {
+  COMPACT_LAYOUT_QUERY,
+  normalizeInspectorPanelMode,
+} from "../inspectorLayout";
+import type { InspectorPanelMode } from "../inspectorLayout";
 
-export type InspectorPanelMode = "docked" | "overlay" | "hidden";
+export type { InspectorPanelMode } from "../inspectorLayout";
 
 export interface InspectorFile {
   path: string;
@@ -14,6 +19,7 @@ export interface InspectorFile {
 export function useInspectorState(currentAgentId: string) {
   const [inspectorWidth, setInspectorWidth] = useState(380);
   const [inspectorPanelMode, setInspectorPanelMode] = useState<InspectorPanelMode>("docked");
+  const [isCompactLayout, setIsCompactLayout] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<string>("files");
   const [inspectorFile, setInspectorFile] = useState<InspectorFile | null>(null);
   const [inspectorFileLoading, setInspectorFileLoading] = useState(false);
@@ -31,6 +37,21 @@ export function useInspectorState(currentAgentId: string) {
     } catch {
       // Ignore unavailable local storage.
     }
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia(COMPACT_LAYOUT_QUERY);
+    const syncLayout = () => {
+      const compact = media.matches;
+      setIsCompactLayout(compact);
+      setInspectorPanelMode((mode) => (
+        normalizeInspectorPanelMode(mode, compact)
+      ));
+    };
+
+    syncLayout();
+    media.addEventListener("change", syncLayout);
+    return () => media.removeEventListener("change", syncLayout);
   }, []);
 
   useEffect(() => {
@@ -75,6 +96,7 @@ export function useInspectorState(currentAgentId: string) {
   return {
     inspectorWidth,
     setInspectorWidth,
+    isCompactLayout,
     inspectorPanelMode,
     setInspectorPanelMode,
     inspectorTab,

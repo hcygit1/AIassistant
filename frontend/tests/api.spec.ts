@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { getTurnStatus, resolveApiBase } from "../src/lib/api";
+import {
+  fetchCurrentModel,
+  getTurnStatus,
+  resolveApiBase,
+} from "../src/lib/api";
 
 const originalFetch = globalThis.fetch;
 
@@ -65,5 +69,20 @@ test.describe("getTurnStatus", () => {
     await expect(getTurnStatus("missing-turn")).rejects.toThrow(
       "unknown turn_id",
     );
+  });
+});
+
+test.describe("fetchCurrentModel", () => {
+  test("returns null while no model is configured", async () => {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({ detail: "未配置可用模型" }),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+
+    await expect(fetchCurrentModel("main")).resolves.toBeNull();
   });
 });
