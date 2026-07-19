@@ -280,6 +280,14 @@ class SessionDispatcher:
                     c = event.get("content")
                     if isinstance(c, str) and c.strip():
                         done_content = c
+                elif et == "error":
+                    error = event.get("error")
+                    message = (
+                        error.strip()
+                        if isinstance(error, str) and error.strip()
+                        else "agent stream failed"
+                    )
+                    raise RuntimeError(message)
 
             response = "".join(response_parts).strip()
             if done_content is not None and done_content.strip():

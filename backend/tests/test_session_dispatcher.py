@@ -279,5 +279,49 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retained.status, "cancelled")
 
 
+class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_error_event_marks_work_failed_without_success_callback(self) -> None:
+        dispatcher = SessionDispatcher(lock=asyncio.Lock())
+        succeeded: list[str] = []
+        failed: list[str] = []
+        task = SessionWorkItem(
+            kind="cron",
+            priority=PRIORITY_CRON,
+            content="run scheduled task",
+            agent_id="main",
+            session_id="main-main",
+            work_id="work-1",
+            on_success=lambda: succeeded.append("done"),
+            on_failure_async=lambda error: _record_failure(failed, error),
+        )
+
+        async def fake_stream(*args, **kwargs):
+            yield {"type": "error", "error": "model failed"}
+
+        with (
+            patch("runtime.agent.agent_manager.astream", fake_stream),
+            patch(
+                "sessions.session_work_store.session_work_store.mark_running",
+                return_value=True,
+            ),
+            patch(
+                "sessions.session_work_store.session_work_store.mark_done"
+            ) as mark_done,
+            patch(
+                "sessions.session_work_store.session_work_store.mark_failed"
+            ) as mark_failed,
+        ):
+            await dispatcher._execute_system(task)
+
+        self.assertEqual(succeeded, [])
+        self.assertEqual(failed, ["model failed"])
+        mark_done.assert_not_called()
+        mark_failed.assert_called_once_with("work-1", "model failed")
+
+
+async def _record_failure(target: list[str], error: Exception) -> None:
+    target.append(str(error))
+
+
 if __name__ == "__main__":
     unittest.main()
