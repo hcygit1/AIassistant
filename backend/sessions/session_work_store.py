@@ -199,6 +199,23 @@ class SessionWorkStore:
             finally:
                 conn.close()
 
+    def fail_unrecoverable_pending(self, error: str) -> int:
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cursor = conn.execute(
+                    """UPDATE session_work
+                    SET status='failed', finished_at_ms=?, last_error=?
+                    WHERE recover_on_restart=0
+                        AND status IN ('queued', 'running')""",
+                    (now_ms, error),
+                )
+                conn.commit()
+                return cursor.rowcount
+            finally:
+                conn.close()
+
     def mark_done(self, work_id: str) -> None:
         now_ms = int(time.time() * 1000)
         with self._lock:

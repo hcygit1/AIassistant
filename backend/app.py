@@ -102,11 +102,18 @@ async def lifespan(application: FastAPI):
         await agent_manager.initialize(str(DATA_DIR))
         skills_watcher.start()
 
+        from sessions.session_work_delivery import session_work_delivery
+        failed_work_count = session_work_delivery.fail_unrecoverable_pending()
+        if failed_work_count:
+            logger.info(
+                "Marked %s interrupted non-recoverable system work items as failed",
+                failed_work_count,
+            )
+
         agent_ids = [a["id"] for a in list_agents()]
         await heartbeat_runner.start(agent_ids)
         logger.info(f"Heartbeat started for agents: {agent_ids}")
 
-        from sessions.session_work_delivery import session_work_delivery
         recovered_work_count = session_work_delivery.recover_pending_work()
         if recovered_work_count:
             logger.info("Recovered %s pending system work items", recovered_work_count)

@@ -120,6 +120,55 @@ class SessionWorkDeliveryTests(unittest.TestCase):
         self.assertEqual(current.status, "queued")
         self.assertIsNone(current.started_at_ms)
 
+    def test_store_fails_only_unrecoverable_pending_work_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            queued = store.create_record(
+                kind="announce",
+                agent_id="main",
+                session_id="main-main",
+                content="queued",
+                priority=0,
+                recover_on_restart=False,
+            )
+            running = store.create_record(
+                kind="heartbeat",
+                agent_id="main",
+                session_id="main-main",
+                content="running",
+                priority=3,
+                recover_on_restart=False,
+            )
+            running.status = "running"
+            recoverable = store.create_record(
+                kind="cron",
+                agent_id="main",
+                session_id="main-main",
+                content="recoverable",
+                priority=2,
+                recover_on_restart=True,
+            )
+            store.insert(queued)
+            store.insert(running)
+            store.insert(recoverable)
+
+            failed = store.fail_unrecoverable_pending(
+                "interrupted by process restart"
+            )
+
+            queued_current = store.get(queued.id)
+            running_current = store.get(running.id)
+            recoverable_current = store.get(recoverable.id)
+
+        self.assertEqual(failed, 2)
+        self.assertEqual(queued_current.status, "failed")
+        self.assertEqual(running_current.status, "failed")
+        self.assertEqual(
+            queued_current.last_error,
+            "interrupted by process restart",
+        )
+        self.assertEqual(recoverable_current.status, "queued")
+
     def test_store_query_can_find_failed_announce_by_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SessionWorkStore(Path(tmpdir) / "session_work.db")

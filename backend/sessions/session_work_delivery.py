@@ -14,6 +14,8 @@ from sessions.session_dispatcher import SessionWorkItem, dispatcher_manager
 from sessions.session_lock_manager import session_lock_manager
 from sessions.session_work_store import SessionWorkRecord, session_work_store
 
+INTERRUPTED_WORK_ERROR = "interrupted by process restart"
+
 
 class SessionWorkDelivery:
     def _submit_record(
@@ -101,6 +103,11 @@ class SessionWorkDelivery:
             self._submit_record(record)
             recovered += 1
         return recovered
+
+    def fail_unrecoverable_pending(self) -> int:
+        return session_work_store.fail_unrecoverable_pending(
+            INTERRUPTED_WORK_ERROR
+        )
 
 
 session_work_delivery = SessionWorkDelivery()

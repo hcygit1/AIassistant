@@ -4,7 +4,7 @@ import sys
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 
@@ -49,6 +49,7 @@ class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
         AsyncMock,
         AsyncMock,
         AsyncMock,
+        Mock,
     ]:
         stack = ExitStack()
         initialize_mock = AsyncMock()
@@ -56,6 +57,7 @@ class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
         wait_mock = AsyncMock()
         heartbeat_start_mock = AsyncMock()
         heartbeat_stop_mock = AsyncMock()
+        fail_unrecoverable_mock = Mock(return_value=0)
 
         for target in (
             patch.object(backend_app, "load_config"),
@@ -75,6 +77,10 @@ class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
                 heartbeat_runner,
                 "stop",
                 new=heartbeat_stop_mock,
+            ),
+            patch(
+                "sessions.session_work_delivery.session_work_delivery.fail_unrecoverable_pending",
+                new=fail_unrecoverable_mock,
             ),
             patch(
                 "sessions.session_work_delivery.session_work_delivery.recover_pending_work",
@@ -99,11 +105,12 @@ class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
             wait_mock,
             heartbeat_start_mock,
             heartbeat_stop_mock,
+            fail_unrecoverable_mock,
         )
 
     async def test_lifespan_closes_agent_manager_on_shutdown(self) -> None:
         application = FastAPI()
-        stack, initialize_mock, close_mock, wait_mock, _, _ = (
+        stack, initialize_mock, close_mock, wait_mock, _, _, fail_unrecoverable_mock = (
             self._patch_lifespan_dependencies()
         )
 
@@ -112,12 +119,13 @@ class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
                 pass
 
         initialize_mock.assert_awaited_once()
+        fail_unrecoverable_mock.assert_called_once_with()
         close_mock.assert_awaited_once_with(timeout=30)
         wait_mock.assert_not_awaited()
 
     async def test_lifespan_closes_agent_manager_when_application_raises(self) -> None:
         application = FastAPI()
-        stack, _, close_mock, wait_mock, _, _ = self._patch_lifespan_dependencies()
+        stack, _, close_mock, wait_mock, _, _, _ = self._patch_lifespan_dependencies()
 
         with stack:
             with self.assertRaisesRegex(RuntimeError, "application failed"):
@@ -129,7 +137,7 @@ class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_lifespan_stops_heartbeat_before_closing_agent_manager(self) -> None:
         application = FastAPI()
-        stack, _, close_mock, _, _, heartbeat_stop_mock = (
+        stack, _, close_mock, _, _, heartbeat_stop_mock, _ = (
             self._patch_lifespan_dependencies()
         )
         shutdown_order: list[str] = []
@@ -159,6 +167,7 @@ class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
             _,
             heartbeat_start_mock,
             heartbeat_stop_mock,
+            _,
         ) = self._patch_lifespan_dependencies()
         heartbeat_start_mock.side_effect = RuntimeError("heartbeat failed")
 
