@@ -7,6 +7,7 @@ import { useChat } from "./hooks/useChat";
 import { useSubagents } from "./hooks/useSubagents";
 import { useInspectorState } from "./hooks/useInspectorState";
 import { useAgentEvents } from "./hooks/useAgentEvents";
+import { ApprovalProvider, useApproval } from "./approvalContext";
 import { UiProvider, useUi } from "./uiContext";
 import type { UiNotice } from "./hooks/useAppUiState";
 import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
@@ -71,10 +72,6 @@ interface AppState {
   showNotice: (notice: UiNotice) => void;
   clearNotice: () => void;
 
-  // Exec approval
-  pendingApproval: { approval_id: string; tool: string; input_preview: string } | null;
-  setPendingApproval: (v: { approval_id: string; tool: string; input_preview: string } | null) => void;
-
   // i18n
   locale: Locale;
   setLocale: (locale: Locale) => void;
@@ -97,7 +94,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [currentModel, setCurrentModel] = useState<any | null>(null);
   const [ragMode, setRagModeState] = useState(false);
   const [skillsRefreshTrigger, setSkillsRefreshTrigger] = useState(0);
-  const [pendingApproval, setPendingApproval] = useState<{ approval_id: string; tool: string; input_preview: string } | null>(null);
   const lastLifecycleNoticeKeyRef = useRef("");
   const loadMainSessionReqRef = useRef(0);
   const currentAgentIdRef = useRef("main");
@@ -117,6 +113,7 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     showNotice,
     clearNotice,
   } = useUi();
+  const { setPendingApproval } = useApproval();
   const {
     inspectorWidth,
     setInspectorWidth,
@@ -221,7 +218,7 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     (approval: { approval_id: string; tool: string; input_preview: string }) => {
       setPendingApproval(approval);
     },
-    [],
+    [setPendingApproval],
   );
 
   useAgentEvents(currentAgentId, {
@@ -332,9 +329,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     showNotice,
     clearNotice,
 
-    pendingApproval,
-    setPendingApproval,
-
     locale,
     setLocale,
     t,
@@ -352,7 +346,9 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
 export function AppProvider({ children }: { children: React.ReactNode }) {
   return (
     <UiProvider>
-      <AppStateProvider>{children}</AppStateProvider>
+      <ApprovalProvider>
+        <AppStateProvider>{children}</AppStateProvider>
+      </ApprovalProvider>
     </UiProvider>
   );
 }

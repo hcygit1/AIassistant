@@ -1,6 +1,6 @@
 "use client";
 
-import { useApp } from "@/lib/store";
+import { useApproval } from "@/lib/approvalContext";
 import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import { AlertTriangle, ShieldAlert, FileEdit, Check, X } from "lucide-react";
@@ -62,7 +62,7 @@ function toolLabel(tool: string, t: Messages): string {
 }
 
 export default function ApprovalModal() {
-  const { pendingApproval, setPendingApproval } = useApp();
+  const { pendingApproval, setPendingApproval } = useApproval();
   const { showNotice, t } = useUi();
 
   if (!pendingApproval) return null;

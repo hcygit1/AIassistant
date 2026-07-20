@@ -69,6 +69,23 @@ test("keeps agent event subscription outside AppProvider", () => {
   expect(hook).toContain("approval_required");
 });
 
+test("keeps approval state outside AppStateProvider", () => {
+  const contextPath = "src/lib/approvalContext.tsx";
+  expect(existsSync(contextPath)).toBe(true);
+  if (!existsSync(contextPath)) return;
+
+  const context = readFileSync(contextPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+  const modal = readFileSync("src/components/layout/ApprovalModal.tsx", "utf8");
+
+  expect(context).toContain("ApprovalProvider");
+  expect(context).toContain("useApproval");
+  expect(store).not.toContain("const [pendingApproval");
+  expect(store).not.toContain("pendingApproval,");
+  expect(modal).toContain("useApproval");
+  expect(modal).not.toContain("pendingApproval } = useApp()");
+});
+
 test("keeps UI-only fields out of useApp consumers", () => {
   const uiFields = new Set([
     "showConfigModal",
