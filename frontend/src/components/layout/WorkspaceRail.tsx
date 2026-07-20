@@ -13,6 +13,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import { resolveInspectorOpenMode } from "@/lib/inspectorLayout";
 
 type InspectorTabId = "files" | "tools" | "skills" | "subagents" | "heartbeat" | "tasks";
@@ -74,10 +75,8 @@ export default function WorkspaceRail() {
     inspectorTab,
     setInspectorPanelMode,
     setInspectorTab,
-    setShowMemoryModal,
-    setShowConfigModal,
-    t,
   } = useApp();
+  const { setShowMemoryModal, setShowConfigModal, t } = useUi();
 
   const openInspectorTab = (tab: InspectorTabId) => {
     setInspectorTab(tab);

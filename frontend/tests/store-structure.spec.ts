@@ -1,5 +1,14 @@
 import { expect, test } from "@playwright/test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
+function listTsxFiles(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) return listTsxFiles(path);
+    return entry.isFile() && path.endsWith(".tsx") ? [path] : [];
+  });
+}
 
 test("keeps inspector persistence and file operations outside AppProvider", () => {
   const hookPath = "src/lib/hooks/useInspectorState.ts";
@@ -44,6 +53,45 @@ test("exposes UI state through a dedicated context", () => {
   expect(context).toContain("UiProvider");
   expect(context).toContain("useUi");
   expect(store).not.toContain("useAppUiState()");
+});
+
+test("keeps UI-only fields out of useApp consumers", () => {
+  const uiFields = new Set([
+    "showConfigModal",
+    "setShowConfigModal",
+    "showMemoryModal",
+    "setShowMemoryModal",
+    "theme",
+    "effectiveTheme",
+    "setTheme",
+    "uiNotice",
+    "showNotice",
+    "clearNotice",
+    "locale",
+    "setLocale",
+    "t",
+  ]);
+  const files = [
+    ...listTsxFiles("src/app"),
+    ...listTsxFiles("src/components"),
+  ];
+
+  for (const file of files) {
+    const source = readFileSync(file, "utf8");
+    const appSelections = source.matchAll(
+      /const\s*\{((?:(?!useUi\(\);)[\s\S])*?)\}\s*=\s*useApp\(\);/g,
+    );
+    for (const selection of appSelections) {
+      const selectedNames = selection[1]
+        .split(",")
+        .map((name) => name.trim().split(":")[0].trim())
+        .filter(Boolean);
+      expect(
+        selectedNames.filter((name) => uiFields.has(name)),
+        `${file} should read UI-only fields from useUi()`,
+      ).toEqual([]);
+    }
+  }
 });
 
 test("keeps toast notifications clear of the workspace rail", () => {

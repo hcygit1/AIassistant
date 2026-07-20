@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import {
   X, BrainCircuit, BarChart3, ListTodo, Sparkles, Search,
@@ -611,7 +612,8 @@ const TABS = [
 type TabKey = (typeof TABS)[number]["key"];
 
 export default function MemoryModal() {
-  const { currentAgentId, showMemoryModal, setShowMemoryModal } = useApp();
+  const { currentAgentId } = useApp();
+  const { showMemoryModal, setShowMemoryModal } = useUi();
   const [tab, setTab] = useState<TabKey>("overview");
 
   useEffect(() => {

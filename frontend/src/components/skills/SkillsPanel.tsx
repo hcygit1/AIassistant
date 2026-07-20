@@ -33,8 +33,8 @@ function useStatusBadge() {
 }
 
 export default function SkillsPanel() {
-  const { currentAgentId, showNotice, skillsRefreshTrigger } = useApp();
-  const { t } = useUi();
+  const { currentAgentId, skillsRefreshTrigger } = useApp();
+  const { t, showNotice } = useUi();
   const [skills, setSkills] = useState<SkillDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");

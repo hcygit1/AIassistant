@@ -2,6 +2,7 @@
 
 import { useRef, useEffect } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
 import RetrievalCard from "./RetrievalCard";
@@ -11,8 +12,9 @@ import PIPIXIAMark from "@/components/icons/PipixiaMark";
 export default function ChatPanel() {
   const {
     messages, currentSessionId, sessionError,
-    currentAgentId, agents, runningSubagents, setInspectorTab, t,
+    currentAgentId, agents, runningSubagents, setInspectorTab,
   } = useApp();
+  const { t } = useUi();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

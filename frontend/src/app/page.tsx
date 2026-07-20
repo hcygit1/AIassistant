@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import * as api from "@/lib/api";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import Navbar from "@/components/layout/Navbar";
 import ChatPanel from "@/components/chat/ChatPanel";
 import InspectorPanel from "@/components/editor/InspectorPanel";
@@ -20,11 +21,9 @@ export default function HomePage() {
     setInspectorWidth,
     isCompactLayout,
     inspectorPanelMode,
-    uiNotice,
-    clearNotice,
     sessionError,
-    setShowConfigModal,
   } = useApp();
+  const { uiNotice, clearNotice, setShowConfigModal } = useUi();
   const initCheckedRef = useRef(false);
 
   useEffect(() => {

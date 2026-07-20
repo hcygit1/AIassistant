@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import {
   X, ToggleLeft, ToggleRight, Plus, Trash2,
   ChevronDown, ChevronRight, Save, AlertCircle,
@@ -64,7 +65,7 @@ function SecretInput({ label, value, secretPath, hint, placeholder, onSaved }: {
   label: string; value: string; secretPath: string;
   hint?: string; placeholder?: string; onSaved?: () => void;
 }) {
-  const { showNotice } = useApp();
+  const { showNotice } = useUi();
   const [editing, setEditing] = useState(false);
   const [local, setLocal] = useState("");
   const [show, setShow] = useState(false);
@@ -290,7 +291,7 @@ function AgentCard({ agent, models, config, onConfigChange, onDelete, onError }:
   onConfigChange: (newConfig: any) => void; onDelete: (id: string) => void;
   onError?: (msg: string) => void;
 }) {
-  const { t } = useApp();
+  const { t } = useUi();
   const [expanded, setExpanded] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const agentsList: any[] = config.agents?.list || [];
@@ -368,7 +369,16 @@ function AgentCard({ agent, models, config, onConfigChange, onDelete, onError }:
 /* ───────────────────── Main ConfigModal ───────────────────── */
 
 export default function ConfigModal() {
-  const { currentAgentId, currentModel, loadMainSession, loadAgents, switchAgent, showConfigModal, setShowConfigModal, effectiveTheme, showNotice, locale, setLocale, t } = useApp();
+  const { currentAgentId, currentModel, loadMainSession, loadAgents, switchAgent } = useApp();
+  const {
+    showConfigModal,
+    setShowConfigModal,
+    effectiveTheme,
+    showNotice,
+    locale,
+    setLocale,
+    t,
+  } = useUi();
   const [config, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);

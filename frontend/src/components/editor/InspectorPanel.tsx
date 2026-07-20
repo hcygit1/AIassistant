@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import { FileText, Save, FolderOpen, Sparkles, Users, Wrench, Heart, ChevronRight, PanelRightClose, ListTodo, ToggleLeft, ToggleRight } from "lucide-react";
 import * as api from "@/lib/api";
 import type { Messages } from "@/lib/i18n/locales";
@@ -50,9 +51,9 @@ const TAB_DEFS: { id: TabId; labelKey: string; icon: any }[] = [
 export default function InspectorPanel() {
   const {
     currentAgentId, inspectorFile, inspectorFileLoading, openFile, saveInspectorFile,
-    inspectorTab, effectiveTheme, setInspectorPanelMode,
-    showNotice, t,
+    inspectorTab, setInspectorPanelMode,
   } = useApp();
+  const { effectiveTheme, showNotice, t } = useUi();
 
   const activeTab = inspectorTab as TabId;
   const activeDef = TAB_DEFS.find((tab) => tab.id === activeTab);

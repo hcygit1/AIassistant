@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import type { SubagentTreeItem } from "@/lib/api";
 import type { LiveTraceEntry } from "@/lib/subagentState";
@@ -25,13 +26,12 @@ export default function SubagentPanel() {
   const {
     currentAgentId,
     loadMainSession,
-    showNotice,
-    t,
     subagentTree: tree,
     subagentTraceMap: traceMap,
     subagentsLoading: loading,
     refreshSubagents,
   } = useApp();
+  const { showNotice, t } = useUi();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [killAllBusy, setKillAllBusy] = useState(false);
   const [lastSteerPrompt, setLastSteerPrompt] = useState("");
@@ -127,7 +127,8 @@ function SubagentTreeNode({
   lastSteerPrompt: string;
   setLastSteerPrompt: (v: string) => void;
 }) {
-  const { currentAgentId, loadMainSession, t } = useApp();
+  const { currentAgentId, loadMainSession } = useApp();
+  const { t } = useUi();
   const status = node.state || node.status;
   const isRunning = status === "running";
   const isExpanded = expanded.has(node.run_id);
@@ -365,7 +366,7 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 function ChatBubble({ msg }: { msg: SubagentMessage }) {
-  const { t } = useApp();
+  const { t } = useUi();
   const isUser = msg.role === "user";
   const isAssistant = msg.role === "assistant";
   const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;

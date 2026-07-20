@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useMemo } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import { StopCircle, ArrowUp, ChevronDown, Sparkles } from "lucide-react";
 
 function formatUsageCount(n: number | undefined | null): string {
@@ -57,9 +58,8 @@ export default function ChatInput() {
     currentModel,
     lastUsage,
     contextUtilization,
-    setShowConfigModal,
-    t,
   } = useApp();
+  const { setShowConfigModal, t } = useUi();
   const [text, setText] = useState("");
   const [showCommands, setShowCommands] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

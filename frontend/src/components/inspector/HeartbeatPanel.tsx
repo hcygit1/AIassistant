@@ -57,8 +57,8 @@ const REASON_LABELS: Record<string, string> = {
 };
 
 export default function HeartbeatPanel() {
-  const { currentAgentId, showNotice } = useApp();
-  const { t } = useUi();
+  const { currentAgentId } = useApp();
+  const { t, showNotice } = useUi();
   const [heartbeatConfig, setHeartbeatConfig] = useState<{ enabled: boolean; every: string } | null>(null);
   const [heartbeatToggling, setHeartbeatToggling] = useState(false);
   const [events, setEvents] = useState<any[]>([]);
