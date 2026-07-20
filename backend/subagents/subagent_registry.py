@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal
 
 from subagents.subagent_relationships import SubagentRelationshipService
+from subagents.subagent_run_lifecycle import SubagentRunLifecycleService
 from subagents.subagent_run_state import SubagentRunStateService
 from subagents.subagent_run_store import SubagentRunStore
 
@@ -69,6 +70,16 @@ class SubagentRegistry:
             persist=lambda: self._persist_to_disk(),
         )
         self._relationships = SubagentRelationshipService(self.list_runs)
+        self._lifecycle = SubagentRunLifecycleService(
+            store=self._store,
+            state=self._state,
+            relationships=self._relationships,
+            persist=lambda: self._persist_to_disk(),
+            record_factory=SubagentRunRecord,
+            snapshot=self._snapshot_record,
+            resolve_archive_after_ms=_resolve_archive_after_ms,
+            capacity_error=SubagentCapacityError,
+        )
         self._restore_from_disk()
 
     @property
@@ -105,11 +116,7 @@ class SubagentRegistry:
         spawn_depth: int = 0,
         max_active_for_requester: int | None = None,
     ) -> SubagentRunRecord:
-        now = time.time()
-        archive_after_ms = _resolve_archive_after_ms()
-        archive_at_ms = (now * 1000 + archive_after_ms) if archive_after_ms else None
-
-        record = SubagentRunRecord(
+        return self._lifecycle.register_run(
             run_id=run_id,
             child_session_key=child_session_key,
             requester_session_key=requester_session_key,
@@ -118,40 +125,13 @@ class SubagentRegistry:
             task=task,
             label=label,
             model=model,
-            cleanup=cleanup,  # type: ignore
+            cleanup=cleanup,
             spawn_depth=spawn_depth,
-            archive_at_ms=archive_at_ms,
+            max_active_for_requester=max_active_for_requester,
         )
-        with self._store.locked_records() as runs:
-            if max_active_for_requester is not None:
-                active = sum(
-                    1
-                    for current in runs.values()
-                    if current.requester_session_key
-                    == requester_session_key
-                    and current.ended_at is None
-                )
-                if active >= max_active_for_requester:
-                    raise SubagentCapacityError(
-                        "active sub-agent capacity reached"
-                    )
-            runs[run_id] = record
-            self._persist_to_disk()
-        return self._snapshot_record(record)
 
     def set_task(self, run_id: str, task: Any) -> bool:
-        with self._store.locked_records() as runs:
-            record = runs.get(run_id)
-            if record is not None and record.ended_at is None:
-                record.asyncio_task = task
-                return True
-
-        try:
-            if hasattr(task, "cancel"):
-                task.cancel()
-        except Exception:
-            pass
-        return False
+        return self._lifecycle.set_task(run_id, task)
 
     def mark_started(self, run_id: str) -> None:
         self._state.mark_started(run_id)
@@ -175,47 +155,7 @@ class SubagentRegistry:
 
     def kill(self, run_id: str, cascade: bool = True) -> bool:
         """终止 run，cascade=True 时递归终止其子 runs"""
-        tasks_to_cancel: list[Any] = []
-        with self._store.locked_records() as runs:
-            root = runs.get(run_id)
-            if root is None or root.ended_at is not None:
-                return False
-
-            pending = [run_id]
-            visited: set[str] = set()
-            while pending:
-                current_id = pending.pop()
-                if current_id in visited:
-                    continue
-                visited.add(current_id)
-                record = runs.get(current_id)
-                if record is None or record.ended_at is not None:
-                    continue
-
-                if cascade:
-                    child_sk = self._relationships.session_key_from_child_session_key(
-                        record.child_session_key
-                    )
-                    pending.extend(
-                        child.run_id
-                        for child in runs.values()
-                        if child.requester_session_key == child_sk
-                        and child.ended_at is None
-                    )
-
-                self._state.terminate_record(record, "killed")
-                if record.asyncio_task is not None:
-                    tasks_to_cancel.append(record.asyncio_task)
-
-            self._persist_to_disk()
-
-        for task in tasks_to_cancel:
-            try:
-                if hasattr(task, "cancel"):
-                    task.cancel()
-            except Exception:
-                pass
-        return True
+        return self._lifecycle.kill(run_id, cascade=cascade)
 
     def list_runs_for_requester(
         self, requester_key: str, include_recent_minutes: int = 30
@@ -266,12 +206,7 @@ class SubagentRegistry:
 
     def remove_run(self, run_id: str) -> bool:
         """Remove one run and persist the registry change."""
-        with self._store.locked_records() as runs:
-            removed = runs.pop(run_id, None)
-        if removed is None:
-            return False
-        self._persist_to_disk()
-        return True
+        return self._lifecycle.remove_run(run_id)
 
     def mark_announce_retry(self, run_id: str) -> bool:
         """标记 announce 重试，返回是否可继续重试（未超限且未过期）"""
@@ -318,17 +253,7 @@ class SubagentRegistry:
         return self._relationships.count_active_descendant_runs(root_session_key)
 
     def cleanup_old(self, max_age_hours: int = 24) -> int:
-        cutoff = time.time() - max_age_hours * 3600
-        with self._store.locked_records() as runs:
-            to_remove = [
-                rid for rid, r in runs.items()
-                if r.ended_at is not None and r.ended_at < cutoff
-            ]
-            for rid in to_remove:
-                runs.pop(rid, None)
-        if to_remove:
-            self._persist_to_disk()
-        return len(to_remove)
+        return self._lifecycle.cleanup_old(max_age_hours)
 
     def replace_active_run_for_steer(
         self,
@@ -337,46 +262,11 @@ class SubagentRegistry:
         task: str,
     ) -> SubagentRunRecord | None:
         """原子接管活跃 run，并在锁外取消旧任务。"""
-        old_task: Any = None
-        now = time.time()
-        archive_after_ms = _resolve_archive_after_ms()
-        archive_at_ms = (
-            now * 1000 + archive_after_ms
-            if archive_after_ms
-            else None
+        return self._lifecycle.replace_active_run_for_steer(
+            previous_run_id,
+            next_run_id,
+            task,
         )
-        with self._store.locked_records() as runs:
-            previous = runs.get(previous_run_id)
-            if previous is None or previous.ended_at is not None:
-                return None
-            record = SubagentRunRecord(
-                run_id=next_run_id,
-                child_session_key=previous.child_session_key,
-                requester_session_key=(
-                    previous.requester_session_key
-                ),
-                requester_agent_id=previous.requester_agent_id,
-                target_agent_id=previous.target_agent_id,
-                task=task,
-                label=previous.label,
-                model=previous.model,
-                cleanup=previous.cleanup,
-                spawn_depth=previous.spawn_depth,
-                created_at=now,
-                started_at=now,
-                archive_at_ms=archive_at_ms,
-            )
-            old_task = previous.asyncio_task
-            runs.pop(previous_run_id, None)
-            runs[next_run_id] = record
-            self._persist_to_disk()
-
-        try:
-            if old_task is not None and hasattr(old_task, "cancel"):
-                old_task.cancel()
-        except Exception:
-            pass
-        return self._snapshot_record(record)
 
     def sweep_expired(
         self,
