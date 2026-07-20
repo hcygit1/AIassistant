@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import stat
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +23,43 @@ REGISTRY_VERSION = 2
 def _registry_path() -> Path:
     """subagent registry 持久化路径"""
     return DATA_DIR / "subagents" / "runs.json"
+
+
+def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        existing_mode = None
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            json.dump(data, temp_file, ensure_ascii=False, indent=2)
+            temp_file.flush()
+            if existing_mode is not None:
+                fchmod = getattr(os, "fchmod", None)
+                if callable(fchmod):
+                    fchmod(temp_file.fileno(), existing_mode)
+                else:
+                    os.chmod(temp_path, existing_mode)
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
 
 
 def _record_to_dict(r: SubagentRunRecord) -> dict[str, Any]:
@@ -83,13 +123,11 @@ def save_registry_to_disk(runs: dict[str, SubagentRunRecord]) -> None:
     """持久化 registry 到磁盘"""
     try:
         path = _registry_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
         serialized: dict[str, dict[str, Any]] = {}
         for run_id, r in runs.items():
             serialized[run_id] = _record_to_dict(r)
         data = {"version": REGISTRY_VERSION, "runs": serialized}
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        _write_json_atomic(path, data)
     except Exception as e:
         logger.warning(f"Failed to persist subagent registry: {e}")
 
