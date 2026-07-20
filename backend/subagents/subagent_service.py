@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from sessions.session_identity import session_key_from_session_id
-from subagents.subagent_registry import (
+from subagents.subagent_run_model import (
     SubagentCapacityError,
     SubagentRunRecord,
 )

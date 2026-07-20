@@ -2,54 +2,19 @@
 
 from __future__ import annotations
 
-import logging
-import time
-from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Literal
+from dataclasses import replace
+from typing import Any, Callable
 
 from subagents.subagent_relationships import SubagentRelationshipService
 from subagents.subagent_run_archive import SubagentRunArchiveService
 from subagents.subagent_run_lifecycle import SubagentRunLifecycleService
+from subagents.subagent_run_model import (
+    SubagentCapacityError,
+    SubagentRunRecord,
+)
 from subagents.subagent_run_queries import SubagentRunQueryService
 from subagents.subagent_run_state import SubagentRunStateService
 from subagents.subagent_run_store import SubagentRunStore
-
-logger = logging.getLogger(__name__)
-
-
-class SubagentCapacityError(Exception):
-    pass
-
-
-@dataclass
-class SubagentRunRecord:
-    run_id: str
-    child_session_key: str
-    requester_session_key: str
-    requester_agent_id: str
-    target_agent_id: str
-    task: str
-    label: str | None = None
-    model: str | None = None
-    cleanup: Literal["delete", "keep"] = "keep"
-    spawn_depth: int = 0
-    created_at: float = field(default_factory=time.time)
-    started_at: float | None = None
-    ended_at: float | None = None
-    outcome: str | None = None
-    result_summary: str | None = None
-    asyncio_task: Any = field(default=None, repr=False)
-    # 创建后 N 分钟从 registry 删除并归档会话
-    archive_at_ms: float | None = None
-    # announce 重试
-    announce_retry_count: int = 0
-    last_announce_retry_at: float | None = None
-    # webchat 展示/调度元数据
-    state: str = "running"
-    terminal_reason: str | None = None
-    result_delivery_state: str = "pending"
-    delivery_work_id: str | None = None
-
 
 def _resolve_archive_after_ms() -> float | None:
     """从 config 读取 archive_after_minutes，返回毫秒数"""

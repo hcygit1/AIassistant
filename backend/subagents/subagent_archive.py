@@ -36,7 +36,8 @@ def _archive_subagent_session(agent_id: str, session_id: str) -> bool:
 
 def _run_archive_sweep() -> int:
     """按 archive_at_ms 清理 registry 并归档会话"""
-    from subagents.subagent_registry import registry, SubagentRunRecord
+    from subagents.subagent_registry import registry
+    from subagents.subagent_run_model import SubagentRunRecord
 
     def on_expire(r: SubagentRunRecord) -> None:
         parts = r.child_session_key.split(":")

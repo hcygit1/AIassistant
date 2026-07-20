@@ -10,7 +10,7 @@ from typing import Any
 from sessions.session_identity import session_key_from_session_id
 from sessions.session_work_policy import deliver_system_work
 
-from subagents.subagent_registry import SubagentRunRecord
+from subagents.subagent_run_model import SubagentRunRecord
 
 
 class _SubagentDeliveryState:

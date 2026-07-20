@@ -12,7 +12,8 @@ import asyncio
 import logging
 from typing import Literal
 
-from subagents.subagent_registry import registry, SubagentRunRecord
+from subagents.subagent_registry import registry
+from subagents.subagent_run_model import SubagentRunRecord
 
 logger = logging.getLogger(__name__)
 

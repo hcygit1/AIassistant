@@ -10,7 +10,7 @@ from typing import Any
 
 from config import DATA_DIR
 
-from subagents.subagent_registry import SubagentRunRecord
+from subagents.subagent_run_model import SubagentRunRecord
 
 logger = logging.getLogger(__name__)
 
