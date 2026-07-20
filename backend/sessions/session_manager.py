@@ -15,6 +15,7 @@ from sessions.session_maintenance import SessionMaintenanceService
 from sessions.session_catalog import SessionCatalog
 from sessions.session_history_archive import SessionHistoryArchive
 from sessions.session_lifecycle import SessionLifecycleService
+from sessions.session_manager_assembly import SessionManagerAssembler
 from sessions.session_message_writer import SessionMessageWriter
 from sessions.session_reader import SessionReader
 from sessions.session_title import SessionTitleService
@@ -32,87 +33,15 @@ class SessionManager:
         self._repository = repository or SessionRepository(
             resolve_sessions_dir=resolve_agent_sessions_dir
         )
-        self._maintenance = maintenance or SessionMaintenanceService(
+        components = SessionManagerAssembler(
             repository=self._repository,
             get_config=get_config,
+            maintenance=maintenance,
+            title_service=title_service,
+            reader=reader,
             cleanup_runtime=cleanup_runtime,
-        )
-        self._title_service = title_service or SessionTitleService()
-        self._reader = reader or SessionReader(
-            repository=self._repository,
-            is_bootstrap_text=lambda text: self._is_bootstrap_text(text),
-        )
-        self._history_archive = SessionHistoryArchive(
-            repository=self._repository,
-            load_session=lambda session_id, agent_id: self.load_session(
-                session_id,
-                agent_id,
-            ),
-            save_session=lambda session_id, agent_id, data: self._save_session_data(
-                session_id,
-                agent_id,
-                data,
-            ),
-        )
-        self._catalog = SessionCatalog(
-            repository=self._repository,
-            load_store=lambda agent_id: self._load_session_store(agent_id),
-            save_store=lambda agent_id, store: self._save_session_store(
-                agent_id,
-                store,
-            ),
-            load_session=lambda session_id, agent_id: self.load_session(
-                session_id,
-                agent_id,
-            ),
-            derive_title=lambda data, **kwargs: self.derive_session_title(
-                data,
-                **kwargs,
-            ),
-            resolve_main_session_id=self.resolve_main_session_id,
-            session_key_from_session_id=self.session_key_from_session_id,
-            resolve_requester=self._resolve_requester_for_child_session,
-            run_maintenance=lambda agent_id, **kwargs: self.run_maintenance(
-                agent_id,
-                **kwargs,
-            ),
-        )
-        self._message_writer = SessionMessageWriter(
-            transaction=self._session_transaction,
-            load_session=lambda session_id, agent_id: self.load_session(
-                session_id,
-                agent_id,
-            ),
-            save_session_data=lambda session_id, agent_id, data: (
-                self._save_session_data(session_id, agent_id, data)
-            ),
-            update_index=lambda *args, **kwargs: self._update_session_store_entry(
-                *args,
-                **kwargs,
-            ),
-            session_key_from_id=self.session_key_from_session_id,
-            resolve_requester=self._resolve_requester_for_child_session,
-        )
-        self._lifecycle = SessionLifecycleService(
-            repository=self._repository,
-            transaction=self._session_transaction,
-            load_session=lambda session_id, agent_id: self.load_session(
-                session_id,
-                agent_id,
-            ),
-            save_session_data=lambda session_id, agent_id, data: (
-                self._save_session_data(session_id, agent_id, data)
-            ),
-            remove_index=lambda agent_id, session_key: (
-                self._remove_session_store_entry(agent_id, session_key)
-            ),
-            session_key_from_id=self.session_key_from_session_id,
-            ensure_session=lambda session_id, agent_id: self.ensure_session(
-                session_id,
-                agent_id,
-            ),
-            cleanup_runtime=cleanup_runtime,
-        )
+        ).build(self)
+        components.install_on(self)
 
     def _is_bootstrap_text(self, text: str | None) -> bool:
         return self._title_service.is_bootstrap_text(text)
