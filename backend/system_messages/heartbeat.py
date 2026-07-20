@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import deque
-from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
@@ -18,82 +16,13 @@ from system_messages.heartbeat_utils import (
 )
 from sessions.session_work_policy import deliver_system_work
 from infra.audit_log import audit_logger
+from system_messages.heartbeat_history import (
+    HeartbeatEvent,
+    emit_heartbeat_event,
+    get_heartbeat_history,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _get_max_events_per_agent() -> int:
-    """从配置获取心跳事件队列大小"""
-    try:
-        from config import get_config
-        cfg = get_config()
-        return cfg.get("agents", {}).get("defaults", {}).get("heartbeat", {}).get("maxEvents", 50)
-    except Exception:
-        return 50
-
-
-@dataclass
-class HeartbeatEvent:
-    ts: int
-    status: str  # ok-empty | ok-token | sent | skipped | failed
-    reason: str | None = None
-    preview: str | None = None
-    duration_ms: int | None = None
-    agent_id: str = ""
-
-
-_events: dict[str, deque[HeartbeatEvent]] = {}
-
-
-def _get_events(agent_id: str) -> deque[HeartbeatEvent]:
-    if agent_id not in _events:
-        _events[agent_id] = deque(maxlen=_get_max_events_per_agent())
-    return _events[agent_id]
-
-
-def emit_heartbeat_event(agent_id: str, evt: HeartbeatEvent) -> None:
-    _get_events(agent_id).append(evt)
-    try:
-        from scheduler.task_store import task_store, TaskRecord, TaskKind, TaskStatus
-        import uuid
-        status_map = {
-            "ok-empty": TaskStatus.SUCCESS,
-            "ok-token": TaskStatus.SUCCESS,
-            "sent": TaskStatus.SUCCESS,
-            "skipped": TaskStatus.CANCELLED,
-            "failed": TaskStatus.FAILED,
-        }
-        record = TaskRecord(
-            id=str(uuid.uuid4()),
-            kind=TaskKind.HEARTBEAT,
-            agent_id=agent_id,
-            name=f"heartbeat:{evt.status}",
-            status=status_map.get(evt.status, TaskStatus.SUCCESS),
-            created_at_ms=evt.ts,
-            started_at_ms=evt.ts,
-            ended_at_ms=evt.ts + (evt.duration_ms or 0),
-            duration_ms=evt.duration_ms,
-            preview=evt.preview,
-            error=evt.reason if evt.status == "failed" else None,
-        )
-        task_store.insert(record)
-    except Exception as e:
-        logger.warning("Failed to persist heartbeat event to task_history: %s", e)
-
-
-def get_heartbeat_history(agent_id: str, limit: int = 30) -> list[dict[str, Any]]:
-    events = list(_get_events(agent_id))
-    events = events[-limit:][::-1]
-    return [
-        {
-            "ts": e.ts,
-            "status": e.status,
-            "reason": e.reason,
-            "preview": e.preview,
-            "duration_ms": e.duration_ms,
-        }
-        for e in events
-    ]
 
 
 class HeartbeatRunner:
@@ -111,7 +40,6 @@ class HeartbeatRunner:
         self._event_sink = event_sink
         self._tasks: dict[str, asyncio.Task] = {}
         self._running = False
-        self._config_version = 0
 
     @property
     def session_manager(self) -> Any:
@@ -172,7 +100,6 @@ class HeartbeatRunner:
 
     def update_config(self) -> None:
         """配置热更新：根据当前 agents.list 与 heartbeat 配置调整任务"""
-        self._config_version += 1
         ids = [a["id"] for a in list_agents()]
         for agent_id in ids:
             hb = get_heartbeat_config(agent_id)
