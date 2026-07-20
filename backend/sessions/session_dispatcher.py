@@ -147,6 +147,8 @@ class SessionDispatcher:
         self._queue: list[SessionWorkItem] = []
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._accepting = True
+        self._stopping = False
         self._current_executing_turn_id: str | None = None
 
     @property
@@ -166,6 +168,8 @@ class SessionDispatcher:
         return (self._effective_priority(t), t.created_at)
 
     def submit(self, task: SessionWorkItem) -> int:
+        if not self._accepting:
+            raise RuntimeError("session dispatcher is closing")
         self._queue.append(task)
         self._queue.sort(key=self._sort_key)
         self._wake.set()
@@ -194,21 +198,79 @@ class SessionDispatcher:
         return len(self._queue)
 
     def start(self) -> None:
+        if not self._accepting:
+            raise RuntimeError("session dispatcher is closing")
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._consume_loop())
 
-    def stop(self) -> None:
-        if self._task and not self._task.done():
-            self._task.cancel()
-            self._task = None
+    def stop(self) -> asyncio.Task | None:
+        self._accepting = False
+        self._stopping = True
+        self._cancel_queued_items()
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+        return task
+
+    async def aclose(self) -> None:
+        task = self.stop()
+        if task is None:
+            return
+        try:
+            await task
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+        finally:
+            if self._task is task:
+                self._task = None
+
+    def _cancel_queued_items(self) -> None:
+        pending = self._queue
+        self._queue = []
+        for task in pending:
+            if task.work_id:
+                try:
+                    self._work_store.cancel_queued(task.work_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to cancel queued session work %s: %s",
+                        task.work_id,
+                        exc,
+                    )
+            if task.turn_id:
+                self._turn_coordinator.set_cancelled(task.turn_id)
+                if task.stream_queue is not None:
+                    try:
+                        task.stream_queue.put_nowait(None)
+                    except Exception:
+                        pass
+            if task.on_cancel:
+                _safe_call(task.on_cancel)
+
+    def _cancel_running_system_item(self, task: SessionWorkItem) -> None:
+        if task.work_id:
+            try:
+                self._work_store.mark_cancelled(task.work_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to cancel running session work %s: %s",
+                    task.work_id,
+                    exc,
+                )
+        if task.on_cancel:
+            _safe_call(task.on_cancel)
 
     async def _consume_loop(self) -> None:
-        while True:
+        while not self._stopping:
             if not self._queue:
                 self._wake.clear()
                 await self._wake.wait()
+                if self._stopping:
+                    return
 
-            while self._queue:
+            while self._queue and not self._stopping:
                 self._queue.sort(key=self._sort_key)
                 task = self._queue.pop(0)
                 try:
@@ -233,10 +295,7 @@ class SessionDispatcher:
             await self._lock.acquire()
             lock_acquired = True
         except asyncio.CancelledError:
-            self._turn_coordinator.set_error(
-                task.turn_id,
-                "cancelled before lock",
-            )
+            self._turn_coordinator.set_cancelled(task.turn_id)
             await task.stream_queue.put(None)
             return
 
@@ -308,6 +367,9 @@ class SessionDispatcher:
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=timeout)
             lock_acquired = True
+        except asyncio.CancelledError:
+            self._cancel_running_system_item(task)
+            raise
         except asyncio.TimeoutError as te:
             logger.warning(
                 "Dispatcher timeout acquiring lock for %s (priority=%d, timeout=%ds)",
@@ -350,6 +412,10 @@ class SessionDispatcher:
                     )
                     raise RuntimeError(message)
 
+            if self._stopping:
+                self._cancel_running_system_item(task)
+                return
+
             response = "".join(response_parts).strip()
             if done_content is not None and done_content.strip():
                 response = done_content.strip()
@@ -362,7 +428,13 @@ class SessionDispatcher:
             if task.on_success:
                 _safe_call(task.on_success)
 
+        except asyncio.CancelledError:
+            self._cancel_running_system_item(task)
+            raise
         except Exception as e:
+            if self._stopping:
+                self._cancel_running_system_item(task)
+                return
             logger.error("Dispatcher execution failed for %s: %s", task.kind, e)
             if task.work_id:
                 work_store.mark_failed(task.work_id, str(e))
@@ -409,6 +481,7 @@ class DispatcherManager:
         self._system_stream = system_stream
         self._user_stream = user_stream
         self._turn_coordinator = turn_coordinator
+        self._closing: dict[str, asyncio.Task | None] = {}
 
     @property
     def work_store(self) -> "SessionWorkStore":
@@ -441,11 +514,61 @@ class DispatcherManager:
             self._dispatchers[key] = d
         return self._dispatchers[key]
 
-    def cleanup(self, agent_id: str, session_id: str) -> None:
+    def cleanup(
+        self,
+        agent_id: str,
+        session_id: str,
+    ) -> asyncio.Task | None:
+        return self.cleanup_when_closed(agent_id, session_id)
+
+    def cleanup_when_closed(
+        self,
+        agent_id: str,
+        session_id: str,
+        *,
+        on_closed: Callable[[], Any] | None = None,
+    ) -> asyncio.Task | None:
         key = f"{agent_id}:{session_id}"
-        d = self._dispatchers.pop(key, None)
-        if d:
-            d.stop()
+        dispatcher = self._dispatchers.get(key)
+        if dispatcher is None:
+            if on_closed:
+                _safe_call(on_closed)
+            return None
+
+        if key in self._closing:
+            task = self._closing[key]
+            if task is not None and on_closed:
+                task.add_done_callback(lambda _task: _safe_call(on_closed))
+            return task
+
+        task = dispatcher.stop()
+        self._closing[key] = task
+
+        def finish(_task: asyncio.Task | None = None) -> None:
+            if self._dispatchers.get(key) is dispatcher:
+                self._dispatchers.pop(key, None)
+            self._closing.pop(key, None)
+            if on_closed:
+                _safe_call(on_closed)
+
+        if task is None or task.done():
+            finish(task)
+        else:
+            task.add_done_callback(finish)
+        return task
+
+    async def aclose_session(
+        self,
+        agent_id: str,
+        session_id: str,
+    ) -> None:
+        closed = asyncio.Event()
+        self.cleanup_when_closed(
+            agent_id,
+            session_id,
+            on_closed=closed.set,
+        )
+        await closed.wait()
 
     def cancel_work(
         self,

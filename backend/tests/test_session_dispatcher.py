@@ -47,6 +47,74 @@ class _RecordingDispatcher(SessionDispatcher):
 
 
 class SessionDispatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_cancels_queued_user_and_rejects_new_work(self) -> None:
+        coordinator = Mock()
+        stream_queue: asyncio.Queue[TurnEvent | None] = asyncio.Queue()
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            turn_coordinator=coordinator,
+        )
+        queued_user = SessionWorkItem(
+            kind="user",
+            priority=PRIORITY_USER,
+            content="queued user",
+            agent_id="main",
+            session_id="main-main",
+            turn_id="turn-queued",
+            stream_queue=stream_queue,
+        )
+        dispatcher.submit(queued_user)
+
+        await dispatcher.aclose()
+
+        coordinator.set_cancelled.assert_called_once_with("turn-queued")
+        self.assertIsNone(await stream_queue.get())
+        with self.assertRaisesRegex(RuntimeError, "dispatcher is closing"):
+            dispatcher.submit(queued_user)
+
+    async def test_aclose_propagates_caller_cancellation(self) -> None:
+        cancellation_started = asyncio.Event()
+        release_cancellation = asyncio.Event()
+
+        async def slow_consumer() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellation_started.set()
+                await release_cancellation.wait()
+                raise
+
+        dispatcher = SessionDispatcher(lock=asyncio.Lock())
+        dispatcher._task = asyncio.create_task(slow_consumer())
+        close_task = asyncio.create_task(dispatcher.aclose())
+        await asyncio.wait_for(cancellation_started.wait(), timeout=1)
+
+        close_task.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await close_task
+        release_cancellation.set()
+
+    async def test_aclose_propagates_consumer_failure(self) -> None:
+        started = asyncio.Event()
+        cancellation_started = asyncio.Event()
+
+        async def failing_consumer() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellation_started.set()
+                raise RuntimeError("consumer close failed")
+
+        dispatcher = SessionDispatcher(lock=asyncio.Lock())
+        dispatcher._task = asyncio.create_task(failing_consumer())
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        with self.assertRaisesRegex(RuntimeError, "consumer close failed"):
+            await dispatcher.aclose()
+        self.assertTrue(cancellation_started.is_set())
+
     async def test_cancel_work_removes_queued_item_and_calls_hook(self) -> None:
         cancelled: list[str] = []
         dispatcher = SessionDispatcher(lock=asyncio.Lock())
@@ -314,8 +382,179 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await stream_queue.get()).type, "token")
         self.assertIsNone(await stream_queue.get())
 
+    async def test_aclose_cancels_user_turn_waiting_for_session_lock(self) -> None:
+        coordinator = Mock()
+        stream_queue: asyncio.Queue[TurnEvent | None] = asyncio.Queue()
+        lock = asyncio.Lock()
+        await lock.acquire()
+        dispatcher = SessionDispatcher(
+            lock=lock,
+            turn_coordinator=coordinator,
+        )
+        dispatcher.start()
+        dispatcher.submit(
+            SessionWorkItem(
+                kind="user",
+                priority=PRIORITY_USER,
+                content="waiting user",
+                agent_id="main",
+                session_id="main-main",
+                turn_id="turn-waiting",
+                stream_queue=stream_queue,
+            )
+        )
+        await asyncio.sleep(0)
+
+        await dispatcher.aclose()
+
+        coordinator.set_cancelled.assert_called_once_with("turn-waiting")
+        coordinator.set_error.assert_not_called()
+        self.assertIsNone(await stream_queue.get())
+        self.assertTrue(lock.locked())
+        lock.release()
+
 
 class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_aclose_settles_current_and_queued_system_work(self) -> None:
+        started = asyncio.Event()
+        hold = asyncio.Event()
+        cancelled: list[str] = []
+        work_store = Mock()
+        work_store.mark_running.return_value = True
+        work_store.cancel_queued.return_value = True
+
+        async def blocking_stream(**_kwargs):
+            started.set()
+            await hold.wait()
+            yield {"type": "done", "content": "unexpected"}
+
+        lock = asyncio.Lock()
+        dispatcher = SessionDispatcher(
+            lock=lock,
+            work_store=work_store,
+            system_stream=blocking_stream,
+        )
+        dispatcher.start()
+        dispatcher.submit(
+            SessionWorkItem(
+                kind="cron",
+                priority=PRIORITY_CRON,
+                content="running",
+                agent_id="main",
+                session_id="main-main",
+                work_id="work-running",
+                on_cancel=lambda: cancelled.append("work-running"),
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        dispatcher.submit(
+            SessionWorkItem(
+                kind="heartbeat",
+                priority=PRIORITY_HEARTBEAT,
+                content="queued",
+                agent_id="main",
+                session_id="main-main",
+                work_id="work-queued",
+                on_cancel=lambda: cancelled.append("work-queued"),
+            )
+        )
+
+        await dispatcher.aclose()
+
+        self.assertFalse(lock.locked())
+        self.assertEqual(dispatcher.pending_count, 0)
+        work_store.mark_cancelled.assert_called_once_with("work-running")
+        work_store.cancel_queued.assert_called_once_with("work-queued")
+        self.assertCountEqual(
+            cancelled,
+            ["work-running", "work-queued"],
+        )
+
+    async def test_aclose_keeps_cancelled_status_when_stream_swallows_cancel(self) -> None:
+        started = asyncio.Event()
+        cancelled: list[str] = []
+        succeeded: list[str] = []
+        work_store = Mock()
+        work_store.mark_running.return_value = True
+
+        async def cancellation_suppressing_stream(**_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+            yield {"type": "done", "content": "unexpected"}
+
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            work_store=work_store,
+            system_stream=cancellation_suppressing_stream,
+        )
+        dispatcher.start()
+        dispatcher.submit(
+            SessionWorkItem(
+                kind="cron",
+                priority=PRIORITY_CRON,
+                content="running",
+                agent_id="main",
+                session_id="main-main",
+                work_id="work-running",
+                on_success=lambda: succeeded.append("work-running"),
+                on_cancel=lambda: cancelled.append("work-running"),
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        await dispatcher.aclose()
+
+        work_store.mark_cancelled.assert_called_once_with("work-running")
+        work_store.mark_done.assert_not_called()
+        self.assertEqual(cancelled, ["work-running"])
+        self.assertEqual(succeeded, [])
+
+    async def test_aclose_cancels_stream_error_after_swallowed_cancel(self) -> None:
+        started = asyncio.Event()
+        cancelled: list[str] = []
+        failed: list[str] = []
+        work_store = Mock()
+        work_store.mark_running.return_value = True
+
+        async def failing_after_cancel_stream(**_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+            raise RuntimeError("shutdown cleanup failed")
+            yield {"type": "done", "content": "unexpected"}
+
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            work_store=work_store,
+            system_stream=failing_after_cancel_stream,
+        )
+        dispatcher.start()
+        dispatcher.submit(
+            SessionWorkItem(
+                kind="cron",
+                priority=PRIORITY_CRON,
+                content="running",
+                agent_id="main",
+                session_id="main-main",
+                work_id="work-running",
+                on_cancel=lambda: cancelled.append("work-running"),
+                on_failure=lambda: failed.append("work-running"),
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        await dispatcher.aclose()
+
+        work_store.mark_cancelled.assert_called_once_with("work-running")
+        work_store.mark_failed.assert_not_called()
+        self.assertEqual(cancelled, ["work-running"])
+        self.assertEqual(failed, [])
+
     async def test_dispatcher_resolves_default_work_store_at_construction(self) -> None:
         dispatcher = SessionDispatcher(lock=asyncio.Lock())
 
@@ -389,6 +628,78 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(dispatcher._lock, lock)
         lock_manager.get_lock.assert_called_once_with("main", "main-main")
         manager.cleanup("main", "main-main")
+
+    async def test_manager_keeps_closing_dispatcher_until_consumer_exits(self) -> None:
+        started = asyncio.Event()
+        cancellation_started = asyncio.Event()
+        release_cancellation = asyncio.Event()
+        closed: list[str] = []
+        work_store = Mock()
+        work_store.mark_running.return_value = True
+
+        async def blocking_stream(**_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellation_started.set()
+                await release_cancellation.wait()
+                raise
+            yield {"type": "done", "content": "unexpected"}
+
+        manager = DispatcherManager(
+            work_store=work_store,
+            system_stream=blocking_stream,
+        )
+        dispatcher = manager.get("main", "main-main", asyncio.Lock())
+        original_stop = dispatcher.stop
+        dispatcher.stop = Mock(wraps=original_stop)
+        dispatcher.submit(
+            SessionWorkItem(
+                kind="cron",
+                priority=PRIORITY_CRON,
+                content="running",
+                agent_id="main",
+                session_id="main-main",
+                work_id="work-running",
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        manager.cleanup_when_closed(
+            "main",
+            "main-main",
+            on_closed=lambda: closed.append("first"),
+        )
+        await asyncio.wait_for(cancellation_started.wait(), timeout=1)
+        manager.cleanup_when_closed(
+            "main",
+            "main-main",
+            on_closed=lambda: closed.append("second"),
+        )
+        await asyncio.sleep(0)
+
+        self.assertIs(manager.get("main", "main-main"), dispatcher)
+        self.assertEqual(closed, [])
+        dispatcher.stop.assert_called_once_with()
+        with self.assertRaisesRegex(RuntimeError, "dispatcher is closing"):
+            dispatcher.submit(
+                SessionWorkItem(
+                    kind="cron",
+                    priority=PRIORITY_CRON,
+                    content="rejected",
+                    agent_id="main",
+                    session_id="main-main",
+                )
+            )
+
+        release_cancellation.set()
+        await manager.aclose_session("main", "main-main")
+        self.assertCountEqual(closed, ["first", "second"])
+
+        replacement = manager.get("main", "main-main", asyncio.Lock())
+        self.assertIsNot(replacement, dispatcher)
+        await manager.aclose_session("main", "main-main")
 
     async def test_error_event_marks_work_failed_without_success_callback(self) -> None:
         work_store = _RecordingWorkStore()

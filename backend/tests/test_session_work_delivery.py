@@ -104,6 +104,33 @@ class SessionWorkDeliveryTests(unittest.TestCase):
             [("main", "main-main", lock_manager.session_lock.lock)],
         )
 
+    def test_store_marks_queued_and_running_work_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            queued = store.create_record(
+                kind="cron",
+                agent_id="main",
+                session_id="main-main",
+                content="queued",
+                priority=2,
+            )
+            running = store.create_record(
+                kind="heartbeat",
+                agent_id="main",
+                session_id="main-main",
+                content="running",
+                priority=3,
+            )
+            running.status = "running"
+            store.insert(queued)
+            store.insert(running)
+
+            store.mark_cancelled(queued.id)
+            store.mark_cancelled(running.id)
+
+            self.assertEqual(store.get(queued.id).status, "cancelled")
+            self.assertEqual(store.get(running.id).status, "cancelled")
+
     def test_deliver_marks_record_failed_when_dispatcher_submission_fails(self) -> None:
         dispatcher = _FailingDispatcher()
         with tempfile.TemporaryDirectory() as tmpdir:

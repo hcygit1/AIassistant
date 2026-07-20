@@ -182,6 +182,21 @@ class SessionWorkStore:
             finally:
                 conn.close()
 
+    def mark_cancelled(self, work_id: str) -> None:
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """UPDATE session_work
+                    SET status='cancelled', finished_at_ms=?
+                    WHERE id=? AND status IN ('queued', 'running')""",
+                    (now_ms, work_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def requeue_for_recovery(self, work_id: str) -> bool:
         with self._lock:
             conn = self._get_conn()

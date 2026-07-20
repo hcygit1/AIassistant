@@ -100,6 +100,21 @@ def cleanup_session_runtime(
 
         turn_coordinator = default_coordinator
 
-    dispatcher_manager.cleanup(agent_id, session_id)
-    lock_manager.cleanup(agent_id, session_id)
-    turn_coordinator.clear_session(agent_id, session_id)
+    def finalize_cleanup() -> None:
+        lock_manager.cleanup(agent_id, session_id)
+        turn_coordinator.clear_session(agent_id, session_id)
+
+    cleanup_when_closed = getattr(
+        dispatcher_manager,
+        "cleanup_when_closed",
+        None,
+    )
+    if callable(cleanup_when_closed):
+        cleanup_when_closed(
+            agent_id,
+            session_id,
+            on_closed=finalize_cleanup,
+        )
+    else:
+        dispatcher_manager.cleanup(agent_id, session_id)
+        finalize_cleanup()
