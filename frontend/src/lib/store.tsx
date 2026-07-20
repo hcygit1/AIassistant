@@ -1,12 +1,13 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import * as api from "./api";
 import type { TokenUsage } from "./api";
 import { useChat } from "./hooks/useChat";
 import { useSubagents } from "./hooks/useSubagents";
 import { useInspectorState } from "./hooks/useInspectorState";
 import { useAgentEvents } from "./hooks/useAgentEvents";
+import { useAgentWorkspace } from "./hooks/useAgentWorkspace";
 import { ApprovalProvider, useApproval } from "./approvalContext";
 import { UiProvider, useUi } from "./uiContext";
 import type { UiNotice } from "./hooks/useAppUiState";
@@ -88,15 +89,10 @@ interface AppState {
 const AppContext = createContext<AppState | null>(null);
 
 function AppStateProvider({ children }: { children: React.ReactNode }) {
-  const [agents, setAgents] = useState<any[]>([]);
   const [currentAgentId, setCurrentAgentId] = useState("main");
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [currentModel, setCurrentModel] = useState<any | null>(null);
   const [ragMode, setRagModeState] = useState(false);
   const [skillsRefreshTrigger, setSkillsRefreshTrigger] = useState(0);
   const lastLifecycleNoticeKeyRef = useRef("");
-  const loadMainSessionReqRef = useRef(0);
-  const currentAgentIdRef = useRef("main");
 
   const {
     locale,
@@ -129,90 +125,33 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     resetInspector,
   } = useInspectorState(currentAgentId);
 
-  // 持久化 currentAgentId（Hydration 安全：初始 "main"，useEffect 恢复）
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const saved = window.localStorage.getItem("pipixia.agent");
-      if (saved && typeof saved === "string" && saved.trim()) {
-        const agentId = saved.trim();
-        currentAgentIdRef.current = agentId;
-        setCurrentAgentId(agentId);
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
-
   const triggerSkillsRefresh = useCallback(() => setSkillsRefreshTrigger((n) => n + 1), []);
   const formatCommandResponse = useCallback(
     (raw: string) => formatLocalizedCommandResponse(raw, t),
     [t],
   );
 
-  const loadAgents = useCallback(async () => {
-    const data = await api.fetchAgents();
-    setAgents(data);
-  }, []);
-
-  const loadMainSession = useCallback(async () => {
-    const reqId = ++loadMainSessionReqRef.current;
-    try {
-      const session = await api.fetchMainSession(currentAgentId);
-      if (reqId !== loadMainSessionReqRef.current) {
-        return;
-      }
-      setCurrentSessionId(session.session_id);
-      await chat.loadMessages(currentAgentId, session.session_id);
-      if (reqId !== loadMainSessionReqRef.current) {
-        return;
-      }
-      const model = await api.fetchCurrentModel(currentAgentId);
-      if (reqId !== loadMainSessionReqRef.current) {
-        return;
-      }
-      setCurrentModel(model);
-    } catch {
-      if (reqId !== loadMainSessionReqRef.current) {
-        return;
-      }
-      chat.setMessages([]);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentAgentId]);
-
-  const handleSessionCompacted = useCallback((agentId: string) => {
-    if (currentAgentIdRef.current === agentId) {
-      void loadMainSession();
-    }
-  }, [loadMainSession]);
-
-  const chatOptions = useMemo(() => ({
-    onAgentCreated: loadAgents,
-    onSessionCompacted: handleSessionCompacted,
-    onTurnComplete: triggerSkillsRefresh,
-    formatCommandResponse,
-  }), [formatCommandResponse, handleSessionCompacted, loadAgents, triggerSkillsRefresh]);
-
-  const chat = useChat(
-    currentAgentId,
-    currentSessionId,
-    setCurrentSessionId,
-    chatOptions,
-  );
-
   const {
+    agents,
+    currentSessionId,
+    currentModel,
+    loadAgents,
+    loadMainSession,
+    switchAgent,
+    chat,
     tree: subagentTree,
     flat: subagents,
     runningSubagents,
     traceMap: subagentTraceMap,
     loading: subagentsLoading,
     refreshSubagents,
-  } = useSubagents(
+  } = useAgentWorkspace({
     currentAgentId,
-    currentSessionId,
-    loadMainSession,
-  );
+    setCurrentAgentId,
+    formatCommandResponse,
+    onTurnComplete: triggerSkillsRefresh,
+    resetInspector,
+  });
 
   const handleApprovalRequired = useCallback(
     (approval: { approval_id: string; tool: string; input_preview: string }) => {
@@ -226,35 +165,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     onHeartbeatMessage: loadMainSession,
     onApprovalRequired: handleApprovalRequired,
   });
-
-  const switchAgent = useCallback(async (agentId: string) => {
-    // 保存当前 Agent 的状态（不要清空，只是切换）
-    currentAgentIdRef.current = agentId;
-    const reqId = ++loadMainSessionReqRef.current;
-    setCurrentAgentId(agentId);
-    try { window.localStorage.setItem("pipixia.agent", agentId); } catch {}
-    setCurrentSessionId(null);
-    resetInspector();
-
-    // 加载新 Agent 的会话和消息
-    try {
-      const session = await api.fetchMainSession(agentId);
-      if (reqId !== loadMainSessionReqRef.current || currentAgentIdRef.current !== agentId) return;
-      setCurrentSessionId(session.session_id);
-      // 加载消息时会自动恢复该 Agent 的 isStreaming 状态
-      await chat.loadMessages(agentId, session.session_id);
-      if (reqId !== loadMainSessionReqRef.current || currentAgentIdRef.current !== agentId) return;
-      const model = await api.fetchCurrentModel(agentId);
-      if (reqId !== loadMainSessionReqRef.current || currentAgentIdRef.current !== agentId) return;
-      setCurrentModel(model);
-    } catch {
-      // 如果加载失败，清空该 Agent 的消息
-      if (reqId === loadMainSessionReqRef.current && currentAgentIdRef.current === agentId) {
-        chat.clearAgent(agentId);
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat]);
 
   const setRagMode = useCallback(async (enabled: boolean) => {
     await api.updateRagMode(enabled);

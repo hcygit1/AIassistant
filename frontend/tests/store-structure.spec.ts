@@ -86,6 +86,21 @@ test("keeps approval state outside AppStateProvider", () => {
   expect(modal).not.toContain("pendingApproval } = useApp()");
 });
 
+test("keeps Agent workspace orchestration outside AppStateProvider", () => {
+  const hookPath = "src/lib/hooks/useAgentWorkspace.ts";
+  expect(existsSync(hookPath)).toBe(true);
+  if (!existsSync(hookPath)) return;
+
+  const hook = readFileSync(hookPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+
+  expect(hook).toContain("useChat(");
+  expect(hook).toContain("useSubagents(");
+  expect(store).not.toContain("useChat(");
+  expect(store).not.toContain("useSubagents(");
+  expect(store).toContain("useAgentWorkspace(");
+});
+
 test("keeps UI-only fields out of useApp consumers", () => {
   const uiFields = new Set([
     "showConfigModal",
