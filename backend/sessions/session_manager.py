@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
 import time
-import uuid
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
 from config import get_config, resolve_agent_sessions_dir
@@ -18,10 +14,9 @@ from sessions.session_repository import (
 from sessions.session_maintenance import SessionMaintenanceService
 from sessions.session_catalog import SessionCatalog
 from sessions.session_history_archive import SessionHistoryArchive
+from sessions.session_lifecycle import SessionLifecycleService
 from sessions.session_message_writer import SessionMessageWriter
 from sessions.session_title import SessionTitleService
-
-logger = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -90,6 +85,25 @@ class SessionManager:
             session_key_from_id=self.session_key_from_session_id,
             resolve_requester=self._resolve_requester_for_child_session,
         )
+        self._lifecycle = SessionLifecycleService(
+            repository=self._repository,
+            transaction=self._session_transaction,
+            load_session=lambda session_id, agent_id: self.load_session(
+                session_id,
+                agent_id,
+            ),
+            save_session_data=lambda session_id, agent_id, data: (
+                self._save_session_data(session_id, agent_id, data)
+            ),
+            remove_index=lambda agent_id, session_key: (
+                self._remove_session_store_entry(agent_id, session_key)
+            ),
+            session_key_from_id=self.session_key_from_session_id,
+            ensure_session=lambda session_id, agent_id: self.ensure_session(
+                session_id,
+                agent_id,
+            ),
+        )
 
     def _is_bootstrap_text(self, text: str | None) -> bool:
         return self._title_service.is_bootstrap_text(text)
@@ -104,9 +118,6 @@ class SessionManager:
             return registry.resolve_requester_for_child_session(child_session_key)
         except Exception:
             return None
-
-    def _get_store_lock(self, agent_id: str):
-        return self._repository.get_agent_lock(agent_id)
 
     @contextmanager
     def _session_transaction(self, session_id: str, agent_id: str):
@@ -150,9 +161,6 @@ class SessionManager:
     # ------------------------------------------------------------------
     # 读取
     # ------------------------------------------------------------------
-
-    def _session_path(self, session_id: str, agent_id: str) -> Path:
-        return self._repository.session_path(session_id, agent_id)
 
     def session_file_exists(self, session_id: str, agent_id: str) -> bool:
         return self._repository.session_file_exists(session_id, agent_id)
@@ -316,6 +324,7 @@ class SessionManager:
             enforce=enforce,
             dry_run=dry_run,
         )
+
     def _save_session_data(
         self, session_id: str, agent_id: str, data: dict[str, Any]
     ) -> None:
@@ -350,50 +359,13 @@ class SessionManager:
         )
 
     def create_session(self, agent_id: str, title: str = "新会话") -> str:
-        session_id = uuid.uuid4().hex[:12]
-        data = {
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-            "messages": [],
-        }
-        if title and title.strip():
-            data["label"] = title.strip()
-        self._save_session_data(session_id, agent_id, data)
-        return session_id
+        return self._lifecycle.create_session(agent_id, title)
 
     def rename_session(self, session_id: str, agent_id: str, title: str) -> bool:
-        with self._session_transaction(session_id, agent_id):
-            data = self.load_session(session_id, agent_id)
-            if data is None:
-                return False
-            data["label"] = title
-            data["updated_at"] = time.time()
-            self._save_session_data(session_id, agent_id, data)
-            return True
+        return self._lifecycle.rename_session(session_id, agent_id, title)
 
     def delete_session(self, session_id: str, agent_id: str) -> bool:
-        with self._repository.get_agent_lock(agent_id):
-            if self._repository.delete_session_file(session_id, agent_id):
-                session_key = self.session_key_from_session_id(
-                    agent_id,
-                    session_id,
-                )
-                self._remove_session_store_entry(agent_id, session_key)
-                try:
-                    from sessions.session_lock_manager import (
-                        cleanup_session_runtime,
-                    )
-
-                    cleanup_session_runtime(agent_id, session_id)
-                except Exception as e:
-                    logger.warning(
-                        "cleanup_session_runtime after delete_session: %s",
-                        e,
-                    )
-                return True
-        return False
+        return self._lifecycle.delete_session(session_id, agent_id)
 
     # ------------------------------------------------------------------
     # 压缩
@@ -460,41 +432,7 @@ class SessionManager:
         返回 {"archived": bool, "archive_file": str}
         标题：使用 derive_session_title 推导，避免重复追加 (续)
         """
-        import time as _time
-
-        result: dict[str, Any] = {"archived": False}
-
-        with self._repository.get_agent_lock(agent_id):
-            path = self._session_path(session_id, agent_id)
-            if path.exists():
-                archive_dir = self._repository.sessions_dir(agent_id) / "archive"
-                try:
-                    ts = int(_time.time())
-                    archive_name = f"{session_id}.reset.{ts}.json"
-                    archive_path = archive_dir / archive_name
-                    self._repository.archive_session_file(
-                        session_id,
-                        agent_id,
-                        archive_path,
-                    )
-                    result["archived"] = True
-                    result["archive_file"] = f"archive/{archive_name}"
-                except OSError as e:
-                    logger.warning(f"Failed to archive session {session_id}: {e}")
-                    try:
-                        self._repository.delete_session_file(
-                            session_id,
-                            agent_id,
-                        )
-                    except OSError:
-                        pass
-
-            self._repository.invalidate_session(session_id, agent_id)
-            session_key = self.session_key_from_session_id(agent_id, session_id)
-            self._remove_session_store_entry(agent_id, session_key)
-            self.ensure_session(session_id, agent_id)
-
-        return result
+        return self._lifecycle.reset_session(session_id, agent_id)
 
     # ------------------------------------------------------------------
     # 获取活跃会话 ID
