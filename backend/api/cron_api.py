@@ -32,10 +32,10 @@ def _task_history_service():
     return task_history_service
 
 
-def _session_work_store():
-    from sessions.session_work_runtime import session_work_runtime
+def _system_work_history_service():
+    from sessions.session_work_history import session_work_history_service
 
-    return session_work_runtime.work_store
+    return session_work_history_service
 
 
 def _raise_task_history_error(exc) -> None:
@@ -201,9 +201,7 @@ async def get_system_work_history(
     offset: int = Query(default=0, ge=0),
 ):
     """查询系统会话工作台账，便于排查 announce / heartbeat / cron 的投递状态。"""
-    work_store = _session_work_store()
-
-    items = work_store.query(
+    page = _system_work_history_service().query(
         kind=kind,
         status=status,
         agent_id=agent_id,
@@ -212,34 +210,11 @@ async def get_system_work_history(
         limit=limit,
         offset=offset,
     )
-    total = work_store.count(
-        kind=kind,
-        status=status,
-        agent_id=agent_id,
-        session_id=session_id,
-        run_id=run_id,
-    )
     return {
-        "items": [
-            {
-                "id": r.id,
-                "kind": r.kind,
-                "agent_id": r.agent_id,
-                "session_id": r.session_id,
-                "run_id": r.run_id,
-                "status": r.status,
-                "recover_on_restart": r.recover_on_restart,
-                "created_at_ms": r.created_at_ms,
-                "started_at_ms": r.started_at_ms,
-                "finished_at_ms": r.finished_at_ms,
-                "last_error": r.last_error,
-                "content_preview": r.content[:200],
-            }
-            for r in items
-        ],
-        "total": total,
-        "limit": limit,
-        "offset": offset,
+        "items": page.items,
+        "total": page.total,
+        "limit": page.limit,
+        "offset": page.offset,
     }
 
 

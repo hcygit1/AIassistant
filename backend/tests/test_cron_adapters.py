@@ -179,7 +179,7 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["total"], 1)
 
-    async def test_system_work_history_uses_runtime_store_provider(self) -> None:
+    async def test_system_work_history_delegates_to_history_service(self) -> None:
         record = SimpleNamespace(
             id="work-1",
             kind="heartbeat",
@@ -194,13 +194,30 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
             last_error=None,
             content="heartbeat prompt",
         )
-        work_store = Mock()
-        work_store.query.return_value = [record]
-        work_store.count.return_value = 1
+        service = Mock()
+        service.query.return_value = SimpleNamespace(
+            items=[{
+                "id": record.id,
+                "kind": record.kind,
+                "agent_id": record.agent_id,
+                "session_id": record.session_id,
+                "run_id": record.run_id,
+                "status": record.status,
+                "recover_on_restart": record.recover_on_restart,
+                "created_at_ms": record.created_at_ms,
+                "started_at_ms": record.started_at_ms,
+                "finished_at_ms": record.finished_at_ms,
+                "last_error": record.last_error,
+                "content_preview": record.content[:200],
+            }],
+            total=1,
+            limit=10,
+            offset=0,
+        )
 
         with patch(
-            "api.cron_api._session_work_store",
-            return_value=work_store,
+            "api.cron_api._system_work_history_service",
+            return_value=service,
         ):
             result = await get_system_work_history(
                 kind="heartbeat",
@@ -219,12 +236,11 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
             "session_id": "main-main",
             "run_id": None,
         }
-        work_store.query.assert_called_once_with(
+        service.query.assert_called_once_with(
             **expected_filters,
             limit=10,
             offset=0,
         )
-        work_store.count.assert_called_once_with(**expected_filters)
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["id"], "work-1")
 
