@@ -273,6 +273,54 @@ test("isolates Subagent state in a dedicated context broadcast domain", () => {
   }
 });
 
+test("isolates Agent state in a dedicated context broadcast domain", () => {
+  const contextPath = "src/lib/agentContext.tsx";
+  expect(existsSync(contextPath)).toBe(true);
+  if (!existsSync(contextPath)) throw new Error(`${contextPath} is required`);
+
+  const context = readFileSync(contextPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+  const workspace = readFileSync("src/lib/hooks/useAgentWorkspace.ts", "utf8");
+  const appStateStart = store.indexOf("interface AppState {");
+  const appStateEnd = store.indexOf("\n}\n\nconst AppContext", appStateStart);
+  const appState = store.slice(appStateStart, appStateEnd);
+  const agentFields = [
+    "agents",
+    "currentAgentId",
+    "currentSessionId",
+    "currentModel",
+    "loadAgents",
+    "switchAgent",
+    "loadMainSession",
+  ];
+
+  expect(context).toContain("AgentProvider");
+  expect(context).toContain("useAgentContext");
+  expect(context).toContain("useMemo<AgentContextState>");
+  expect(store).toContain("<AgentProvider agent={agent}>");
+  expect(workspace).toContain("    agent,");
+  for (const field of agentFields) {
+    expect(appState, `${field} should not be in AppState`).not.toMatch(
+      new RegExp(`\\b${field}\\b`),
+    );
+  }
+
+  for (const file of [
+    "src/app/page.tsx",
+    "src/components/chat/ChatInput.tsx",
+    "src/components/chat/ChatPanel.tsx",
+    "src/components/editor/InspectorPanel.tsx",
+    "src/components/inspector/HeartbeatPanel.tsx",
+    "src/components/inspector/SubagentPanel.tsx",
+    "src/components/layout/ConfigModal.tsx",
+    "src/components/layout/Navbar.tsx",
+    "src/components/memory/MemoryModal.tsx",
+    "src/components/skills/SkillsPanel.tsx",
+  ]) {
+    expect(readFileSync(file, "utf8"), file).toContain("useAgentContext()");
+  }
+});
+
 test("keeps UI-only fields out of useApp consumers", () => {
   const uiFields = new Set([
     "showConfigModal",

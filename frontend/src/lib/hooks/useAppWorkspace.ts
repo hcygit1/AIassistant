@@ -37,7 +37,7 @@ export function useAppWorkspace({
 
   useAgentEvents(currentAgentId, {
     onSkillsUpdated: triggerSkillsRefresh,
-    onHeartbeatMessage: workspace.loadMainSession,
+    onHeartbeatMessage: workspace.agent.loadMainSession,
     onApprovalRequired,
   });
 

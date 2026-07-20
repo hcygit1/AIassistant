@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import {
@@ -612,7 +612,7 @@ const TABS = [
 type TabKey = (typeof TABS)[number]["key"];
 
 export default function MemoryModal() {
-  const { currentAgentId } = useApp();
+  const { currentAgentId } = useAgentContext();
   const { showMemoryModal, setShowMemoryModal } = useUi();
   const [tab, setTab] = useState<TabKey>("overview");
 

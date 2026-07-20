@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import {
@@ -33,7 +34,8 @@ function useStatusBadge() {
 }
 
 export default function SkillsPanel() {
-  const { currentAgentId, skillsRefreshTrigger } = useApp();
+  const { skillsRefreshTrigger } = useApp();
+  const { currentAgentId } = useAgentContext();
   const { t, showNotice } = useUi();
   const [skills, setSkills] = useState<SkillDetail[]>([]);
   const [loading, setLoading] = useState(true);

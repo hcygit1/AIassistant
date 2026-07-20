@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useUi } from "@/lib/uiContext";
 import {
   X, ToggleLeft, ToggleRight, Plus, Trash2,
@@ -369,7 +369,7 @@ function AgentCard({ agent, models, config, onConfigChange, onDelete, onError }:
 /* ───────────────────── Main ConfigModal ───────────────────── */
 
 export default function ConfigModal() {
-  const { currentAgentId, currentModel, loadMainSession, loadAgents, switchAgent } = useApp();
+  const { currentAgentId, currentModel, loadMainSession, loadAgents, switchAgent } = useAgentContext();
   const {
     showConfigModal,
     setShowConfigModal,

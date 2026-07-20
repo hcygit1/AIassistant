@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import * as api from "@/lib/api";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useChatState } from "@/lib/chatContext";
 import { useInspectorContext } from "@/lib/inspectorContext";
 import { useUi } from "@/lib/uiContext";
@@ -19,7 +19,7 @@ export default function HomePage() {
   const {
     loadAgents,
     loadMainSession,
-  } = useApp();
+  } = useAgentContext();
   const { sessionError } = useChatState();
   const {
     inspectorWidth,

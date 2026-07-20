@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useMemo } from "react";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useChatState } from "@/lib/chatContext";
 import { useUi } from "@/lib/uiContext";
 import { StopCircle, ArrowUp, ChevronDown, Sparkles } from "lucide-react";
@@ -52,7 +52,7 @@ function ContextMiniRing({ utilization }: { utilization: number | null }) {
 }
 
 export default function ChatInput() {
-  const { currentModel } = useApp();
+  const { currentModel } = useAgentContext();
   const {
     sendMessage,
     isStreaming,

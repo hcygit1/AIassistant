@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect } from "react";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useChatState } from "@/lib/chatContext";
 import { useInspectorContext } from "@/lib/inspectorContext";
 import { useSubagentContext } from "@/lib/subagentContext";
@@ -16,7 +16,7 @@ export default function ChatPanel() {
   const {
     currentSessionId,
     currentAgentId, agents,
-  } = useApp();
+  } = useAgentContext();
   const { messages, sessionError } = useChatState();
   const { setInspectorTab } = useInspectorContext();
   const { runningSubagents } = useSubagentContext();

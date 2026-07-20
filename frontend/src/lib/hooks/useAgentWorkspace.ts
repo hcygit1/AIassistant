@@ -169,14 +169,26 @@ export function useAgentWorkspace({
     }
   }, [resetInspector, setCurrentAgentId]);
 
-  return {
+  const agent = useMemo(() => ({
     agents,
     currentAgentId,
     currentSessionId,
     currentModel,
     loadAgents,
-    loadMainSession,
     switchAgent,
+    loadMainSession,
+  }), [
+    agents,
+    currentAgentId,
+    currentSessionId,
+    currentModel,
+    loadAgents,
+    switchAgent,
+    loadMainSession,
+  ]);
+
+  return {
+    agent,
     chat,
     subagents,
   };

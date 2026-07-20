@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useInspectorContext } from "@/lib/inspectorContext";
 import { useUi } from "@/lib/uiContext";
 import { FileText, Save, FolderOpen, Sparkles, Users, Wrench, Heart, ChevronRight, PanelRightClose, ListTodo, ToggleLeft, ToggleRight } from "lucide-react";
@@ -50,7 +50,7 @@ const TAB_DEFS: { id: TabId; labelKey: string; icon: any }[] = [
 ];
 
 export default function InspectorPanel() {
-  const { currentAgentId } = useApp();
+  const { currentAgentId } = useAgentContext();
   const {
     inspectorFile,
     inspectorFileLoading,

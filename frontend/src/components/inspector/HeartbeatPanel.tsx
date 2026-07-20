@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import { Heart, RefreshCw, Trash2, CheckCircle, AlertCircle, XCircle, MinusCircle, Clock, ChevronDown, ChevronRight, Play, Plus, ToggleLeft, ToggleRight } from "lucide-react";
@@ -57,7 +57,7 @@ const REASON_LABELS: Record<string, string> = {
 };
 
 export default function HeartbeatPanel() {
-  const { currentAgentId } = useApp();
+  const { currentAgentId } = useAgentContext();
   const { t, showNotice } = useUi();
   const [heartbeatConfig, setHeartbeatConfig] = useState<{ enabled: boolean; every: string } | null>(null);
   const [heartbeatToggling, setHeartbeatToggling] = useState(false);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useSubagentContext } from "@/lib/subagentContext";
 import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
@@ -27,7 +27,7 @@ export default function SubagentPanel() {
   const {
     currentAgentId,
     loadMainSession,
-  } = useApp();
+  } = useAgentContext();
   const { tree, traceMap, loading, refreshSubagents } = useSubagentContext();
   const { showNotice, t } = useUi();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -125,7 +125,7 @@ function SubagentTreeNode({
   lastSteerPrompt: string;
   setLastSteerPrompt: (v: string) => void;
 }) {
-  const { currentAgentId, loadMainSession } = useApp();
+  const { currentAgentId, loadMainSession } = useAgentContext();
   const { t } = useUi();
   const status = node.state || node.status;
   const isRunning = status === "running";

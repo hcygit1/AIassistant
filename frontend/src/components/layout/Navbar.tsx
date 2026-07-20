@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useApp } from "@/lib/store";
+import { useAgentContext } from "@/lib/agentContext";
 import { useChatState } from "@/lib/chatContext";
 import { useSubagentContext } from "@/lib/subagentContext";
 import { useUi } from "@/lib/uiContext";
@@ -16,7 +16,7 @@ import PIPIXIAMark from "@/components/icons/PipixiaMark";
 export default function Navbar() {
   const {
     agents, currentAgentId, switchAgent,
-  } = useApp();
+  } = useAgentContext();
   const { isStreaming } = useChatState();
   const { runningSubagents } = useSubagentContext();
   const { theme, setTheme, locale, setLocale, t } = useUi();

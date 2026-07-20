@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useCallback, useMemo } from "react";
 import { useAppWorkspace } from "./hooks/useAppWorkspace";
+import { AgentProvider } from "./agentContext";
 import { ApprovalProvider, useApproval } from "./approvalContext";
 import { ChatProvider } from "./chatContext";
 import { InspectorProvider } from "./inspectorContext";
@@ -15,20 +16,11 @@ export type { Locale, Messages } from "./i18n/locales";
 export type { UiNotice } from "./hooks/useAppUiState";
 
 interface AppState {
-  // Agent
-  agents: any[];
-  currentAgentId: string;
-  currentSessionId: string | null;
-  currentModel: any | null;
-
   // Config
   ragMode: boolean;
   setRagMode: (enabled: boolean) => Promise<void>;
 
   // Actions
-  loadAgents: () => Promise<void>;
-  switchAgent: (agentId: string) => Promise<void>;
-  loadMainSession: () => Promise<void>;
   skillsRefreshTrigger: number;
   triggerSkillsRefresh: () => void;
 }
@@ -48,14 +40,8 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
   });
 
   const {
-    agents,
-    currentAgentId,
-    currentSessionId,
-    currentModel,
+    agent,
     inspector,
-    loadAgents,
-    loadMainSession,
-    switchAgent,
     chat,
     subagents,
     ragMode,
@@ -65,29 +51,14 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
   } = workspace;
 
   const value = useMemo<AppState>(() => ({
-    agents,
-    currentAgentId,
-    currentSessionId,
-    currentModel,
-
     ragMode,
     setRagMode,
 
-    loadAgents,
-    switchAgent,
-    loadMainSession,
     skillsRefreshTrigger,
     triggerSkillsRefresh,
   }), [
-    agents,
-    currentAgentId,
-    currentSessionId,
-    currentModel,
     ragMode,
     setRagMode,
-    loadAgents,
-    switchAgent,
-    loadMainSession,
     skillsRefreshTrigger,
     triggerSkillsRefresh,
   ]);
@@ -96,7 +67,9 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     <AppContext.Provider value={value}>
       <InspectorProvider inspector={inspector}>
         <ChatProvider chat={chat}>
-          <SubagentProvider subagents={subagents}>{children}</SubagentProvider>
+          <SubagentProvider subagents={subagents}>
+            <AgentProvider agent={agent}>{children}</AgentProvider>
+          </SubagentProvider>
         </ChatProvider>
       </InspectorProvider>
     </AppContext.Provider>
