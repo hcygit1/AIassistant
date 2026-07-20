@@ -118,6 +118,22 @@ test("keeps workspace runtime composition outside AppStateProvider", () => {
   expect(store).not.toContain("useAgentEvents(");
 });
 
+test("keeps lifecycle notice side effects outside AppStateProvider", () => {
+  const hookPath = "src/lib/hooks/useLifecycleNotices.ts";
+  expect(existsSync(hookPath)).toBe(true);
+  if (!existsSync(hookPath)) return;
+
+  const hook = readFileSync(hookPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+
+  expect(store).toContain("useLifecycleNotices(");
+  expect(store).not.toContain("lastLifecycleNoticeKeyRef");
+  expect(store).not.toContain('last.event === "session_memory_saved"');
+  expect(store).not.toContain('last.event === "session_memory_failed"');
+  expect(hook).toContain("session_memory_saved");
+  expect(hook).toContain("session_memory_failed");
+});
+
 test("keeps UI-only fields out of useApp consumers", () => {
   const uiFields = new Set([
     "showConfigModal",

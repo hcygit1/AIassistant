@@ -1,9 +1,10 @@
 "use client";
 
-import React, { createContext, useContext, useCallback, useEffect, useRef } from "react";
+import React, { createContext, useContext, useCallback } from "react";
 import type { TokenUsage } from "./api";
 import { useChat } from "./hooks/useChat";
 import { useAppWorkspace } from "./hooks/useAppWorkspace";
+import { useLifecycleNotices } from "./hooks/useLifecycleNotices";
 import { useSubagents } from "./hooks/useSubagents";
 import { ApprovalProvider, useApproval } from "./approvalContext";
 import { UiProvider, useUi } from "./uiContext";
@@ -67,8 +68,6 @@ interface AppState {
 const AppContext = createContext<AppState | null>(null);
 
 function AppStateProvider({ children }: { children: React.ReactNode }) {
-  const lastLifecycleNoticeKeyRef = useRef("");
-
   const { t, showNotice } = useUi();
   const { setPendingApproval } = useApproval();
   const formatCommandResponse = useCallback(
@@ -112,25 +111,7 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     triggerSkillsRefresh,
   } = workspace;
 
-  useEffect(() => {
-    if (!chat.lifecycleEvents.length) return;
-    const last = chat.lifecycleEvents[chat.lifecycleEvents.length - 1];
-    if (!last) return;
-    const data = (last.data || {}) as any;
-    const key = `${last.event}|${data.session_id || ""}|${data.path || ""}|${data.reason || ""}|${last.timestamp}`;
-    if (lastLifecycleNoticeKeyRef.current === key) return;
-    lastLifecycleNoticeKeyRef.current = key;
-
-    if (last.event === "session_memory_saved") {
-      const path = data.path ? `（${data.path}）` : "";
-      showNotice({ kind: "success", text: `长期记忆已后台保存${path}` });
-      return;
-    }
-    if (last.event === "session_memory_failed") {
-      const reason = data.reason ? `：${String(data.reason)}` : "";
-      showNotice({ kind: "error", text: `长期记忆后台保存失败${reason}` });
-    }
-  }, [chat.lifecycleEvents, showNotice]);
+  useLifecycleNotices(chat.lifecycleEvents, showNotice);
 
   const value: AppState = {
     agents,
