@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable
 
+from sessions.session_requester_resolver import session_requester_resolver
 from subagents.subagent_relationships import SubagentRelationshipService
 from subagents.subagent_run_archive import SubagentRunArchiveService
 from subagents.subagent_run_lifecycle import SubagentRunLifecycleService
@@ -237,3 +238,6 @@ class SubagentRegistry:
 
 
 registry = SubagentRegistry()
+session_requester_resolver.bind(
+    registry.resolve_requester_for_child_session
+)

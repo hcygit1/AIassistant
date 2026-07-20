@@ -59,6 +59,30 @@ class SessionManagerComponentsTests(unittest.TestCase):
             enforce=True,
         )
 
+    def test_injected_requester_resolver_is_shared_by_session_services(
+        self,
+    ) -> None:
+        resolver = Mock(return_value=("agent:parent:main", "run-1"))
+        manager = SessionManager(
+            repository=Mock(),
+            resolve_requester=resolver,
+        )
+
+        catalog_result = manager._catalog._resolve_requester(
+            "agent:worker:subagent:child-1"
+        )
+        writer_result = manager._message_writer._resolve_requester(
+            "agent:worker:subagent:child-2"
+        )
+
+        self.assertEqual(catalog_result, ("agent:parent:main", "run-1"))
+        self.assertEqual(writer_result, ("agent:parent:main", "run-1"))
+        self.assertEqual(resolver.call_count, 2)
+        self.assertNotIn(
+            "_resolve_requester_for_child_session",
+            SessionManager.__dict__,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

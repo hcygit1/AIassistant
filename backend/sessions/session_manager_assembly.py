@@ -45,6 +45,9 @@ class SessionManagerAssembler:
         title_service: SessionTitleService | None = None,
         reader: SessionReader | None = None,
         cleanup_runtime: Callable[[str, str], None] | None = None,
+        resolve_requester: Callable[
+            [str], tuple[str, str] | None
+        ],
     ) -> None:
         self._repository = repository
         self._get_config = get_config
@@ -52,6 +55,7 @@ class SessionManagerAssembler:
         self._title_service = title_service
         self._reader = reader
         self._cleanup_runtime = cleanup_runtime
+        self._resolve_requester = resolve_requester
 
     def build(self, manager: Any) -> SessionManagerComponents:
         maintenance = self._maintenance or SessionMaintenanceService(
@@ -91,7 +95,7 @@ class SessionManagerAssembler:
             ),
             resolve_main_session_id=manager.resolve_main_session_id,
             session_key_from_session_id=manager.session_key_from_session_id,
-            resolve_requester=manager._resolve_requester_for_child_session,
+            resolve_requester=self._resolve_requester,
             run_maintenance=lambda agent_id, **kwargs: manager.run_maintenance(
                 agent_id,
                 **kwargs,
@@ -107,7 +111,7 @@ class SessionManagerAssembler:
                 manager._save_session_data(session_id, agent_id, data)
             ),
             session_key_from_id=manager.session_key_from_session_id,
-            resolve_requester=manager._resolve_requester_for_child_session,
+            resolve_requester=self._resolve_requester,
         )
         lifecycle = SessionLifecycleService(
             repository=self._repository,

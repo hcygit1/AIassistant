@@ -23,6 +23,11 @@ from sessions.session_lifecycle import SessionLifecycleService
 from sessions.session_manager_assembly import SessionManagerAssembler
 from sessions.session_message_writer import SessionMessageWriter
 from sessions.session_reader import SessionReader
+from sessions.session_requester_resolver import (
+    RequesterProvider,
+    SessionRequesterResolver,
+    session_requester_resolver,
+)
 from sessions.session_title import SessionTitleService
 
 
@@ -34,9 +39,15 @@ class SessionManager:
         title_service: SessionTitleService | None = None,
         cleanup_runtime: Callable[[str, str], None] | None = None,
         reader: SessionReader | None = None,
+        resolve_requester: RequesterProvider | None = None,
     ) -> None:
         self._repository = repository or SessionRepository(
             resolve_sessions_dir=resolve_agent_sessions_dir
+        )
+        requester_resolver = (
+            SessionRequesterResolver(resolve_requester)
+            if resolve_requester is not None
+            else session_requester_resolver
         )
         components = SessionManagerAssembler(
             repository=self._repository,
@@ -45,22 +56,12 @@ class SessionManager:
             title_service=title_service,
             reader=reader,
             cleanup_runtime=cleanup_runtime,
+            resolve_requester=requester_resolver,
         ).build(self)
         components.install_on(self)
 
     def _is_bootstrap_text(self, text: str | None) -> bool:
         return self._title_service.is_bootstrap_text(text)
-
-    @staticmethod
-    def _resolve_requester_for_child_session(
-        child_session_key: str,
-    ) -> tuple[str, str] | None:
-        try:
-            from subagents.subagent_registry import registry
-
-            return registry.resolve_requester_for_child_session(child_session_key)
-        except Exception:
-            return None
 
     @contextmanager
     def _session_transaction(self, session_id: str, agent_id: str):
