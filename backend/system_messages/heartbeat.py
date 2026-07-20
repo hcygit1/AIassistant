@@ -16,7 +16,7 @@ from system_messages.heartbeat_utils import (
     is_heartbeat_content_effectively_empty,
     is_within_active_hours,
 )
-from sessions.session_manager import session_manager
+from sessions.session_dispatcher import PRIORITY_HEARTBEAT
 from infra.audit_log import audit_logger
 
 logger = logging.getLogger(__name__)
@@ -99,10 +99,33 @@ def get_heartbeat_history(agent_id: str, limit: int = 30) -> list[dict[str, Any]
 class HeartbeatRunner:
     """为每个 Agent 管理周期性心跳任务（主会话、per-agent 配置）"""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        session_manager: Any | None = None,
+        work_delivery: Any | None = None,
+    ) -> None:
+        self._session_manager = session_manager
+        self._work_delivery = work_delivery
         self._tasks: dict[str, asyncio.Task] = {}
         self._running = False
         self._config_version = 0
+
+    @property
+    def session_manager(self) -> Any:
+        if self._session_manager is not None:
+            return self._session_manager
+        from sessions.session_manager import session_manager
+
+        return session_manager
+
+    @property
+    def work_delivery(self) -> Any:
+        if self._work_delivery is not None:
+            return self._work_delivery
+        from sessions.session_work_delivery import session_work_delivery
+
+        return session_work_delivery
 
     async def start(self, agent_ids: list[str] | None = None) -> None:
         self._running = True
@@ -204,7 +227,7 @@ class HeartbeatRunner:
         hb = get_heartbeat_config(agent_id)
         if not hb.get("enabled"):
             return
-        session_id = session_manager.resolve_main_session_id(agent_id)
+        session_id = self.session_manager.resolve_main_session_id(agent_id)
         workspace = resolve_agent_workspace(agent_id)
         heartbeat_md = workspace / "HEARTBEAT.md"
 
@@ -255,7 +278,7 @@ class HeartbeatRunner:
             should_skip, stripped = strip_heartbeat_token(response, max_ack_chars=ack_max)
 
             if should_skip:
-                session_manager.rollback_last_turn(session_id, agent_id)
+                self.session_manager.rollback_last_turn(session_id, agent_id)
                 status = "ok-empty" if not response.strip() else "ok-token"
                 emit_heartbeat_event(
                     agent_id,
@@ -284,10 +307,7 @@ class HeartbeatRunner:
                     event_bus.emit(agent_id, Events.heartbeat_message(session_id=session_id, agent_id=agent_id))
                 audit_logger.log(agent_id, "heartbeat_response", {"response": response[:500]})
 
-        from sessions.session_dispatcher import PRIORITY_HEARTBEAT
-        from sessions.session_work_delivery import session_work_delivery
-
-        session_work_delivery.deliver(
+        self.work_delivery.deliver(
             kind="heartbeat",
             priority=PRIORITY_HEARTBEAT,
             content=full_prompt,

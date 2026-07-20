@@ -5,14 +5,41 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from subagents.subagent_registry import SubagentRunRecord
 
 
 class _SubagentDeliveryState:
-    def emit(self, agent_id: str, run_id: str, result_delivery_state: str) -> None:
-        from infra.event_bus import Events, event_bus
+    def __init__(
+        self,
+        *,
+        registry: Any | None = None,
+        event_bus: Any | None = None,
+    ) -> None:
+        self._registry = registry
+        self._event_bus = event_bus
 
-        event_bus.emit(
+    @property
+    def registry(self) -> Any:
+        if self._registry is not None:
+            return self._registry
+        from subagents.subagent_registry import registry
+
+        return registry
+
+    @property
+    def event_bus(self) -> Any:
+        if self._event_bus is not None:
+            return self._event_bus
+        from infra.event_bus import event_bus
+
+        return event_bus
+
+    def emit(self, agent_id: str, run_id: str, result_delivery_state: str) -> None:
+        from infra.event_bus import Events
+
+        self.event_bus.emit(
             agent_id,
             Events.subagent_announce(
                 run_id=run_id,
@@ -21,32 +48,60 @@ class _SubagentDeliveryState:
         )
 
     def queued(self, agent_id: str, run_id: str) -> None:
-        from subagents.subagent_registry import registry
-
-        registry.set_result_delivery_state(run_id, "queued")
+        self.registry.set_result_delivery_state(run_id, "queued")
         self.emit(agent_id, run_id, "queued")
 
     def delivered(self, agent_id: str, run_id: str) -> None:
-        from subagents.subagent_registry import registry
-
-        registry.mark_result_delivery_delivered(run_id)
+        self.registry.mark_result_delivery_delivered(run_id)
         self.emit(agent_id, run_id, "delivered")
 
     def dropped(self, agent_id: str, run_id: str) -> None:
-        from subagents.subagent_registry import registry
-
-        registry.mark_result_delivery_dropped(run_id)
+        self.registry.mark_result_delivery_dropped(run_id)
         self.emit(agent_id, run_id, "dropped")
 
     def bind_work(self, run_id: str, work_id: str) -> None:
-        from subagents.subagent_registry import registry
-
-        registry.set_delivery_work_id(run_id, work_id)
+        self.registry.set_delivery_work_id(run_id, work_id)
 
 
 class SubagentAnnounceDelivery:
-    def __init__(self) -> None:
-        self._state = _SubagentDeliveryState()
+    def __init__(
+        self,
+        *,
+        session_manager: Any | None = None,
+        work_delivery: Any | None = None,
+        registry: Any | None = None,
+        event_bus: Any | None = None,
+    ) -> None:
+        self._session_manager = session_manager
+        self._work_delivery = work_delivery
+        self._state = _SubagentDeliveryState(
+            registry=registry,
+            event_bus=event_bus,
+        )
+
+    @property
+    def session_manager(self) -> Any:
+        if self._session_manager is not None:
+            return self._session_manager
+        from sessions.session_manager import session_manager
+
+        return session_manager
+
+    @property
+    def work_delivery(self) -> Any:
+        if self._work_delivery is not None:
+            return self._work_delivery
+        from sessions.session_work_delivery import session_work_delivery
+
+        return session_work_delivery
+
+    @property
+    def registry(self) -> Any:
+        return self._state.registry
+
+    @property
+    def event_bus(self) -> Any:
+        return self._state.event_bus
 
     def _save_announce_and_mark_dropped(
         self,
@@ -55,21 +110,25 @@ class SubagentAnnounceDelivery:
         run_id: str,
         announce_msg: str,
     ) -> None:
-        from sessions.session_manager import session_manager
-
-        session_manager.save_message(session_id, agent_id, "system", announce_msg)
+        self.session_manager.save_message(
+            session_id,
+            agent_id,
+            "system",
+            announce_msg,
+        )
         self._state.dropped(agent_id, run_id)
 
     def _emit_subagent_done(self, agent_id: str, run_id: str, result_preview: str) -> None:
-        from infra.event_bus import Events, event_bus
+        from infra.event_bus import Events
 
-        event_bus.emit(agent_id, Events.subagent_done(run_id=run_id, result=result_preview))
+        self.event_bus.emit(
+            agent_id,
+            Events.subagent_done(run_id=run_id, result=result_preview),
+        )
 
     def parse_requester_key(self, requester_key: str) -> tuple[str, str] | None:
         """requester_key (session_key) -> (agent_id, session_id)."""
-        from sessions.session_manager import session_manager
-
-        return session_manager.session_id_from_session_key(requester_key)
+        return self.session_manager.session_id_from_session_key(requester_key)
 
     def build_announce_message(
         self,
@@ -140,15 +199,12 @@ class SubagentAnnounceDelivery:
     ) -> None:
         """向 requester 交付 announce；若 requester 是子会话则触发其新 run 并递归向上。"""
         from sessions.session_dispatcher import PRIORITY_ANNOUNCE
-        from sessions.session_manager import session_manager
-        from sessions.session_work_delivery import session_work_delivery
-        from subagents.subagent_registry import registry
 
         parsed = self.parse_requester_key(requester_key)
         if not parsed:
             return
         req_agent, req_session = parsed
-        main_session_id = session_manager.resolve_main_session_id(req_agent)
+        main_session_id = self.session_manager.resolve_main_session_id(req_agent)
 
         announce_msg = self.build_announce_message(
             run_id=run_id,
@@ -164,7 +220,7 @@ class SubagentAnnounceDelivery:
         if is_main:
             self._state.queued(req_agent, run_id)
 
-            session_work_delivery.deliver(
+            self.work_delivery.deliver(
                 kind="announce",
                 priority=PRIORITY_ANNOUNCE,
                 content=announce_msg,
@@ -188,7 +244,9 @@ class SubagentAnnounceDelivery:
         parent_child_key = f"agent:{req_agent}:subagent:{req_session}"
 
         async def _sub_session_announce_result(parent_reply: str) -> None:
-            grandparent = registry.resolve_requester_for_child_session(parent_child_key)
+            grandparent = self.registry.resolve_requester_for_child_session(
+                parent_child_key
+            )
             if grandparent:
                 g_req_key, _ = grandparent
                 await self.deliver_to_requester(
@@ -204,14 +262,16 @@ class SubagentAnnounceDelivery:
                 )
 
         async def _sub_session_announce_fail(exc: Exception) -> None:
-            session_manager.save_message(
+            self.session_manager.save_message(
                 req_session,
                 req_agent,
                 "system",
                 f"[Announce processing failed] {str(exc)[:200]}",
             )
             self._state.dropped(req_agent, run_id)
-            grandparent = registry.resolve_requester_for_child_session(parent_child_key)
+            grandparent = self.registry.resolve_requester_for_child_session(
+                parent_child_key
+            )
             if grandparent:
                 g_req_key, _ = grandparent
                 await self.deliver_to_requester(
@@ -226,7 +286,7 @@ class SubagentAnnounceDelivery:
                     ended_at=ended_at,
                 )
 
-        session_work_delivery.deliver(
+        self.work_delivery.deliver(
             kind="announce",
             priority=PRIORITY_ANNOUNCE,
             content=announce_msg,
@@ -247,15 +307,12 @@ class SubagentAnnounceDelivery:
         而是保持当前 resume 逻辑：直接向 target requester 会话投递一条 announce。
         """
         from sessions.session_dispatcher import PRIORITY_ANNOUNCE
-        from sessions.session_manager import session_manager
-        from sessions.session_work_delivery import session_work_delivery
-        from subagents.subagent_registry import registry
 
         parsed = self.parse_requester_key(entry.requester_session_key)
         if not parsed:
             return False
         req_agent, req_session = parsed
-        main_sid = session_manager.resolve_main_session_id(req_agent)
+        main_sid = self.session_manager.resolve_main_session_id(req_agent)
 
         announce_msg = self.build_announce_message(
             run_id=run_id,
@@ -269,7 +326,7 @@ class SubagentAnnounceDelivery:
 
         result_preview = (entry.result_summary or "(no output)")[:300]
         target_sid = main_sid if req_session == main_sid else req_session
-        session_work_delivery.deliver(
+        self.work_delivery.deliver(
             kind="announce",
             priority=PRIORITY_ANNOUNCE,
             content=announce_msg,
@@ -283,7 +340,12 @@ class SubagentAnnounceDelivery:
             ),
             on_cancel=lambda: self._state.dropped(req_agent, run_id),
             on_failure=lambda: (
-                session_manager.save_message(target_sid, req_agent, "system", announce_msg),
+                self.session_manager.save_message(
+                    target_sid,
+                    req_agent,
+                    "system",
+                    announce_msg,
+                ),
                 self._state.dropped(req_agent, run_id),
                 self._emit_subagent_done(req_agent, run_id, result_preview),
             ),

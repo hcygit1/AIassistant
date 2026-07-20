@@ -92,6 +92,31 @@ class ReminderDeliveryServiceTests(unittest.TestCase):
         prompt = self.service.build_cron_prompt("")
         self.assertIn("no reminder content", prompt.lower())
 
+    def test_deliver_cron_reminder_uses_injected_dependencies(self) -> None:
+        session_manager = Mock()
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        work_delivery = Mock()
+        work_delivery.deliver.return_value = 4
+        service = ReminderDeliveryService(
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+        )
+
+        position = service.deliver_cron_reminder(
+            agent_id="main",
+            text="review queue",
+            run_id="cron-injected",
+        )
+
+        self.assertEqual(position, 4)
+        session_manager.resolve_main_session_id.assert_called_once_with("main")
+        work_delivery.deliver.assert_called_once()
+        self.assertEqual(work_delivery.deliver.call_args.kwargs["kind"], "cron")
+        self.assertEqual(
+            work_delivery.deliver.call_args.kwargs["session_id"],
+            "main-main",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

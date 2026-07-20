@@ -221,6 +221,43 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         registry.mark_result_delivery_delivered.assert_called_once_with("run-4")
         self.assertTrue(event_bus.emit.called)
 
+    async def test_deliver_to_requester_uses_injected_dependencies(self) -> None:
+        session_manager = Mock()
+        session_manager.session_id_from_session_key.return_value = (
+            "main",
+            "main-main",
+        )
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        work_delivery = Mock()
+        registry = Mock()
+        event_bus = Mock()
+        delivery = SubagentAnnounceDelivery(
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+            registry=registry,
+            event_bus=event_bus,
+        )
+
+        with patch("config.get_config", return_value={"app": {"locale": "en"}}):
+            await delivery.deliver_to_requester(
+                requester_key="agent:main:main",
+                child_session_key="agent:main:subagent:child-1",
+                run_id="run-injected",
+                task="check dependencies",
+                result="done",
+            )
+
+        work_delivery.deliver.assert_called_once()
+        self.assertEqual(
+            work_delivery.deliver.call_args.kwargs["kind"],
+            "announce",
+        )
+        registry.set_result_delivery_state.assert_called_once_with(
+            "run-injected",
+            "queued",
+        )
+        self.assertTrue(event_bus.emit.called)
+
 
 if __name__ == "__main__":
     unittest.main()

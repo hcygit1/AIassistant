@@ -8,12 +8,37 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from sessions.session_dispatcher import PRIORITY_CRON
-from sessions.session_manager import session_manager
-from sessions.session_work_delivery import session_work_delivery
 
 
 class ReminderDeliveryService:
+    def __init__(
+        self,
+        *,
+        session_manager: Any | None = None,
+        work_delivery: Any | None = None,
+    ) -> None:
+        self._session_manager = session_manager
+        self._work_delivery = work_delivery
+
+    @property
+    def session_manager(self) -> Any:
+        if self._session_manager is not None:
+            return self._session_manager
+        from sessions.session_manager import session_manager
+
+        return session_manager
+
+    @property
+    def work_delivery(self) -> Any:
+        if self._work_delivery is not None:
+            return self._work_delivery
+        from sessions.session_work_delivery import session_work_delivery
+
+        return session_work_delivery
+
     def build_cron_prompt(self, text: str) -> str:
         reminder_text = (text or "").strip()
         if not reminder_text:
@@ -35,8 +60,10 @@ class ReminderDeliveryService:
         session_id: str | None = None,
         run_id: str | None = None,
     ) -> int:
-        target_session_id = session_id or session_manager.resolve_main_session_id(agent_id)
-        return session_work_delivery.deliver(
+        target_session_id = session_id or self.session_manager.resolve_main_session_id(
+            agent_id
+        )
+        return self.work_delivery.deliver(
             kind="cron",
             priority=PRIORITY_CRON,
             content=self.build_cron_prompt(text),
