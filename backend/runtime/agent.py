@@ -34,6 +34,7 @@ from llm.model_selection import (
 from llm.llm_factory import create_llm, llm_cache
 from llm.models_config import models_config
 from runtime.agent_state import AgentState
+from runtime.agent_state_runtime import AgentStateRuntime
 from runtime.memory_runtime import MemoryRuntime
 from runtime.model_runtime import ModelRuntime
 from runtime.session_commands import SessionCommands
@@ -89,6 +90,14 @@ from infra.event_bus import EventBus, Events, event_bus
 # ---------------------------------------------------------------------------
 
 class AgentManager:
+    @property
+    def _states(self) -> dict[str, AgentState]:
+        return self._state_runtime.states
+
+    @property
+    def _state_save_tasks(self) -> dict[str, asyncio.Task]:
+        return self._state_runtime.save_tasks
+
     @property
     def _prompt_cache(self) -> dict[tuple[Any, ...], PromptCacheEntry]:
         return self._turn_context.prompt_cache
@@ -241,6 +250,13 @@ class AgentManager:
 
     def __init__(self):
         self.data_dir: str = ""
+        self._initialized = False
+        self._state_runtime = AgentStateRuntime(
+            resolve_persist_config=self._get_state_persist_config,
+            resolve_state_path=self._get_state_path,
+            resolve_think_level=self._resolve_think_level,
+            is_initialized=lambda: self._initialized,
+        )
         self._memory_runtime = MemoryRuntime()
         self._model_runtime = ModelRuntime(
             resolve_configured_model=lambda agent_id: (
@@ -418,11 +434,8 @@ class AgentManager:
                 ),
             )
         )
-        self._states: dict[str, AgentState] = {}
-        self._initialized = False
         self.lifecycle_hooks: LifecycleHooks | None = None
         self._pending_tasks: set[asyncio.Task] = set()
-        self._state_save_tasks: dict[str, asyncio.Task] = {}
         self._tool_name_cache = self._tool_registry.name_cache
 
     def _get_state_persist_config(self, agent_id: str) -> tuple[bool, int]:
@@ -443,24 +456,11 @@ class AgentManager:
         agent_dir = resolve_agent_dir(agent_id)
         return agent_dir / "agent_state.json"
 
-    async def _periodic_state_save(self, agent_id: str) -> None:
-        """定期保存 Agent 状态"""
-        enabled, interval = self._get_state_persist_config(agent_id)
-        if not enabled:
-            return
+    @staticmethod
+    def _resolve_think_level(agent_id: str) -> Any:
+        from llm.thinking import resolve_agent_think_default
 
-        interval_seconds = max(60, interval * 60)  # 至少1分钟
-        while self._initialized:
-            try:
-                await asyncio.sleep(interval_seconds)
-                if agent_id in self._states:
-                    state = self._states[agent_id]
-                    state_path = self._get_state_path(agent_id)
-                    state.save_to_disk(state_path)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.warning(f"Periodic state save error for {agent_id}: {e}")
+        return resolve_agent_think_default(agent_id)
 
     def _init_mem_system(self, agent_id: str) -> None:
         self._memory_runtime.initialize_agent(agent_id)
@@ -475,18 +475,7 @@ class AgentManager:
             ensure_agent_workspace(agent_id)
             self._init_mem_system(agent_id)
 
-            # 从磁盘加载状态或创建新状态
-            enabled, _ = self._get_state_persist_config(agent_id)
-            if enabled:
-                state_path = self._get_state_path(agent_id)
-                self._states[agent_id] = AgentState.load_from_disk(state_path, agent_id)
-                # 启动定期保存任务
-                save_task = asyncio.create_task(self._periodic_state_save(agent_id))
-                self._state_save_tasks[agent_id] = save_task
-            else:
-                from llm.thinking import resolve_agent_think_default
-                think_level = resolve_agent_think_default(agent_id)
-                self._states[agent_id] = AgentState(agent_id=agent_id, think_level=think_level.value)
+            self._state_runtime.initialize_agent(agent_id)
 
         self._initialized = True
 
@@ -528,9 +517,7 @@ class AgentManager:
         self._model_runtime.clear(agent_id)
 
     def get_state(self, agent_id: str) -> AgentState:
-        if agent_id not in self._states:
-            self._states[agent_id] = AgentState(agent_id=agent_id)
-        return self._states[agent_id]
+        return self._state_runtime.get_state(agent_id)
 
     async def wait_for_pending_tasks(self, timeout: float = 30.0) -> None:
         """等待所有后台任务完成，用于应用关闭前确保数据不丢失"""
@@ -540,13 +527,7 @@ class AgentManager:
         except Exception as e:
             logger.error("关闭前保存 Agent 状态失败: %s", e)
 
-        # 取消状态保存任务
-        state_save_tasks = list(self._state_save_tasks.values())
-        for task in state_save_tasks:
-            task.cancel()
-        self._state_save_tasks.clear()
-        if state_save_tasks:
-            await asyncio.gather(*state_save_tasks, return_exceptions=True)
+        await self._state_runtime.stop_periodic_saves()
 
         if not self._pending_tasks:
             return
@@ -570,8 +551,7 @@ class AgentManager:
         finally:
             self._memory_runtime.close()
             self._model_runtime.clear()
-            self._states.clear()
-            self._state_save_tasks.clear()
+            self._state_runtime.clear()
             self._pending_tasks.clear()
             self._prompt_cache.clear()
             self._session_context_cache.clear()
@@ -581,14 +561,7 @@ class AgentManager:
 
     async def _save_all_states(self) -> None:
         """保存所有 Agent 状态到磁盘"""
-        for agent_id, state in self._states.items():
-            try:
-                enabled, _ = self._get_state_persist_config(agent_id)
-                if enabled:
-                    state_path = self._get_state_path(agent_id)
-                    state.save_to_disk(state_path)
-            except Exception as e:
-                logger.warning(f"Failed to save state for {agent_id}: {e}")
+        await self._state_runtime.save_all_states()
 
     def _collect_tools(self, agent_id: str, session_id: str = "") -> list:
         return self._tool_registry.collect_tools(agent_id, session_id)
