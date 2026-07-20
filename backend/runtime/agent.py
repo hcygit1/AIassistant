@@ -590,11 +590,7 @@ class AgentManager(AgentManagerCompatibilityMixin):
     # ------------------------------------------------------------------
 
     async def register_agent(self, agent_id: str) -> None:
-        from runtime.workspace import ensure_agent_workspace
-
-        ensure_agent_workspace(agent_id)
-        self._init_mem_system(agent_id)
-        self._states[agent_id] = AgentState(agent_id=agent_id)
+        await self._lifecycle.register_agent(agent_id)
 
 
 agent_manager = AgentManager()

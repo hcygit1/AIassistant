@@ -40,12 +40,17 @@ class AgentLifecycle:
         self.data_dir = data_dir
 
         for agent in self._list_agents():
-            agent_id = agent["id"]
-            self._ensure_workspace(agent_id)
-            self._memory_runtime.initialize_agent(agent_id)
-            self._state_runtime.initialize_agent(agent_id)
+            self._initialize_agent_runtime(agent["id"])
 
         self.initialized = True
+
+    async def register_agent(self, agent_id: str) -> None:
+        self._initialize_agent_runtime(agent_id)
+
+    def _initialize_agent_runtime(self, agent_id: str) -> None:
+        self._ensure_workspace(agent_id)
+        self._memory_runtime.initialize_agent(agent_id)
+        self._state_runtime.initialize_agent(agent_id)
 
     async def wait_for_pending_tasks(
         self,
