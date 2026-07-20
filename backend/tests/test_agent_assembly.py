@@ -52,5 +52,44 @@ class AgentRuntimeComponentsTests(unittest.TestCase):
         self.assertIs(manager._pending_tasks, pending_tasks)
 
 
+class AgentManagerFacadeStructureTests(unittest.TestCase):
+    def test_turn_preparation_facade_is_outside_agent_manager(self):
+        from runtime.agent import AgentManager
+        from runtime.agent_turn_compat import (
+            AgentManagerTurnPreparationCompatibilityMixin,
+        )
+
+        facade_methods = {
+            "_collect_tools",
+            "_wrap_tools_for_session",
+            "_build_tools",
+            "_resolve_tool_policy",
+            "_filter_tools_by_policy",
+            "_build_messages",
+            "_safe_mtime",
+            "_project_context_signature",
+            "_prompt_runtime_signature",
+            "_pruning_signature",
+            "_tool_policy_signature",
+            "_get_or_build_tool_names",
+            "_get_or_build_prompt",
+            "_session_summary_fingerprint",
+            "_get_or_build_session_context",
+        }
+
+        self.assertTrue(
+            issubclass(
+                AgentManager,
+                AgentManagerTurnPreparationCompatibilityMixin,
+            )
+        )
+        for method_name in facade_methods:
+            self.assertIn(
+                method_name,
+                AgentManagerTurnPreparationCompatibilityMixin.__dict__,
+            )
+            self.assertNotIn(method_name, AgentManager.__dict__)
+
+
 if __name__ == "__main__":
     unittest.main()
