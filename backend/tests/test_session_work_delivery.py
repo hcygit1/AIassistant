@@ -29,6 +29,26 @@ class _FakeDispatcher:
         return len(self.submitted)
 
 
+class _FakeDispatcherManager:
+    def __init__(self, dispatcher: _FakeDispatcher) -> None:
+        self.dispatcher = dispatcher
+        self.calls = []
+
+    def get(self, agent_id: str, session_id: str, lock: asyncio.Lock):
+        self.calls.append((agent_id, session_id, lock))
+        return self.dispatcher
+
+
+class _FakeLockManager:
+    def __init__(self) -> None:
+        self.session_lock = _FakeLock()
+        self.calls = []
+
+    def get_lock(self, agent_id: str, session_id: str) -> _FakeLock:
+        self.calls.append((agent_id, session_id))
+        return self.session_lock
+
+
 class SessionWorkDeliveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.delivery = SessionWorkDelivery()
@@ -37,28 +57,35 @@ class SessionWorkDeliveryTests(unittest.TestCase):
         dispatcher = _FakeDispatcher()
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SessionWorkStore(Path(tmpdir) / "session_work.db")
-            with (
-                patch("sessions.session_work_delivery.session_work_store", store),
-                patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
-                patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
-            ):
-                pos = self.delivery.deliver(
-                    kind="cron",
-                    priority=2,
-                    content="hello",
-                    agent_id="main",
-                    session_id="main-main",
-                    run_id="cron-1",
-                    recover_on_restart=True,
-                )
+            dispatcher_manager = _FakeDispatcherManager(dispatcher)
+            lock_manager = _FakeLockManager()
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                dispatcher_manager=dispatcher_manager,
+                lock_manager=lock_manager,
+            )
+            pos = delivery.deliver(
+                kind="cron",
+                priority=2,
+                content="hello",
+                agent_id="main",
+                session_id="main-main",
+                run_id="cron-1",
+                recover_on_restart=True,
+            )
 
-                records = store.get_recoverable_pending()
+            records = store.get_recoverable_pending()
 
         self.assertEqual(pos, 1)
         self.assertEqual(len(dispatcher.submitted), 1)
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].kind, "cron")
         self.assertEqual(dispatcher.submitted[0].work_id, records[0].id)
+        self.assertEqual(lock_manager.calls, [("main", "main-main")])
+        self.assertEqual(
+            dispatcher_manager.calls,
+            [("main", "main-main", lock_manager.session_lock.lock)],
+        )
 
     def test_recover_pending_work_resubmits_recoverable_records(self) -> None:
         dispatcher = _FakeDispatcher()

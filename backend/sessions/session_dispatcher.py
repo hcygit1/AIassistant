@@ -27,9 +27,12 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from turns.events import TurnEvent
+
+if TYPE_CHECKING:
+    from sessions.session_work_store import SessionWorkStore
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +83,13 @@ class SessionWorkItem:
 class SessionDispatcher:
     """每个 session 一个实例，后台单协程按优先级 + aging 消费队列。"""
 
-    def __init__(self, lock: asyncio.Lock):
+    def __init__(
+        self,
+        lock: asyncio.Lock,
+        work_store: "SessionWorkStore | None" = None,
+    ):
         self._lock = lock
+        self._work_store = work_store
         self._queue: list[SessionWorkItem] = []
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -234,13 +242,18 @@ class SessionDispatcher:
 
     async def _execute_system(self, task: SessionWorkItem) -> None:
         from runtime.agent import agent_manager
-        from sessions.session_work_store import session_work_store
+
+        work_store = self._work_store
+        if work_store is None:
+            from sessions.session_work_store import session_work_store
+
+            work_store = session_work_store
 
         timeout = ANNOUNCE_TIMEOUT_SEC if task.kind == "announce" else SYSTEM_TIMEOUT_SEC
         lock_acquired = False
         if (
             task.work_id
-            and not session_work_store.mark_running(task.work_id)
+            and not work_store.mark_running(task.work_id)
         ):
             return
 
@@ -260,7 +273,7 @@ class SessionDispatcher:
             elif task.on_failure:
                 _safe_call(task.on_failure)
             if task.work_id:
-                session_work_store.mark_failed(task.work_id, str(te))
+                work_store.mark_failed(task.work_id, str(te))
             return
 
         try:
@@ -299,7 +312,7 @@ class SessionDispatcher:
             if task.on_success:
                 _safe_call(task.on_success)
             if task.work_id:
-                session_work_store.mark_done(task.work_id)
+                work_store.mark_done(task.work_id)
 
         except Exception as e:
             logger.error("Dispatcher execution failed for %s: %s", task.kind, e)
@@ -311,7 +324,7 @@ class SessionDispatcher:
             elif task.on_failure:
                 _safe_call(task.on_failure)
             if task.work_id:
-                session_work_store.mark_failed(task.work_id, str(e))
+                work_store.mark_failed(task.work_id, str(e))
         finally:
             if lock_acquired:
                 try:
@@ -330,13 +343,14 @@ def _safe_call(fn: Callable[[], Any]) -> None:
 class DispatcherManager:
     """全局管理器：每个 agent:session 一个 dispatcher。"""
 
-    def __init__(self):
+    def __init__(self, work_store: "SessionWorkStore | None" = None):
         self._dispatchers: dict[str, SessionDispatcher] = {}
+        self._work_store = work_store
 
     def get(self, agent_id: str, session_id: str, lock: asyncio.Lock) -> SessionDispatcher:
         key = f"{agent_id}:{session_id}"
         if key not in self._dispatchers:
-            d = SessionDispatcher(lock=lock)
+            d = SessionDispatcher(lock=lock, work_store=self._work_store)
             d.start()
             self._dispatchers[key] = d
         return self._dispatchers[key]

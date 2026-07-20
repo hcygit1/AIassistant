@@ -10,14 +10,57 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from sessions.session_dispatcher import SessionWorkItem, dispatcher_manager
-from sessions.session_lock_manager import session_lock_manager
-from sessions.session_work_store import SessionWorkRecord, session_work_store
+from sessions.session_dispatcher import (
+    DispatcherManager,
+    SessionWorkItem,
+    dispatcher_manager,
+)
+from sessions.session_lock_manager import (
+    SessionLockManager,
+    session_lock_manager,
+)
+from sessions.session_work_store import (
+    SessionWorkRecord,
+    SessionWorkStore,
+    session_work_store,
+)
 
 INTERRUPTED_WORK_ERROR = "interrupted by process restart"
 
 
 class SessionWorkDelivery:
+    def __init__(
+        self,
+        *,
+        work_store: SessionWorkStore | None = None,
+        dispatcher_manager: DispatcherManager | None = None,
+        lock_manager: SessionLockManager | None = None,
+    ) -> None:
+        self._work_store = work_store
+        if dispatcher_manager is not None:
+            self._dispatcher_manager = dispatcher_manager
+        elif work_store is not None:
+            self._dispatcher_manager = DispatcherManager(work_store=work_store)
+        else:
+            self._dispatcher_manager = None
+        self._lock_manager = lock_manager
+
+    @property
+    def work_store(self) -> SessionWorkStore:
+        return self._work_store if self._work_store is not None else session_work_store
+
+    @property
+    def dispatcher_manager(self) -> DispatcherManager:
+        return (
+            self._dispatcher_manager
+            if self._dispatcher_manager is not None
+            else dispatcher_manager
+        )
+
+    @property
+    def lock_manager(self) -> SessionLockManager:
+        return self._lock_manager if self._lock_manager is not None else session_lock_manager
+
     def _submit_record(
         self,
         record: SessionWorkRecord,
@@ -28,8 +71,15 @@ class SessionWorkDelivery:
         on_failure_async: Callable[[Exception], Awaitable[None]] | None = None,
         on_cancel: Callable[[], Any] | None = None,
     ) -> int:
-        session_lock = session_lock_manager.get_lock(record.agent_id, record.session_id)
-        dispatcher = dispatcher_manager.get(record.agent_id, record.session_id, session_lock.lock)
+        session_lock = self.lock_manager.get_lock(
+            record.agent_id,
+            record.session_id,
+        )
+        dispatcher = self.dispatcher_manager.get(
+            record.agent_id,
+            record.session_id,
+            session_lock.lock,
+        )
         return dispatcher.submit(
             SessionWorkItem(
                 kind=record.kind,
@@ -68,7 +118,7 @@ class SessionWorkDelivery:
         on_record_created: Callable[[SessionWorkRecord], Any] | None = None,
         recover_on_restart: bool = False,
     ) -> int:
-        record = session_work_store.create_record(
+        record = self.work_store.create_record(
             kind=kind,
             agent_id=agent_id,
             session_id=session_id,
@@ -79,7 +129,7 @@ class SessionWorkDelivery:
             run_id=run_id,
             recover_on_restart=recover_on_restart,
         )
-        session_work_store.insert(record)
+        self.work_store.insert(record)
         if on_record_created:
             on_record_created(record)
         return self._submit_record(
@@ -93,8 +143,8 @@ class SessionWorkDelivery:
 
     def recover_pending_work(self) -> int:
         recovered = 0
-        for record in session_work_store.get_recoverable_pending():
-            if not session_work_store.requeue_for_recovery(record.id):
+        for record in self.work_store.get_recoverable_pending():
+            if not self.work_store.requeue_for_recovery(record.id):
                 continue
             record.status = "queued"
             record.started_at_ms = None
@@ -105,7 +155,7 @@ class SessionWorkDelivery:
         return recovered
 
     def fail_unrecoverable_pending(self) -> int:
-        return session_work_store.fail_unrecoverable_pending(
+        return self.work_store.fail_unrecoverable_pending(
             INTERRUPTED_WORK_ERROR
         )
 

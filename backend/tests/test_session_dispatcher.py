@@ -13,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from sessions.session_dispatcher import (
+    DispatcherManager,
     PRIORITY_ANNOUNCE,
     PRIORITY_CRON,
     PRIORITY_HEARTBEAT,
@@ -280,8 +281,21 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatcher_manager_passes_store_to_session_dispatcher(self) -> None:
+        work_store = _RecordingWorkStore()
+        manager = DispatcherManager(work_store=work_store)
+
+        dispatcher = manager.get("main", "main-main", asyncio.Lock())
+
+        self.assertIs(dispatcher._work_store, work_store)
+        manager.cleanup("main", "main-main")
+
     async def test_error_event_marks_work_failed_without_success_callback(self) -> None:
-        dispatcher = SessionDispatcher(lock=asyncio.Lock())
+        work_store = _RecordingWorkStore()
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            work_store=work_store,
+        )
         succeeded: list[str] = []
         failed: list[str] = []
         task = SessionWorkItem(
@@ -298,25 +312,31 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         async def fake_stream(*args, **kwargs):
             yield {"type": "error", "error": "model failed"}
 
-        with (
-            patch("runtime.agent.agent_manager.astream", fake_stream),
-            patch(
-                "sessions.session_work_store.session_work_store.mark_running",
-                return_value=True,
-            ),
-            patch(
-                "sessions.session_work_store.session_work_store.mark_done"
-            ) as mark_done,
-            patch(
-                "sessions.session_work_store.session_work_store.mark_failed"
-            ) as mark_failed,
-        ):
+        with patch("runtime.agent.agent_manager.astream", fake_stream):
             await dispatcher._execute_system(task)
 
         self.assertEqual(succeeded, [])
         self.assertEqual(failed, ["model failed"])
-        mark_done.assert_not_called()
-        mark_failed.assert_called_once_with("work-1", "model failed")
+        self.assertEqual(work_store.running, ["work-1"])
+        self.assertEqual(work_store.done, [])
+        self.assertEqual(work_store.failed, [("work-1", "model failed")])
+
+
+class _RecordingWorkStore:
+    def __init__(self) -> None:
+        self.running: list[str] = []
+        self.done: list[str] = []
+        self.failed: list[tuple[str, str]] = []
+
+    def mark_running(self, work_id: str) -> bool:
+        self.running.append(work_id)
+        return True
+
+    def mark_done(self, work_id: str) -> None:
+        self.done.append(work_id)
+
+    def mark_failed(self, work_id: str, error: str) -> None:
+        self.failed.append((work_id, error))
 
 
 async def _record_failure(target: list[str], error: Exception) -> None:
