@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 
 class SessionLock:
@@ -70,14 +71,29 @@ class SessionLockManager:
 session_lock_manager = SessionLockManager()
 
 
-def cleanup_session_runtime(agent_id: str, session_id: str) -> None:
+def cleanup_session_runtime(
+    agent_id: str,
+    session_id: str,
+    *,
+    dispatcher_manager: Any | None = None,
+    lock_manager: SessionLockManager | None = None,
+    turn_coordinator: Any | None = None,
+) -> None:
     """释放会话的 SessionDispatcher 与 SessionLock（会话删除或维护 prune 时调用）。
 
     须先停止 dispatcher（共享同一把 asyncio.Lock），再移除 SessionLock。
     """
-    from sessions.session_dispatcher import dispatcher_manager
-    from turns.coordinator import user_turn_coordinator
+    if dispatcher_manager is None:
+        from sessions.session_dispatcher import dispatcher_manager as default_manager
+
+        dispatcher_manager = default_manager
+    if lock_manager is None:
+        lock_manager = session_lock_manager
+    if turn_coordinator is None:
+        from turns.coordinator import user_turn_coordinator as default_coordinator
+
+        turn_coordinator = default_coordinator
 
     dispatcher_manager.cleanup(agent_id, session_id)
-    session_lock_manager.cleanup(agent_id, session_id)
-    user_turn_coordinator.clear_session(agent_id, session_id)
+    lock_manager.cleanup(agent_id, session_id)
+    turn_coordinator.clear_session(agent_id, session_id)

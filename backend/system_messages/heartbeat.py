@@ -8,7 +8,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from config import DEFAULT_HEARTBEAT_PROMPT, get_heartbeat_config, resolve_agent_workspace, list_agents
 from system_messages.heartbeat_utils import (
@@ -104,9 +104,11 @@ class HeartbeatRunner:
         *,
         session_manager: Any | None = None,
         work_delivery: Any | None = None,
+        event_sink: Callable[[str, HeartbeatEvent], None] | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._work_delivery = work_delivery
+        self._event_sink = event_sink
         self._tasks: dict[str, asyncio.Task] = {}
         self._running = False
         self._config_version = 0
@@ -126,6 +128,10 @@ class HeartbeatRunner:
         from sessions.session_work_delivery import session_work_delivery
 
         return session_work_delivery
+
+    @property
+    def event_sink(self) -> Callable[[str, HeartbeatEvent], None]:
+        return self._event_sink if self._event_sink is not None else emit_heartbeat_event
 
     async def start(self, agent_ids: list[str] | None = None) -> None:
         self._running = True
@@ -210,7 +216,7 @@ class HeartbeatRunner:
                 break
             except Exception as e:
                 logger.error(f"Heartbeat error for {agent_id}: {e}")
-                emit_heartbeat_event(
+                self.event_sink(
                     agent_id,
                     HeartbeatEvent(
                         ts=int(time.time() * 1000),
@@ -237,7 +243,7 @@ class HeartbeatRunner:
         agent_cfg = resolve_agent_config(agent_id)
         tz = agent_cfg.get("user_timezone", "Asia/Shanghai")
         if not is_within_active_hours(active, tz):
-            emit_heartbeat_event(
+            self.event_sink(
                 agent_id,
                 HeartbeatEvent(
                     ts=int(time.time() * 1000),
@@ -254,7 +260,7 @@ class HeartbeatRunner:
             try:
                 content = heartbeat_md.read_text(encoding="utf-8")
                 if is_heartbeat_content_effectively_empty(content):
-                    emit_heartbeat_event(
+                    self.event_sink(
                         agent_id,
                         HeartbeatEvent(
                             ts=int(time.time() * 1000),
@@ -280,7 +286,7 @@ class HeartbeatRunner:
             if should_skip:
                 self.session_manager.rollback_last_turn(session_id, agent_id)
                 status = "ok-empty" if not response.strip() else "ok-token"
-                emit_heartbeat_event(
+                self.event_sink(
                     agent_id,
                     HeartbeatEvent(
                         ts=int(time.time() * 1000),
@@ -293,7 +299,7 @@ class HeartbeatRunner:
             else:
                 target = hb.get("target", "webchat")
                 if target == "webchat":
-                    emit_heartbeat_event(
+                    self.event_sink(
                         agent_id,
                         HeartbeatEvent(
                             ts=int(time.time() * 1000),
@@ -310,7 +316,7 @@ class HeartbeatRunner:
         async def _handle_heartbeat_failure(error: Exception) -> None:
             error_text = str(error) or "heartbeat execution failed"
             if isinstance(error, asyncio.TimeoutError):
-                emit_heartbeat_event(
+                self.event_sink(
                     agent_id,
                     HeartbeatEvent(
                         ts=int(time.time() * 1000),
@@ -326,7 +332,7 @@ class HeartbeatRunner:
                     {"reason": "session-busy"},
                 )
                 return
-            emit_heartbeat_event(
+            self.event_sink(
                 agent_id,
                 HeartbeatEvent(
                     ts=int(time.time() * 1000),

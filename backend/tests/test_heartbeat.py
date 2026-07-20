@@ -114,6 +114,44 @@ class HeartbeatRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.reason, "model failed")
         audit.assert_called_with("main", "heartbeat_failed", {"error": "model failed"})
 
+    async def test_run_heartbeat_uses_injected_event_sink(self) -> None:
+        session_manager = Mock()
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        work_delivery = Mock()
+        events = []
+        runner = HeartbeatRunner(
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+            event_sink=lambda agent_id, event: events.append((agent_id, event)),
+        )
+
+        with (
+            patch(
+                "system_messages.heartbeat.get_heartbeat_config",
+                return_value={"enabled": True, "prompt": "check status"},
+            ),
+            patch(
+                "system_messages.heartbeat.resolve_agent_workspace",
+                return_value=Path("/missing-workspace"),
+            ),
+            patch(
+                "system_messages.heartbeat.is_within_active_hours",
+                return_value=True,
+            ),
+            patch(
+                "config.resolve_agent_config",
+                return_value={"user_timezone": "UTC"},
+            ),
+        ):
+            await runner._run_heartbeat("main")
+            await work_delivery.deliver.call_args.kwargs["on_failure_async"](
+                RuntimeError("injected failure")
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], "main")
+        self.assertEqual(events[0][1].status, "failed")
+
 
 if __name__ == "__main__":
     unittest.main()
