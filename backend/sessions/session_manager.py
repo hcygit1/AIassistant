@@ -18,6 +18,7 @@ from sessions.session_repository import (
 from sessions.session_maintenance import SessionMaintenanceService
 from sessions.session_catalog import SessionCatalog
 from sessions.session_history_archive import SessionHistoryArchive
+from sessions.session_message_writer import SessionMessageWriter
 from sessions.session_title import SessionTitleService
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,22 @@ class SessionManager:
                 agent_id,
                 **kwargs,
             ),
+        )
+        self._message_writer = SessionMessageWriter(
+            transaction=self._session_transaction,
+            load_session=lambda session_id, agent_id: self.load_session(
+                session_id,
+                agent_id,
+            ),
+            save_session_data=lambda session_id, agent_id, data: (
+                self._save_session_data(session_id, agent_id, data)
+            ),
+            update_index=lambda *args, **kwargs: self._update_session_store_entry(
+                *args,
+                **kwargs,
+            ),
+            session_key_from_id=self.session_key_from_session_id,
+            resolve_requester=self._resolve_requester_for_child_session,
         )
 
     def _is_bootstrap_text(self, text: str | None) -> bool:
@@ -191,13 +208,12 @@ class SessionManager:
         spawned_by: str | None = None,
         label: str | None = None,
     ) -> dict[str, Any]:
-        with self._session_transaction(session_id, agent_id):
-            return self._ensure_session_locked(
-                session_id,
-                agent_id,
-                spawned_by=spawned_by,
-                label=label,
-            )
+        return self._message_writer.ensure_session(
+            session_id,
+            agent_id,
+            spawned_by=spawned_by,
+            label=label,
+        )
 
     def _ensure_session_locked(
         self,
@@ -206,60 +222,26 @@ class SessionManager:
         spawned_by: str | None = None,
         label: str | None = None,
     ) -> dict[str, Any]:
-        data = self.load_session(session_id, agent_id)
-        if data is not None:
-            return data
-        if not spawned_by and session_id.startswith("subagent-"):
-            child_sk = self.session_key_from_session_id(agent_id, session_id)
-            resolved = self._resolve_requester_for_child_session(child_sk)
-            if resolved:
-                spawned_by = resolved[0]
-        data = {
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-            "messages": [],
-        }
-        if label and str(label).strip():
-            data["label"] = str(label).strip()[:120]
-        if spawned_by:
-            data["spawned_by"] = spawned_by
-        self._save_session_data(session_id, agent_id, data)
-        self._update_session_store_entry(
-            agent_id,
-            self.session_key_from_session_id(agent_id, session_id),
+        return self._message_writer._ensure_session_locked(
             session_id,
-            data["updated_at"],
-            label=data.get("label", ""),
+            agent_id,
             spawned_by=spawned_by,
+            label=label,
         )
-        return data
 
     def rollback_last_turn(self, session_id: str, agent_id: str) -> bool:
         """移除最后一轮 user + assistant 消息（用于心跳 HEARTBEAT_OK 时不持久化）"""
-        with self._session_transaction(session_id, agent_id):
-            return self._rollback_last_turn_locked(session_id, agent_id)
+        return self._message_writer.rollback_last_turn(session_id, agent_id)
 
     def _rollback_last_turn_locked(
         self,
         session_id: str,
         agent_id: str,
     ) -> bool:
-        data = self.load_session(session_id, agent_id)
-        if not data or not data.get("messages"):
-            return False
-        msgs = data["messages"]
-        if len(msgs) < 2:
-            return False
-        last = msgs[-1]
-        second = msgs[-2]
-        if last.get("role") != "assistant" or second.get("role") != "user":
-            return False
-        data["messages"] = msgs[:-2]
-        data["updated_at"] = time.time()
-        self._save_session_data(session_id, agent_id, data)
-        return True
+        return self._message_writer._rollback_last_turn_locked(
+            session_id,
+            agent_id,
+        )
 
     def save_message(
         self,
@@ -269,14 +251,13 @@ class SessionManager:
         content: str,
         tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
-        with self._session_transaction(session_id, agent_id):
-            data = self.ensure_session(session_id, agent_id)
-            msg: dict[str, Any] = {"role": role, "content": content}
-            if tool_calls:
-                msg["tool_calls"] = tool_calls
-            data["messages"].append(msg)
-            data["updated_at"] = time.time()
-            self._save_session_data(session_id, agent_id, data)
+        self._message_writer.save_message(
+            session_id,
+            agent_id,
+            role,
+            content,
+            tool_calls=tool_calls,
+        )
 
     def _session_store_path(self, agent_id: str) -> Path:
         """sessions.json 索引路径"""
