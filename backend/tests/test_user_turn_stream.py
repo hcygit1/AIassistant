@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -15,6 +15,40 @@ from turns.events import TurnEvent
 
 
 class UserTurnStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_user_turn_stream_uses_injected_runtime_dependencies(self) -> None:
+        agent_manager = Mock()
+        session_manager = Mock()
+        coordinator = Mock()
+        session_manager.load_session.return_value = {
+            "messages": [{"role": "user", "content": "existing"}],
+        }
+
+        async def fake_agent_stream(**_kwargs):
+            yield {"type": "token", "content": "hello"}
+            yield {"type": "done", "content": "hello", "session_id": "s1"}
+
+        agent_manager.astream = fake_agent_stream
+        dependencies = user_turn_stream.UserTurnStreamDependencies(
+            agent_manager=agent_manager,
+            session_manager=session_manager,
+            coordinator=coordinator,
+        )
+
+        events = [
+            event
+            async for event in user_turn_stream.iter_user_turn_events(
+                "hello",
+                "s1",
+                "main",
+                "turn-1",
+                dependencies=dependencies,
+            )
+        ]
+
+        self.assertEqual([event.type for event in events], ["token", "done"])
+        session_manager.load_session.assert_called_once_with("s1", "main")
+        coordinator.get_cancel_reason.assert_not_called()
+
     async def test_agent_events_remain_structured_until_transport_boundary(
         self,
     ) -> None:

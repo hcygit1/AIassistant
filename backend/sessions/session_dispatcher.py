@@ -69,9 +69,18 @@ def _default_user_stream(
     agent_id: str,
     turn_id: str,
 ) -> AsyncIterator[TurnEvent]:
-    from runtime.user_turn_stream import iter_user_turn_events
+    from runtime.user_turn_stream import (
+        UserTurnStreamDependencies,
+        iter_user_turn_events,
+    )
 
-    return iter_user_turn_events(message, session_id, agent_id, turn_id)
+    return iter_user_turn_events(
+        message,
+        session_id,
+        agent_id,
+        turn_id,
+        dependencies=UserTurnStreamDependencies.from_defaults(),
+    )
 
 
 def _default_turn_coordinator() -> Any:
