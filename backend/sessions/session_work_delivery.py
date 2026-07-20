@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Awaitable, Callable
 
 from sessions.session_dispatcher import (
@@ -26,6 +27,8 @@ from sessions.session_work_store import (
 )
 
 INTERRUPTED_WORK_ERROR = "interrupted by process restart"
+
+logger = logging.getLogger(__name__)
 
 
 class SessionWorkDelivery:
@@ -103,6 +106,20 @@ class SessionWorkDelivery:
             )
         )
 
+    def _mark_submission_failed(
+        self,
+        record: SessionWorkRecord,
+        error: Exception,
+    ) -> None:
+        error_text = str(error).strip() or type(error).__name__
+        try:
+            self.work_store.mark_failed(record.id, error_text)
+        except Exception:
+            logger.exception(
+                "Failed to mark session work %s after submission error",
+                record.id,
+            )
+
     def deliver(
         self,
         *,
@@ -134,16 +151,20 @@ class SessionWorkDelivery:
             recover_on_restart=recover_on_restart,
         )
         self.work_store.insert(record)
-        if on_record_created:
-            on_record_created(record)
-        return self._submit_record(
-            record,
-            result_handler=result_handler,
-            on_success=on_success,
-            on_failure=on_failure,
-            on_failure_async=on_failure_async,
-            on_cancel=on_cancel,
-        )
+        try:
+            if on_record_created:
+                on_record_created(record)
+            return self._submit_record(
+                record,
+                result_handler=result_handler,
+                on_success=on_success,
+                on_failure=on_failure,
+                on_failure_async=on_failure_async,
+                on_cancel=on_cancel,
+            )
+        except Exception as exc:
+            self._mark_submission_failed(record, exc)
+            raise
 
     def recover_pending_work(self) -> int:
         recovered = 0

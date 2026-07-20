@@ -28,6 +28,11 @@ class _FakeDispatcher:
         return len(self.submitted)
 
 
+class _FailingDispatcher(_FakeDispatcher):
+    def submit(self, work_item) -> int:
+        raise RuntimeError("dispatcher unavailable")
+
+
 class _FakeDispatcherManager:
     def __init__(self, dispatcher: _FakeDispatcher) -> None:
         self.dispatcher = dispatcher
@@ -85,6 +90,63 @@ class SessionWorkDeliveryTests(unittest.TestCase):
             dispatcher_manager.calls,
             [("main", "main-main", lock_manager.session_lock.lock)],
         )
+
+    def test_deliver_marks_record_failed_when_dispatcher_submission_fails(self) -> None:
+        dispatcher = _FailingDispatcher()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                dispatcher_manager=_FakeDispatcherManager(dispatcher),
+                lock_manager=_FakeLockManager(),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "dispatcher unavailable"):
+                delivery.deliver(
+                    kind="cron",
+                    priority=2,
+                    content="hello",
+                    agent_id="main",
+                    session_id="main-main",
+                    run_id="cron-submit-failed",
+                    recover_on_restart=True,
+                )
+            records = store.query(run_id="cron-submit-failed")
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "failed")
+        self.assertEqual(records[0].last_error, "dispatcher unavailable")
+
+    def test_deliver_marks_record_failed_when_created_hook_fails(self) -> None:
+        dispatcher = _FakeDispatcher()
+
+        def fail_binding(_record) -> None:
+            raise RuntimeError("binding failed")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                dispatcher_manager=_FakeDispatcherManager(dispatcher),
+                lock_manager=_FakeLockManager(),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "binding failed"):
+                delivery.deliver(
+                    kind="announce",
+                    priority=0,
+                    content="hello",
+                    agent_id="main",
+                    session_id="main-main",
+                    run_id="announce-bind-failed",
+                    on_record_created=fail_binding,
+                )
+            records = store.query(run_id="announce-bind-failed")
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "failed")
+        self.assertEqual(records[0].last_error, "binding failed")
+        self.assertEqual(dispatcher.submitted, [])
 
     def test_recover_pending_work_resubmits_recoverable_records(self) -> None:
         dispatcher = _FakeDispatcher()
