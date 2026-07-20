@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterator
 
+from scheduler.cron_due_processor import (
+    CronDueProcessor,
+    ProcessDueResult,
+)
 from scheduler.cron_errors import CronServiceError
 from scheduler.cron_run_lifecycle import CronRunLifecycle
 from scheduler.cron_schedule import (
@@ -33,13 +37,6 @@ class RunReceipt:
     queue_position: int
 
 
-@dataclass(frozen=True, slots=True)
-class ProcessDueResult:
-    fired: int
-    failed: int
-    next_wake_at_ms: int
-
-
 class CronService:
     RETRY_DELAY_MS = 60_000
 
@@ -58,6 +55,7 @@ class CronService:
         id_factory: Callable[[], str] | None = None,
         default_timezone: Callable[[], str] | None = None,
         run_lifecycle: CronRunLifecycle | None = None,
+        due_processor: CronDueProcessor | None = None,
     ) -> None:
         if load_store is None:
             from scheduler.cron_store import load_cron_store
@@ -108,6 +106,23 @@ class CronService:
             list_jobs=lambda: self.list_jobs(),
             deliver=lambda **kwargs: self._deliver(**kwargs),
             retry_delay_ms=self.RETRY_DELAY_MS,
+        )
+        self._due_processor = due_processor or CronDueProcessor(
+            transaction=lambda: self._transaction(),
+            save_store=lambda store, path: self._save(store, path),
+            deliver_job=lambda *args, **kwargs: self._deliver_job(
+                *args,
+                **kwargs,
+            ),
+            finalize_claim=lambda *args, **kwargs: self._finalize_claim(
+                *args,
+                **kwargs,
+            ),
+            next_run=lambda job, now_ms, last_run_ms: compute_next_run(
+                job,
+                now_ms,
+                last_run_ms,
+            ),
         )
 
     def is_enabled(self) -> bool:
@@ -379,98 +394,7 @@ class CronService:
         current_ms = (
             self._now_ms() if now_ms is None else now_ms
         )
-        fired = 0
-        failed = 0
-        claims: list[tuple[CronJob, str]] = []
-        with self._transaction() as (store, path):
-            for job in store.jobs:
-                if job.active_run_token:
-                    if (
-                        job.last_run_at_ms is not None
-                        and current_ms - job.last_run_at_ms
-                        < 5 * 60_000
-                    ):
-                        continue
-                    schedule_unchanged = (
-                        job.active_run_schedule_revision is None
-                        or job.active_run_schedule_revision
-                        == job.schedule_revision
-                    )
-                    stale_due_at_ms = job.active_run_due_at_ms
-                    job.active_run_token = None
-                    job.active_run_work_id = None
-                    job.active_run_due_at_ms = None
-                    job.active_run_schedule_revision = None
-                    job.last_run_status = "error"
-                    if (
-                        stale_due_at_ms is not None
-                        and schedule_unchanged
-                    ):
-                        job.next_run_at_ms = current_ms
-                if not job.enabled:
-                    continue
-                if job.next_run_at_ms is None:
-                    job.next_run_at_ms = compute_next_run(
-                        job,
-                        current_ms,
-                        job.last_run_at_ms,
-                    )
-                if (
-                    job.next_run_at_ms is None
-                    or job.next_run_at_ms > current_ms
-                ):
-                    continue
-                token = uuid.uuid4().hex
-                due_at_ms = job.next_run_at_ms
-                job.active_run_token = token
-                job.active_run_work_id = None
-                job.active_run_due_at_ms = due_at_ms
-                job.active_run_schedule_revision = (
-                    job.schedule_revision
-                )
-                job.last_run_at_ms = current_ms
-                job.last_run_status = "running"
-                if job.schedule.kind == "at":
-                    job.next_run_at_ms = None
-                else:
-                    job.next_run_at_ms = compute_next_run(
-                        job,
-                        current_ms,
-                        current_ms,
-                    )
-                claims.append((copy.deepcopy(job), token))
-            self._save(store, path)
-
-        for claimed, token in claims:
-            try:
-                self._deliver_job(
-                    claimed,
-                    token,
-                    attempted_at_ms=current_ms,
-                )
-            except Exception:
-                failed += 1
-                self._finalize_claim(
-                    claimed.id,
-                    token,
-                    status="error",
-                    attempted_at_ms=current_ms,
-                )
-            else:
-                fired += 1
-
-        with self._transaction() as (store, _):
-            next_wake = current_ms + 60_000
-            for job in store.jobs:
-                if (
-                    job.enabled
-                    and job.next_run_at_ms is not None
-                ):
-                    next_wake = min(
-                        next_wake,
-                        job.next_run_at_ms,
-                    )
-        return ProcessDueResult(fired, failed, next_wake)
+        return self._due_processor.process(current_ms)
 
     def _finalize_claim(
         self,
