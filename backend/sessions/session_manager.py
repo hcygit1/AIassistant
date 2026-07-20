@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -18,6 +17,7 @@ from sessions.session_repository import (
 )
 from sessions.session_maintenance import SessionMaintenanceService
 from sessions.session_catalog import SessionCatalog
+from sessions.session_history_archive import SessionHistoryArchive
 from sessions.session_title import SessionTitleService
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,18 @@ class SessionManager:
             get_config=get_config,
         )
         self._title_service = title_service or SessionTitleService()
+        self._history_archive = SessionHistoryArchive(
+            repository=self._repository,
+            load_session=lambda session_id, agent_id: self.load_session(
+                session_id,
+                agent_id,
+            ),
+            save_session=lambda session_id, agent_id, data: self._save_session_data(
+                session_id,
+                agent_id,
+                data,
+            ),
+        )
         self._catalog = SessionCatalog(
             repository=self._repository,
             load_store=lambda agent_id: self._load_session_store(agent_id),
@@ -429,48 +441,11 @@ class SessionManager:
 
         结构化摘要由 MemStore.session_summaries 管理。
         """
-        data = self.load_session(session_id, agent_id)
-        if data is None:
-            return {"archived_count": 0, "remaining_count": 0}
-
-        messages = data.get("messages", [])
-        if len(messages) < 4:
-            return {"archived_count": 0, "remaining_count": len(messages)}
-
-        archive_count = min(n_messages, len(messages))
-        archived = messages[:archive_count]
-        remaining = messages[archive_count:]
-
-        archive_dir = self._repository.sessions_dir(agent_id) / "archive"
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = archive_dir / f"{session_id}_{int(time.time())}.json"
-        with open(archive_path, "w", encoding="utf-8") as f:
-            json.dump(archived, f, ensure_ascii=False, indent=2)
-
-        data["messages"] = remaining
-        data["updated_at"] = time.time()
-        self._save_session_data(session_id, agent_id, data)
-
-        compactions_path = (
-            self._repository.sessions_dir(agent_id) / "compactions.jsonl"
+        return self._history_archive.compress_history(
+            session_id,
+            agent_id,
+            n_messages,
         )
-        try:
-            record = {
-                "session_id": session_id,
-                "agent_id": agent_id,
-                "ts": time.time(),
-                "archived_count": archive_count,
-                "remaining_count": len(remaining),
-            }
-            with open(compactions_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-
-        return {
-            "archived_count": archive_count,
-            "remaining_count": len(remaining),
-        }
 
     # ------------------------------------------------------------------
     # 会话标题推导

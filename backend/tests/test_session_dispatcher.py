@@ -281,6 +281,42 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatcher_uses_injected_system_stream(self) -> None:
+        work_store = _RecordingWorkStore()
+        observed: list[tuple[str, str, str]] = []
+        succeeded: list[str] = []
+
+        async def injected_stream(**kwargs):
+            observed.append(
+                (
+                    kwargs["message"],
+                    kwargs["session_id"],
+                    kwargs["agent_id"],
+                )
+            )
+            yield {"type": "done", "content": "ok"}
+
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            work_store=work_store,
+            system_stream=injected_stream,
+        )
+        task = SessionWorkItem(
+            kind="cron",
+            priority=PRIORITY_CRON,
+            content="run injected stream",
+            agent_id="main",
+            session_id="main-main",
+            work_id="work-injected",
+            on_success=lambda: succeeded.append("done"),
+        )
+
+        await dispatcher._execute_system(task)
+
+        self.assertEqual(observed, [("run injected stream", "main-main", "main")])
+        self.assertEqual(succeeded, ["done"])
+        self.assertEqual(work_store.done, ["work-injected"])
+
     async def test_dispatcher_manager_passes_store_to_session_dispatcher(self) -> None:
         work_store = _RecordingWorkStore()
         manager = DispatcherManager(work_store=work_store)

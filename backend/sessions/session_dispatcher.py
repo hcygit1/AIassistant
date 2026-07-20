@@ -27,7 +27,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 
 from turns.events import TurnEvent
 
@@ -48,6 +48,15 @@ PRIORITY_HEARTBEAT = 3
 
 AGING_INTERVAL_SEC = 30.0
 MAX_AGING_BONUS = 3.0
+
+SystemStream = Callable[..., AsyncIterator[dict[str, Any]]]
+
+
+def _default_system_stream(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+    """保持默认运行时入口，同时允许测试和宿主注入执行器。"""
+    from runtime.agent import agent_manager
+
+    return agent_manager.astream(**kwargs)
 
 
 @dataclass(order=False)
@@ -87,9 +96,11 @@ class SessionDispatcher:
         self,
         lock: asyncio.Lock,
         work_store: "SessionWorkStore | None" = None,
+        system_stream: SystemStream | None = None,
     ):
         self._lock = lock
         self._work_store = work_store
+        self._system_stream = system_stream or _default_system_stream
         self._queue: list[SessionWorkItem] = []
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -241,8 +252,6 @@ class SessionDispatcher:
                     pass
 
     async def _execute_system(self, task: SessionWorkItem) -> None:
-        from runtime.agent import agent_manager
-
         work_store = self._work_store
         if work_store is None:
             from sessions.session_work_store import session_work_store
@@ -279,7 +288,7 @@ class SessionDispatcher:
         try:
             response_parts: list[str] = []
             done_content: str | None = None
-            async for event in agent_manager.astream(
+            async for event in self._system_stream(
                 message=task.content,
                 session_id=task.session_id,
                 agent_id=task.agent_id,
@@ -343,14 +352,23 @@ def _safe_call(fn: Callable[[], Any]) -> None:
 class DispatcherManager:
     """全局管理器：每个 agent:session 一个 dispatcher。"""
 
-    def __init__(self, work_store: "SessionWorkStore | None" = None):
+    def __init__(
+        self,
+        work_store: "SessionWorkStore | None" = None,
+        system_stream: SystemStream | None = None,
+    ):
         self._dispatchers: dict[str, SessionDispatcher] = {}
         self._work_store = work_store
+        self._system_stream = system_stream
 
     def get(self, agent_id: str, session_id: str, lock: asyncio.Lock) -> SessionDispatcher:
         key = f"{agent_id}:{session_id}"
         if key not in self._dispatchers:
-            d = SessionDispatcher(lock=lock, work_store=self._work_store)
+            d = SessionDispatcher(
+                lock=lock,
+                work_store=self._work_store,
+                system_stream=self._system_stream,
+            )
             d.start()
             self._dispatchers[key] = d
         return self._dispatchers[key]
