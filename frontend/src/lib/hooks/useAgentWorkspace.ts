@@ -106,11 +106,26 @@ export function useAgentWorkspace({
     chatRef.current = chat;
   }, [chat]);
 
-  const subagents = useSubagents(
+  const subagentState = useSubagents(
     currentAgentId,
     currentSessionId,
     loadMainSession,
   );
+  const subagents = useMemo(() => ({
+    tree: subagentState.tree,
+    flat: subagentState.flat,
+    runningSubagents: subagentState.runningSubagents,
+    traceMap: subagentState.traceMap,
+    loading: subagentState.loading,
+    refreshSubagents: subagentState.refreshSubagents,
+  }), [
+    subagentState.tree,
+    subagentState.flat,
+    subagentState.runningSubagents,
+    subagentState.traceMap,
+    subagentState.loading,
+    subagentState.refreshSubagents,
+  ]);
 
   const switchAgent = useCallback(async (agentId: string) => {
     currentAgentIdRef.current = agentId;
@@ -163,6 +178,6 @@ export function useAgentWorkspace({
     loadMainSession,
     switchAgent,
     chat,
-    ...subagents,
+    subagents,
   };
 }

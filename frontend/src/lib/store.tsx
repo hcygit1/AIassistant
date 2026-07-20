@@ -2,10 +2,10 @@
 
 import React, { createContext, useContext, useCallback, useMemo } from "react";
 import { useAppWorkspace } from "./hooks/useAppWorkspace";
-import type { useSubagents } from "./hooks/useSubagents";
 import { ApprovalProvider, useApproval } from "./approvalContext";
 import { ChatProvider } from "./chatContext";
 import { InspectorProvider } from "./inspectorContext";
+import { SubagentProvider } from "./subagentContext";
 import { UiProvider, useUi } from "./uiContext";
 import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
 
@@ -24,14 +24,6 @@ interface AppState {
   // Config
   ragMode: boolean;
   setRagMode: (enabled: boolean) => Promise<void>;
-
-  // Subagents
-  subagentTree: ReturnType<typeof useSubagents>["tree"];
-  subagents: ReturnType<typeof useSubagents>["flat"];
-  runningSubagents: ReturnType<typeof useSubagents>["runningSubagents"];
-  subagentTraceMap: ReturnType<typeof useSubagents>["traceMap"];
-  subagentsLoading: boolean;
-  refreshSubagents: () => Promise<void>;
 
   // Actions
   loadAgents: () => Promise<void>;
@@ -65,12 +57,7 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     loadMainSession,
     switchAgent,
     chat,
-    tree: subagentTree,
-    flat: subagents,
-    runningSubagents,
-    traceMap: subagentTraceMap,
-    loading: subagentsLoading,
-    refreshSubagents,
+    subagents,
     ragMode,
     setRagMode,
     skillsRefreshTrigger,
@@ -86,13 +73,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     ragMode,
     setRagMode,
 
-    subagentTree,
-    subagents,
-    runningSubagents,
-    subagentTraceMap,
-    subagentsLoading,
-    refreshSubagents,
-
     loadAgents,
     switchAgent,
     loadMainSession,
@@ -105,12 +85,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     currentModel,
     ragMode,
     setRagMode,
-    subagentTree,
-    subagents,
-    runningSubagents,
-    subagentTraceMap,
-    subagentsLoading,
-    refreshSubagents,
     loadAgents,
     switchAgent,
     loadMainSession,
@@ -121,7 +95,9 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
   return (
     <AppContext.Provider value={value}>
       <InspectorProvider inspector={inspector}>
-        <ChatProvider chat={chat}>{children}</ChatProvider>
+        <ChatProvider chat={chat}>
+          <SubagentProvider subagents={subagents}>{children}</SubagentProvider>
+        </ChatProvider>
       </InspectorProvider>
     </AppContext.Provider>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useApp } from "@/lib/store";
+import { useSubagentContext } from "@/lib/subagentContext";
 import { useUi } from "@/lib/uiContext";
 import { deriveSubagentViews } from "@/lib/subagentState";
 import ReactMarkdown from "react-markdown";
@@ -20,7 +20,7 @@ interface Props {
 }
 
 export default function SubagentInlineCard({ runId, task }: Props) {
-  const { subagents, subagentsLoading } = useApp();
+  const { flat: subagents, loading: subagentsLoading } = useSubagentContext();
   const [expanded, setExpanded] = useState(true);
   const match = deriveSubagentViews(subagents, runId).inline;
   const messages = (match?.messages || []) as SubagentMessage[];

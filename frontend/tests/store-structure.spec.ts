@@ -231,6 +231,48 @@ test("isolates Inspector state in a dedicated context broadcast domain", () => {
   }
 });
 
+test("isolates Subagent state in a dedicated context broadcast domain", () => {
+  const contextPath = "src/lib/subagentContext.tsx";
+  expect(existsSync(contextPath)).toBe(true);
+  if (!existsSync(contextPath)) throw new Error(`${contextPath} is required`);
+
+  const context = readFileSync(contextPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+  const workspace = readFileSync("src/lib/hooks/useAgentWorkspace.ts", "utf8");
+  const appStateStart = store.indexOf("interface AppState {");
+  const appStateEnd = store.indexOf("\n}\n\nconst AppContext", appStateStart);
+  const appState = store.slice(appStateStart, appStateEnd);
+  const subagentFields = [
+    "subagentTree",
+    "subagents",
+    "runningSubagents",
+    "subagentTraceMap",
+    "subagentsLoading",
+    "refreshSubagents",
+  ];
+
+  expect(context).toContain("SubagentProvider");
+  expect(context).toContain("useSubagentContext");
+  expect(context).toContain("useMemo<SubagentContextState>");
+  expect(store).toContain("<SubagentProvider subagents={subagents}>");
+  expect(workspace).toContain("    subagents,");
+  for (const field of subagentFields) {
+    expect(appState, `${field} should not be in AppState`).not.toMatch(
+      new RegExp(`\\b${field}\\b`),
+    );
+  }
+
+  const consumers = [
+    "src/components/chat/SubagentInlineCard.tsx",
+    "src/components/chat/ChatPanel.tsx",
+    "src/components/layout/Navbar.tsx",
+    "src/components/inspector/SubagentPanel.tsx",
+  ];
+  for (const file of consumers) {
+    expect(readFileSync(file, "utf8"), file).toContain("useSubagentContext()");
+  }
+});
+
 test("keeps UI-only fields out of useApp consumers", () => {
   const uiFields = new Set([
     "showConfigModal",

@@ -4,6 +4,7 @@ import { useRef, useEffect } from "react";
 import { useApp } from "@/lib/store";
 import { useChatState } from "@/lib/chatContext";
 import { useInspectorContext } from "@/lib/inspectorContext";
+import { useSubagentContext } from "@/lib/subagentContext";
 import { useUi } from "@/lib/uiContext";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
@@ -14,10 +15,11 @@ import PIPIXIAMark from "@/components/icons/PipixiaMark";
 export default function ChatPanel() {
   const {
     currentSessionId,
-    currentAgentId, agents, runningSubagents,
+    currentAgentId, agents,
   } = useApp();
   const { messages, sessionError } = useChatState();
   const { setInspectorTab } = useInspectorContext();
+  const { runningSubagents } = useSubagentContext();
   const { t } = useUi();
   const bottomRef = useRef<HTMLDivElement>(null);
 

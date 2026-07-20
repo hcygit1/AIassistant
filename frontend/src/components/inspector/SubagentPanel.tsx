@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useApp } from "@/lib/store";
+import { useSubagentContext } from "@/lib/subagentContext";
 import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import type { SubagentTreeItem } from "@/lib/api";
@@ -26,11 +27,8 @@ export default function SubagentPanel() {
   const {
     currentAgentId,
     loadMainSession,
-    subagentTree: tree,
-    subagentTraceMap: traceMap,
-    subagentsLoading: loading,
-    refreshSubagents,
   } = useApp();
+  const { tree, traceMap, loading, refreshSubagents } = useSubagentContext();
   const { showNotice, t } = useUi();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [killAllBusy, setKillAllBusy] = useState(false);
