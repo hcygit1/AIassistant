@@ -6,6 +6,7 @@ import type { TokenUsage } from "./api";
 import { useChat } from "./hooks/useChat";
 import { useSubagents } from "./hooks/useSubagents";
 import { useInspectorState } from "./hooks/useInspectorState";
+import { useAgentEvents } from "./hooks/useAgentEvents";
 import { UiProvider, useUi } from "./uiContext";
 import type { UiNotice } from "./hooks/useAppUiState";
 import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
@@ -216,26 +217,18 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     loadMainSession,
   );
 
-  // 订阅 Agent 事件：技能热加载、危险工具执行提示、exec 确认、心跳/定时消息
-  useEffect(() => {
-    if (!currentAgentId) return;
-    const unsub = api.subscribeAgentEvents(currentAgentId, (event) => {
-      if (event.type === "lifecycle" && event.event === "skills_updated") {
-        triggerSkillsRefresh();
-      }
-      if (event.type === "heartbeat_message") {
-        loadMainSession();
-      }
-      if (event.type === "lifecycle" && event.event === "approval_required") {
-        const ev = event as any;
-        const aid = ev.approval_id || "";
-        const tool = ev.tool || "exec";
-        const preview = ev.input_preview || "";
-        if (aid) setPendingApproval({ approval_id: aid, tool, input_preview: preview });
-      }
-    });
-    return unsub;
-  }, [currentAgentId, triggerSkillsRefresh, loadMainSession]);
+  const handleApprovalRequired = useCallback(
+    (approval: { approval_id: string; tool: string; input_preview: string }) => {
+      setPendingApproval(approval);
+    },
+    [],
+  );
+
+  useAgentEvents(currentAgentId, {
+    onSkillsUpdated: triggerSkillsRefresh,
+    onHeartbeatMessage: loadMainSession,
+    onApprovalRequired: handleApprovalRequired,
+  });
 
   const switchAgent = useCallback(async (agentId: string) => {
     // 保存当前 Agent 的状态（不要清空，只是切换）

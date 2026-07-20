@@ -55,6 +55,20 @@ test("exposes UI state through a dedicated context", () => {
   expect(store).not.toContain("useAppUiState()");
 });
 
+test("keeps agent event subscription outside AppProvider", () => {
+  const hookPath = "src/lib/hooks/useAgentEvents.ts";
+  expect(existsSync(hookPath)).toBe(true);
+  if (!existsSync(hookPath)) return;
+
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+  const hook = readFileSync(hookPath, "utf8");
+
+  expect(store).not.toContain("subscribeAgentEvents");
+  expect(store).not.toContain("approval_required");
+  expect(hook).toContain("subscribeAgentEvents");
+  expect(hook).toContain("approval_required");
+});
+
 test("keeps UI-only fields out of useApp consumers", () => {
   const uiFields = new Set([
     "showConfigModal",
