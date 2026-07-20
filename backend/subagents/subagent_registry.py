@@ -13,6 +13,7 @@ from infra.state_machine import (
     SUBAGENT_RUN_TRANSITIONS,
     transition,
 )
+from subagents.subagent_relationships import SubagentRelationshipService
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class SubagentRegistry:
     def __init__(self):
         self._runs: dict[str, SubagentRunRecord] = {}
         self._lock = threading.RLock()
+        self._relationships = SubagentRelationshipService(self.list_runs)
         self._restore_from_disk()
 
     def _restore_from_disk(self) -> None:
@@ -236,7 +238,7 @@ class SubagentRegistry:
                     continue
 
                 if cascade:
-                    child_sk = self.session_key_from_child_session_key(
+                    child_sk = self._relationships.session_key_from_child_session_key(
                         record.child_session_key
                     )
                     pending.extend(
@@ -372,87 +374,32 @@ class SubagentRegistry:
         self._persist_to_disk()
 
     def get_requester_depth(self, requester_session_key: str) -> int:
-        """Depth 0 = main, 1 = subagent, 2 = sub-subagent
-
-        requester 作为 child 被 spawn 时，创建它的 run.spawn_depth
-        就是该 requester 的深度。
-        主会话无对应 run，返回 0。
-        """
-        key = (requester_session_key or "").strip()
-        if not key:
-            return 0
-        for r in self.list_runs():
-            if r.child_session_key == key:
-                return max(0, r.spawn_depth)
-        return 0
+        return self._relationships.get_requester_depth(requester_session_key)
 
     @staticmethod
     def session_key_from_child_session_key(child_session_key: str) -> str:
         """返回 child 会话可直接作为 requester 使用的 canonical key。"""
-        return (child_session_key or "").strip()
+        return SubagentRelationshipService.session_key_from_child_session_key(
+            child_session_key
+        )
 
     def list_descendant_runs(
         self, root_session_key: str, include_recent_minutes: int = 60
     ) -> list[SubagentRunRecord]:
-        """从 root 起 BFS 收集所有后代 runs"""
-        cutoff = time.time() - include_recent_minutes * 60
-        root = (root_session_key or "").strip()
-        if not root:
-            return []
-        pending = [root]
-        visited: set[str] = {root}
-        descendants: list[SubagentRunRecord] = []
-        while pending:
-            requester = pending.pop(0)
-            for r in self.list_runs():
-                if r.requester_session_key != requester:
-                    continue
-                if r.ended_at is not None and r.ended_at < cutoff:
-                    continue
-                descendants.append(r)
-                child_sk = self.session_key_from_child_session_key(r.child_session_key)
-                if child_sk and child_sk not in visited:
-                    visited.add(child_sk)
-                    pending.append(child_sk)
-        return sorted(descendants, key=lambda x: x.created_at, reverse=True)
+        return self._relationships.list_descendant_runs(
+            root_session_key,
+            include_recent_minutes,
+        )
 
     def resolve_requester_for_child_session(
         self, child_session_key: str
     ) -> tuple[str, str] | None:
-        """给定 child_session_key，返回 (requester_session_key, requester_agent_id)"""
-        key = (child_session_key or "").strip()
-        if not key:
-            return None
-        best: SubagentRunRecord | None = None
-        for r in self.list_runs():
-            if r.child_session_key != key:
-                continue
-            if best is None or r.created_at > best.created_at:
-                best = r
-        if best is None:
-            return None
-        return (best.requester_session_key, best.requester_agent_id)
+        return self._relationships.resolve_requester_for_child_session(
+            child_session_key
+        )
 
     def count_active_descendant_runs(self, root_session_key: str) -> int:
-        """root 下尚未结束的后代 run 数量"""
-        root = (root_session_key or "").strip()
-        if not root:
-            return 0
-        pending = [root]
-        visited: set[str] = {root}
-        count = 0
-        while pending:
-            requester = pending.pop(0)
-            for r in self.list_runs():
-                if r.requester_session_key != requester:
-                    continue
-                if r.ended_at is None:
-                    count += 1
-                child_sk = self.session_key_from_child_session_key(r.child_session_key)
-                if child_sk and child_sk not in visited:
-                    visited.add(child_sk)
-                    pending.append(child_sk)
-        return count
+        return self._relationships.count_active_descendant_runs(root_session_key)
 
     def cleanup_old(self, max_age_hours: int = 24) -> int:
         cutoff = time.time() - max_age_hours * 3600
