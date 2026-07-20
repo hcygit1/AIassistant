@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal
 
 from subagents.subagent_relationships import SubagentRelationshipService
+from subagents.subagent_run_archive import SubagentRunArchiveService
 from subagents.subagent_run_lifecycle import SubagentRunLifecycleService
 from subagents.subagent_run_queries import SubagentRunQueryService
 from subagents.subagent_run_state import SubagentRunStateService
@@ -76,6 +77,11 @@ class SubagentRegistry:
         )
         self._relationships = SubagentRelationshipService(
             self._queries.list_runs
+        )
+        self._archive = SubagentRunArchiveService(
+            store=self._store,
+            state=self._state,
+            persist=lambda: self._persist_to_disk(),
         )
         self._lifecycle = SubagentRunLifecycleService(
             store=self._store,
@@ -262,34 +268,7 @@ class SubagentRegistry:
 
         每 60 秒由 subagent_archive 调用。on_expire 负责归档/删除会话文件。
         """
-        now_ms = time.time() * 1000
-        with self._store.locked_records() as runs:
-            to_remove: list[tuple[str, SubagentRunRecord]] = []
-            for rid, r in runs.items():
-                if r.archive_at_ms is None or r.archive_at_ms > now_ms:
-                    continue
-                if r.ended_at is None:
-                    continue
-                self._state.mark_archived(r)
-                to_remove.append((rid, r))
-            for rid, _ in to_remove:
-                runs.pop(rid, None)
-
-        for rid, r in to_remove:
-            # 发送事件通知前端
-            try:
-                from infra.event_bus import Events, event_bus
-                event_bus.emit(r.requester_agent_id, Events.subagent_archived(run_id=rid, child_session_key=r.child_session_key))
-            except Exception:
-                pass
-            if on_expire:
-                try:
-                    on_expire(r)
-                except Exception:
-                    pass
-        if to_remove:
-            self._persist_to_disk()
-        return len(to_remove)
+        return self._archive.sweep_expired(on_expire=on_expire)
 
 
 registry = SubagentRegistry()
