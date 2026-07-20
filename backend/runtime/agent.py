@@ -22,7 +22,11 @@ from runtime.prompt_builder import prompt_builder
 from sessions.session_manager import session_manager
 from infra.run_tracker import run_tracker
 from infra.audit_log import audit_logger
-from infra.token_counter import count_messages_tokens, count_tokens
+from infra.token_counter import (
+    count_messages_tokens,
+    count_tokens,
+    detect_compaction_level,
+)
 from sessions.session_pruning import prune_messages
 from runtime.command_parser import parse_command, execute_command
 from llm.model_selection import (
@@ -39,6 +43,7 @@ from runtime.memory_runtime import MemoryRuntime
 from runtime.model_runtime import ModelRuntime
 from runtime.session_commands import SessionCommands
 from runtime.session_compactor import SessionCompactor
+from runtime.session_lifecycle import SessionLifecycle
 from runtime.tool_registry import ToolRegistry
 from subagents.subagent_runner import SubagentRunner
 from subagents.subagent_service import SubagentService
@@ -83,7 +88,7 @@ class LifecycleHooks:
         pass
 
 
-from infra.event_bus import EventBus, Events, event_bus
+from infra.event_bus import event_bus
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +443,24 @@ class AgentManager:
         )
         self.lifecycle_hooks: LifecycleHooks | None = None
         self._pending_tasks: set[asyncio.Task] = set()
+        self._session_lifecycle = SessionLifecycle(
+            compactor=self._session_compactor,
+            resolve_agent_config=lambda agent_id: resolve_agent_config(
+                agent_id
+            ),
+            load_session=lambda session_id, agent_id: (
+                session_manager.load_session(session_id, agent_id)
+            ),
+            detect_compaction_level=detect_compaction_level,
+            audit_log=self._audit_runtime_event,
+            emit_event=self._emit_runtime_event,
+            get_store=lambda agent_id: self.mem_stores.get(agent_id),
+            get_state=self.get_state,
+            batch_ingest_messages=lambda *args, **kwargs: (
+                self._batch_ingest_messages(*args, **kwargs)
+            ),
+            pending_tasks=self._pending_tasks,
+        )
         self._tool_name_cache = self._tool_registry.name_cache
 
     def _get_state_persist_config(self, agent_id: str) -> tuple[bool, int]:
@@ -764,32 +787,12 @@ class AgentManager:
     # ------------------------------------------------------------------
 
     async def _maybe_auto_compact(self, session_id: str, agent_id: str, overhead_tokens: int = 0) -> None:
-        agent_cfg = resolve_agent_config(agent_id)
-        compaction_cfg = agent_cfg.get("compaction", {})
-        if not compaction_cfg.get("enabled", True):
-            return
-
-        data = session_manager.load_session(session_id, agent_id)
-        if not data:
-            return
-
-        messages = data.get("messages", [])
-
-        from infra.token_counter import detect_compaction_level
-        level = detect_compaction_level(messages, agent_id=agent_id, overhead_tokens=overhead_tokens)
-
-        if level == "none":
-            return
-
-        logger.info("Auto-compaction triggered: level=%s agent=%s session=%s", level, agent_id, session_id)
-        audit_logger.log(agent_id, "auto_compact_trigger", {"session_id": session_id, "level": level})
-        event_bus.emit(agent_id, Events.auto_compact_start(session_id=session_id, level=level))
-        try:
-            await self.compress_session(session_id, agent_id, level=level)
-            event_bus.emit(agent_id, Events.auto_compact_done(session_id=session_id))
-        except Exception as e:
-            logger.error(f"Auto-compaction failed: {e}")
-            audit_logger.log(agent_id, "auto_compact_error", {"error": str(e)})
+        await self._session_lifecycle.maybe_auto_compact(
+            session_id,
+            agent_id,
+            overhead_tokens=overhead_tokens,
+            compress_session=self.compress_session,
+        )
 
     # ------------------------------------------------------------------
     # 会话重置命令处理：/new 与 /reset
@@ -854,12 +857,11 @@ class AgentManager:
         to_compress: list[dict[str, Any]],
         text_to_summarize: str,
     ) -> dict[str, Any]:
-        return await self._session_compactor.generate_structured_summary(
+        return await self._session_lifecycle.generate_structured_summary(
             agent_id,
             session_id,
             to_compress,
             text_to_summarize,
-            store=self.mem_stores.get(agent_id),
             plain_fallback=self._summarize_plain_fallback,
         )
 
@@ -869,7 +871,7 @@ class AgentManager:
         to_compress: list[dict[str, Any]],
         text_to_summarize: str,
     ) -> dict[str, Any]:
-        return await self._session_compactor.summarize_plain_fallback(
+        return await self._session_lifecycle.summarize_plain_fallback(
             agent_id,
             to_compress,
             text_to_summarize,
@@ -878,14 +880,10 @@ class AgentManager:
     async def compress_session(
         self, session_id: str, agent_id: str, level: str = "sliding",
     ) -> dict[str, Any]:
-        return await self._session_compactor.compress_session(
+        return await self._session_lifecycle.compress_session(
             session_id,
             agent_id,
             level=level,
-            get_store=lambda target_agent_id: self.mem_stores.get(
-                target_agent_id
-            ),
-            get_state=self.get_state,
             generate_summary=self._generate_structured_summary,
             batch_ingest_messages=self._batch_ingest_messages,
             pending_tasks=self._pending_tasks,
@@ -893,7 +891,7 @@ class AgentManager:
 
     @staticmethod
     def _calc_compress_count_by_turns(messages: list[dict[str, Any]], keep_turns: int) -> int:
-        return SessionCompactor.calc_compress_count_by_turns(
+        return SessionLifecycle.calc_compress_count_by_turns(
             messages,
             keep_turns,
         )
