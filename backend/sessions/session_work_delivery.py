@@ -61,29 +61,46 @@ class SessionWorkDelivery:
             and dispatcher_manager is None
             and lock_manager is None
         )
-        if work_store is not None:
+        if dispatcher_manager is not None:
+            resolved_dispatcher_manager = dispatcher_manager
             resolved_work_store = work_store
-        elif dispatcher_manager is not None:
-            resolved_work_store = getattr(
-                dispatcher_manager,
-                "work_store",
-                session_work_store,
+            if resolved_work_store is None:
+                resolved_work_store = getattr(
+                    dispatcher_manager,
+                    "work_store",
+                    None,
+                )
+            if resolved_work_store is None:
+                resolved_work_store = session_work_store
+            resolved_lock_manager = lock_manager
+            if resolved_lock_manager is None:
+                resolved_lock_manager = getattr(
+                    dispatcher_manager,
+                    "lock_manager",
+                    None,
+                )
+            if resolved_lock_manager is None:
+                resolved_lock_manager = session_lock_manager
+        elif work_store is not None or lock_manager is not None:
+            resolved_work_store = (
+                work_store if work_store is not None else session_work_store
+            )
+            resolved_lock_manager = (
+                lock_manager
+                if lock_manager is not None
+                else session_lock_manager
+            )
+            resolved_dispatcher_manager = DispatcherManager(
+                work_store=resolved_work_store,
+                lock_manager=resolved_lock_manager,
             )
         else:
             resolved_work_store = session_work_store
-        if dispatcher_manager is not None:
-            resolved_dispatcher_manager = dispatcher_manager
-        elif work_store is not None:
-            resolved_dispatcher_manager = DispatcherManager(
-                work_store=resolved_work_store,
-            )
-        else:
             resolved_dispatcher_manager = dispatcher_manager_global
+            resolved_lock_manager = session_lock_manager
         self._work_store = resolved_work_store
         self._dispatcher_manager = resolved_dispatcher_manager
-        self._lock_manager = (
-            lock_manager if lock_manager is not None else session_lock_manager
-        )
+        self._lock_manager = resolved_lock_manager
         if recovery_callback_resolver is not None:
             self._recovery_callback_resolver = recovery_callback_resolver
         elif uses_default_runtime:

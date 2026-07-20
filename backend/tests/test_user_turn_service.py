@@ -73,6 +73,36 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
             lock.lock,
         )
 
+    async def test_submit_inherits_lock_from_dispatcher_manager(self) -> None:
+        runtime = SimpleNamespace(
+            turn_id="turn-inherited-lock",
+            stream_queue=asyncio.Queue(),
+        )
+        coordinator = Mock()
+        coordinator.has_active_user_turn.return_value = False
+        coordinator.create_queued.return_value = runtime
+        lock = _FakeLock()
+        lock_manager = Mock()
+        lock_manager.get_lock.return_value = lock
+        dispatcher = _FakeDispatcher(position=1)
+        dispatcher_manager = SimpleNamespace(
+            lock_manager=lock_manager,
+            get=Mock(return_value=dispatcher),
+        )
+        service = UserTurnService(
+            coordinator=coordinator,
+            dispatcher_manager=dispatcher_manager,
+        )
+
+        await service.submit("hello", "main", "main-main")
+
+        lock_manager.get_lock.assert_called_once_with("main", "main-main")
+        dispatcher_manager.get.assert_called_once_with(
+            "main",
+            "main-main",
+            lock.lock,
+        )
+
     async def test_submit_creates_turn_and_enqueues_user_work_item(self) -> None:
         dispatcher = _FakeDispatcher(position=1)
         with (

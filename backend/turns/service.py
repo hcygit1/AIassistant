@@ -19,8 +19,14 @@ class UserTurnService:
         dispatcher_manager: Any | None = None,
     ) -> None:
         self._coordinator = coordinator
-        self._lock_manager = lock_manager
         self._dispatcher_manager = dispatcher_manager
+        self._lock_manager = lock_manager
+        if self._lock_manager is None and dispatcher_manager is not None:
+            self._lock_manager = getattr(
+                dispatcher_manager,
+                "lock_manager",
+                None,
+            )
 
     @property
     def coordinator(self) -> Any:

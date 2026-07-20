@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 from turns.events import TurnEvent
 
 if TYPE_CHECKING:
+    from sessions.session_lock_manager import SessionLockManager
     from sessions.session_work_store import SessionWorkStore
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,12 @@ def _default_work_store() -> "SessionWorkStore":
     from sessions.session_work_store import session_work_store
 
     return session_work_store
+
+
+def _default_lock_manager() -> "SessionLockManager":
+    from sessions.session_lock_manager import session_lock_manager
+
+    return session_lock_manager
 
 
 @dataclass(order=False)
@@ -388,10 +395,14 @@ class DispatcherManager:
         system_stream: SystemStream | None = None,
         user_stream: UserStream | None = None,
         turn_coordinator: Any | None = None,
+        lock_manager: "SessionLockManager | None" = None,
     ):
         self._dispatchers: dict[str, SessionDispatcher] = {}
         self._work_store = (
             work_store if work_store is not None else _default_work_store()
+        )
+        self._lock_manager = (
+            lock_manager if lock_manager is not None else _default_lock_manager()
         )
         self._system_stream = system_stream
         self._user_stream = user_stream
@@ -402,9 +413,21 @@ class DispatcherManager:
         """Return the store shared by all dispatchers managed here."""
         return self._work_store
 
-    def get(self, agent_id: str, session_id: str, lock: asyncio.Lock) -> SessionDispatcher:
+    @property
+    def lock_manager(self) -> "SessionLockManager":
+        """Return the session locks shared by all dispatchers managed here."""
+        return self._lock_manager
+
+    def get(
+        self,
+        agent_id: str,
+        session_id: str,
+        lock: asyncio.Lock | None = None,
+    ) -> SessionDispatcher:
         key = f"{agent_id}:{session_id}"
         if key not in self._dispatchers:
+            if lock is None:
+                lock = self._lock_manager.get_lock(agent_id, session_id).lock
             d = SessionDispatcher(
                 lock=lock,
                 work_store=self._work_store,

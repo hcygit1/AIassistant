@@ -12,8 +12,13 @@ from sessions.session_lock_manager import cleanup_session_runtime
 
 
 class _DispatcherManager:
-    def __init__(self, calls: list[tuple]) -> None:
+    def __init__(
+        self,
+        calls: list[tuple],
+        lock_manager: _LockManager | None = None,
+    ) -> None:
         self.calls = calls
+        self.lock_manager = lock_manager
 
     def cleanup(self, agent_id: str, session_id: str) -> None:
         self.calls.append(("dispatcher", agent_id, session_id))
@@ -44,6 +49,27 @@ class SessionRuntimeCleanupTests(unittest.TestCase):
             "main-main",
             dispatcher_manager=_DispatcherManager(calls),
             lock_manager=_LockManager(calls),
+            turn_coordinator=_TurnCoordinator(calls),
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                ("dispatcher", "main", "main-main"),
+                ("lock", "main", "main-main"),
+                ("turn", "main", "main-main"),
+            ],
+        )
+
+    def test_cleanup_inherits_dispatcher_lock_manager(self) -> None:
+        calls: list[tuple] = []
+        lock_manager = _LockManager(calls)
+        dispatcher_manager = _DispatcherManager(calls, lock_manager)
+
+        cleanup_session_runtime(
+            "main",
+            "main-main",
+            dispatcher_manager=dispatcher_manager,
             turn_coordinator=_TurnCoordinator(calls),
         )
 

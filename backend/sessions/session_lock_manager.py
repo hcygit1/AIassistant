@@ -88,6 +88,12 @@ def cleanup_session_runtime(
 
         dispatcher_manager = default_manager
     if lock_manager is None:
+        lock_manager = getattr(
+            dispatcher_manager,
+            "lock_manager",
+            None,
+        )
+    if lock_manager is None:
         lock_manager = session_lock_manager
     if turn_coordinator is None:
         from turns.coordinator import user_turn_coordinator as default_coordinator

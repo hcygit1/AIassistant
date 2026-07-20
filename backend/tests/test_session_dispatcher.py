@@ -377,6 +377,19 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(dispatcher._work_store, work_store)
         manager.cleanup("main", "main-main")
 
+    async def test_dispatcher_manager_exposes_injected_lock_manager(self) -> None:
+        lock = asyncio.Lock()
+        lock_manager = Mock()
+        lock_manager.get_lock.return_value = Mock(lock=lock)
+
+        manager = DispatcherManager(lock_manager=lock_manager)
+        dispatcher = manager.get("main", "main-main")
+
+        self.assertIs(manager.lock_manager, lock_manager)
+        self.assertIs(dispatcher._lock, lock)
+        lock_manager.get_lock.assert_called_once_with("main", "main-main")
+        manager.cleanup("main", "main-main")
+
     async def test_error_event_marks_work_failed_without_success_callback(self) -> None:
         work_store = _RecordingWorkStore()
         dispatcher = SessionDispatcher(

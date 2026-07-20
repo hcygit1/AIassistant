@@ -50,6 +50,12 @@ class _FakeDispatcherManagerWithStore(_FakeDispatcherManager):
         self.work_store = work_store
 
 
+class _FakeDispatcherManagerWithRuntime(_FakeDispatcherManagerWithStore):
+    def __init__(self, dispatcher, work_store, lock_manager) -> None:
+        super().__init__(dispatcher, work_store)
+        self.lock_manager = lock_manager
+
+
 class _FakeLockManager:
     def __init__(self) -> None:
         self.session_lock = _FakeLock()
@@ -303,6 +309,38 @@ class SessionWorkDeliveryTests(unittest.TestCase):
             )
 
             self.assertIs(delivery.work_store, store)
+
+    def test_delivery_uses_dispatcher_lock_when_lock_is_omitted(self) -> None:
+        dispatcher = _FakeDispatcher()
+        lock_manager = _FakeLockManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            dispatcher_manager = _FakeDispatcherManagerWithRuntime(
+                dispatcher,
+                store,
+                lock_manager,
+            )
+
+            delivery = SessionWorkDelivery(
+                dispatcher_manager=dispatcher_manager,
+            )
+
+            self.assertIs(delivery.lock_manager, lock_manager)
+
+    def test_new_dispatcher_uses_explicit_delivery_lock_manager(self) -> None:
+        lock_manager = _FakeLockManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                lock_manager=lock_manager,
+            )
+
+            self.assertIs(
+                delivery.dispatcher_manager.lock_manager,
+                lock_manager,
+            )
 
     def test_store_fails_only_unrecoverable_pending_work_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
