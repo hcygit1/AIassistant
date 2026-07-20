@@ -184,6 +184,53 @@ test("isolates Chat state in a dedicated context broadcast domain", () => {
   }
 });
 
+test("isolates Inspector state in a dedicated context broadcast domain", () => {
+  const contextPath = "src/lib/inspectorContext.tsx";
+  expect(existsSync(contextPath)).toBe(true);
+  if (!existsSync(contextPath)) return;
+
+  const context = readFileSync(contextPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+  const workspace = readFileSync("src/lib/hooks/useAppWorkspace.ts", "utf8");
+  const inspectorFields = [
+    "inspectorWidth",
+    "setInspectorWidth",
+    "isCompactLayout",
+    "inspectorPanelMode",
+    "setInspectorPanelMode",
+    "inspectorTab",
+    "setInspectorTab",
+    "inspectorFile",
+    "inspectorFileLoading",
+    "openFile",
+    "saveInspectorFile",
+  ];
+  const interfaceStart = store.indexOf("interface AppState {");
+  const interfaceEnd = store.indexOf("\n}\n\nconst AppContext", interfaceStart);
+  const appState = store.slice(interfaceStart, interfaceEnd);
+
+  expect(context).toContain("InspectorProvider");
+  expect(context).toContain("useInspectorContext");
+  expect(context).toContain("useMemo<InspectorContextState>");
+  expect(store).toContain("<InspectorProvider inspector={inspector}>");
+  expect(workspace).toContain("inspector,");
+  for (const field of inspectorFields) {
+    expect(appState, `${field} should not be in AppState`).not.toMatch(
+      new RegExp(`\\b${field}\\b`),
+    );
+  }
+
+  for (const file of [
+    "src/app/page.tsx",
+    "src/components/layout/WorkspaceRail.tsx",
+    "src/components/editor/InspectorPanel.tsx",
+  ]) {
+    expect(readFileSync(file, "utf8"), file).toContain(
+      "useInspectorContext()",
+    );
+  }
+});
+
 test("keeps UI-only fields out of useApp consumers", () => {
   const uiFields = new Set([
     "showConfigModal",

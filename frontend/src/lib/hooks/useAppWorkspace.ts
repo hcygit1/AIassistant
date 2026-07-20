@@ -48,7 +48,7 @@ export function useAppWorkspace({
 
   return {
     ...workspace,
-    ...inspector,
+    inspector,
     ragMode,
     setRagMode,
     skillsRefreshTrigger,

@@ -5,6 +5,7 @@ import { useAppWorkspace } from "./hooks/useAppWorkspace";
 import type { useSubagents } from "./hooks/useSubagents";
 import { ApprovalProvider, useApproval } from "./approvalContext";
 import { ChatProvider } from "./chatContext";
+import { InspectorProvider } from "./inspectorContext";
 import { UiProvider, useUi } from "./uiContext";
 import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
 
@@ -23,19 +24,6 @@ interface AppState {
   // Config
   ragMode: boolean;
   setRagMode: (enabled: boolean) => Promise<void>;
-
-  // Inspector
-  inspectorWidth: number;
-  setInspectorWidth: (w: number) => void;
-  isCompactLayout: boolean;
-  inspectorPanelMode: "docked" | "overlay" | "hidden";
-  setInspectorPanelMode: (mode: "docked" | "overlay" | "hidden") => void;
-  inspectorTab: string;
-  setInspectorTab: (tab: any) => void;
-  inspectorFile: { path: string; content: string } | null;
-  inspectorFileLoading: boolean;
-  openFile: (path: string) => Promise<void>;
-  saveInspectorFile: (content: string) => Promise<void>;
 
   // Subagents
   subagentTree: ReturnType<typeof useSubagents>["tree"];
@@ -72,6 +60,7 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     currentAgentId,
     currentSessionId,
     currentModel,
+    inspector,
     loadAgents,
     loadMainSession,
     switchAgent,
@@ -82,17 +71,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     traceMap: subagentTraceMap,
     loading: subagentsLoading,
     refreshSubagents,
-    inspectorWidth,
-    setInspectorWidth,
-    isCompactLayout,
-    inspectorPanelMode,
-    setInspectorPanelMode,
-    inspectorTab,
-    setInspectorTab,
-    inspectorFile,
-    inspectorFileLoading,
-    openFile,
-    saveInspectorFile,
     ragMode,
     setRagMode,
     skillsRefreshTrigger,
@@ -107,18 +85,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
 
     ragMode,
     setRagMode,
-
-    inspectorWidth,
-    setInspectorWidth,
-    isCompactLayout,
-    inspectorPanelMode,
-    setInspectorPanelMode,
-    inspectorTab,
-    setInspectorTab,
-    inspectorFile,
-    inspectorFileLoading,
-    openFile,
-    saveInspectorFile,
 
     subagentTree,
     subagents,
@@ -139,17 +105,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     currentModel,
     ragMode,
     setRagMode,
-    inspectorWidth,
-    setInspectorWidth,
-    isCompactLayout,
-    inspectorPanelMode,
-    setInspectorPanelMode,
-    inspectorTab,
-    setInspectorTab,
-    inspectorFile,
-    inspectorFileLoading,
-    openFile,
-    saveInspectorFile,
     subagentTree,
     subagents,
     runningSubagents,
@@ -165,7 +120,9 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AppContext.Provider value={value}>
-      <ChatProvider chat={chat}>{children}</ChatProvider>
+      <InspectorProvider inspector={inspector}>
+        <ChatProvider chat={chat}>{children}</ChatProvider>
+      </InspectorProvider>
     </AppContext.Provider>
   );
 }
