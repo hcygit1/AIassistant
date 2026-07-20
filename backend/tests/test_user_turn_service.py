@@ -16,6 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
 from turns.coordinator import user_turn_coordinator
 from turns.events import TurnEvent
 from turns.service import UserTurnService, user_turn_service
+from sessions.session_work_runtime import session_work_runtime
 
 
 class _FakeLock:
@@ -72,6 +73,55 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
             "main-main",
             lock.lock,
         )
+
+    async def test_submit_uses_injected_session_work_runtime(self) -> None:
+        turn_runtime = SimpleNamespace(
+            turn_id="turn-runtime",
+            stream_queue=asyncio.Queue(),
+        )
+        coordinator = Mock()
+        coordinator.has_active_user_turn.return_value = False
+        coordinator.create_queued.return_value = turn_runtime
+        lock = _FakeLock()
+        lock_manager = Mock()
+        lock_manager.get_lock.return_value = lock
+        dispatcher = _FakeDispatcher(position=2)
+        dispatcher_manager = Mock()
+        dispatcher_manager.get.return_value = dispatcher
+        work_runtime = SimpleNamespace(
+            lock_manager=lock_manager,
+            dispatcher_manager=dispatcher_manager,
+        )
+        service = UserTurnService(
+            coordinator=coordinator,
+            runtime=work_runtime,
+        )
+
+        result = await service.submit("hello", "main", "main-main")
+
+        self.assertEqual(result["turn_id"], "turn-runtime")
+        self.assertIs(service.runtime, work_runtime)
+        lock_manager.get_lock.assert_called_once_with("main", "main-main")
+        dispatcher_manager.get.assert_called_once_with(
+            "main",
+            "main-main",
+            lock.lock,
+        )
+
+    async def test_rejects_runtime_mixed_with_legacy_dependencies(self) -> None:
+        work_runtime = SimpleNamespace(
+            lock_manager=Mock(),
+            dispatcher_manager=Mock(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "runtime cannot be combined"):
+            UserTurnService(
+                runtime=work_runtime,
+                lock_manager=Mock(),
+            )
+
+    async def test_default_service_uses_shared_session_work_runtime(self) -> None:
+        self.assertIs(user_turn_service.runtime, session_work_runtime)
 
     async def test_submit_inherits_lock_from_dispatcher_manager(self) -> None:
         runtime = SimpleNamespace(

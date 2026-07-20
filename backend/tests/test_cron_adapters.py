@@ -16,6 +16,7 @@ from api.cron_api import (
     CronJobCreate,
     cancel_task,
     create_cron_job,
+    get_system_work_history,
     get_task_history,
 )
 from scheduler.cron_service import ProcessDueResult
@@ -134,6 +135,20 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         service.reconcile_active_work.assert_called_once_with(get_work)
 
+    async def test_scheduler_uses_injected_session_work_runtime(self) -> None:
+        service = Mock()
+        work_store = Mock()
+        runtime = SimpleNamespace(work_store=work_store)
+        scheduler = CronScheduler(
+            service=service,
+            runtime=runtime,
+        )
+
+        await scheduler.start()
+        await scheduler.stop()
+
+        service.reconcile_active_work.assert_called_once_with(work_store.get)
+
     async def test_task_history_api_delegates_to_unified_service(self) -> None:
         service = Mock()
         service.query.return_value = SimpleNamespace(
@@ -163,6 +178,55 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
             offset=0,
         )
         self.assertEqual(result["total"], 1)
+
+    async def test_system_work_history_uses_runtime_store_provider(self) -> None:
+        record = SimpleNamespace(
+            id="work-1",
+            kind="heartbeat",
+            agent_id="main",
+            session_id="main-main",
+            run_id=None,
+            status="done",
+            recover_on_restart=False,
+            created_at_ms=1,
+            started_at_ms=2,
+            finished_at_ms=3,
+            last_error=None,
+            content="heartbeat prompt",
+        )
+        work_store = Mock()
+        work_store.query.return_value = [record]
+        work_store.count.return_value = 1
+
+        with patch(
+            "api.cron_api._session_work_store",
+            return_value=work_store,
+        ):
+            result = await get_system_work_history(
+                kind="heartbeat",
+                status="done",
+                agent_id="main",
+                session_id="main-main",
+                run_id=None,
+                limit=10,
+                offset=0,
+            )
+
+        expected_filters = {
+            "kind": "heartbeat",
+            "status": "done",
+            "agent_id": "main",
+            "session_id": "main-main",
+            "run_id": None,
+        }
+        work_store.query.assert_called_once_with(
+            **expected_filters,
+            limit=10,
+            offset=0,
+        )
+        work_store.count.assert_called_once_with(**expected_filters)
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["id"], "work-1")
 
     async def test_cancel_api_rejects_running_work(self) -> None:
         service = Mock()

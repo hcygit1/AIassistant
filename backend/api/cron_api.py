@@ -32,6 +32,12 @@ def _task_history_service():
     return task_history_service
 
 
+def _session_work_store():
+    from sessions.session_work_runtime import session_work_runtime
+
+    return session_work_runtime.work_store
+
+
 def _raise_task_history_error(exc) -> None:
     if exc.code == "invalid_filter":
         status = 400
@@ -195,9 +201,9 @@ async def get_system_work_history(
     offset: int = Query(default=0, ge=0),
 ):
     """查询系统会话工作台账，便于排查 announce / heartbeat / cron 的投递状态。"""
-    from sessions.session_work_store import session_work_store
+    work_store = _session_work_store()
 
-    items = session_work_store.query(
+    items = work_store.query(
         kind=kind,
         status=status,
         agent_id=agent_id,
@@ -206,7 +212,7 @@ async def get_system_work_history(
         limit=limit,
         offset=offset,
     )
-    total = session_work_store.count(
+    total = work_store.count(
         kind=kind,
         status=status,
         agent_id=agent_id,

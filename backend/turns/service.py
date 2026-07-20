@@ -17,8 +17,16 @@ class UserTurnService:
         coordinator: Any | None = None,
         lock_manager: Any | None = None,
         dispatcher_manager: Any | None = None,
+        runtime: Any | None = None,
     ) -> None:
+        if runtime is not None and (
+            lock_manager is not None or dispatcher_manager is not None
+        ):
+            raise ValueError(
+                "runtime cannot be combined with legacy dependencies"
+            )
         self._coordinator = coordinator
+        self._runtime = runtime
         self._dispatcher_manager = dispatcher_manager
         self._lock_manager = lock_manager
         if self._lock_manager is None and dispatcher_manager is not None:
@@ -37,7 +45,23 @@ class UserTurnService:
         return self._coordinator
 
     @property
+    def runtime(self) -> Any | None:
+        if self._runtime is not None:
+            return self._runtime
+        if (
+            self._lock_manager is not None
+            or self._dispatcher_manager is not None
+        ):
+            return None
+        from sessions.session_work_runtime import session_work_runtime
+
+        return session_work_runtime
+
+    @property
     def lock_manager(self) -> Any:
+        runtime = self.runtime
+        if runtime is not None:
+            return runtime.lock_manager
         if self._lock_manager is None:
             from sessions.session_lock_manager import session_lock_manager
 
@@ -46,6 +70,9 @@ class UserTurnService:
 
     @property
     def dispatcher_manager(self) -> Any:
+        runtime = self.runtime
+        if runtime is not None:
+            return runtime.dispatcher_manager
         if self._dispatcher_manager is None:
             from sessions.session_dispatcher import dispatcher_manager
 
