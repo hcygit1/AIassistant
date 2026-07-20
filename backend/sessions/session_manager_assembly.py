@@ -103,11 +103,8 @@ class SessionManagerAssembler:
                 session_id,
                 agent_id,
             ),
-            save_session_data=lambda session_id, agent_id, data: (
+            persist_session=lambda session_id, agent_id, data: (
                 manager._save_session_data(session_id, agent_id, data)
-            ),
-            update_index=lambda *args, **kwargs: (
-                manager._update_session_store_entry(*args, **kwargs)
             ),
             session_key_from_id=manager.session_key_from_session_id,
             resolve_requester=manager._resolve_requester_for_child_session,

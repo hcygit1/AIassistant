@@ -7,23 +7,21 @@ from typing import Any, Callable, ContextManager
 
 
 class SessionMessageWriter:
-    """Create and mutate session messages while coordinating the index."""
+    """Create and mutate sessions through one persistence boundary."""
 
     def __init__(
         self,
         *,
         transaction: Callable[[str, str], ContextManager[Any]],
         load_session: Callable[[str, str], dict[str, Any] | None],
-        save_session_data: Callable[[str, str, dict[str, Any]], None],
-        update_index: Callable[..., None],
+        persist_session: Callable[[str, str, dict[str, Any]], None],
         session_key_from_id: Callable[[str, str], str],
         resolve_requester: Callable[[str], tuple[str, str] | None],
         now: Callable[[], float] | None = None,
     ) -> None:
         self._transaction = transaction
         self._load_session = load_session
-        self._save_session_data = save_session_data
-        self._update_index = update_index
+        self._persist_session = persist_session
         self._session_key_from_id = session_key_from_id
         self._resolve_requester = resolve_requester
         self._now = now or time.time
@@ -69,15 +67,7 @@ class SessionMessageWriter:
             data["label"] = str(label).strip()[:120]
         if spawned_by:
             data["spawned_by"] = spawned_by
-        self._save_session_data(session_id, agent_id, data)
-        self._update_index(
-            agent_id,
-            self._session_key_from_id(agent_id, session_id),
-            session_id,
-            data["updated_at"],
-            label=data.get("label", ""),
-            spawned_by=spawned_by,
-        )
+        self._persist_session(session_id, agent_id, data)
         return data
 
     def rollback_last_turn(self, session_id: str, agent_id: str) -> bool:
@@ -102,7 +92,7 @@ class SessionMessageWriter:
             return False
         data["messages"] = messages[:-2]
         data["updated_at"] = self._now()
-        self._save_session_data(session_id, agent_id, data)
+        self._persist_session(session_id, agent_id, data)
         return True
 
     def save_message(
@@ -120,4 +110,4 @@ class SessionMessageWriter:
                 message["tool_calls"] = tool_calls
             data["messages"].append(message)
             data["updated_at"] = self._now()
-            self._save_session_data(session_id, agent_id, data)
+            self._persist_session(session_id, agent_id, data)

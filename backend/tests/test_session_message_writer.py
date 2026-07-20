@@ -16,10 +16,9 @@ class SessionMessageWriterTests(unittest.TestCase):
     def _build_writer(
         self,
         sessions: dict[tuple[str, str], dict] | None = None,
-    ) -> tuple[SessionMessageWriter, list[tuple], list[tuple[str, str, dict]]]:
+    ) -> tuple[SessionMessageWriter, list[tuple[str, str, dict]]]:
         sessions = sessions if sessions is not None else {}
         saved: list[tuple[str, str, dict]] = []
-        indexed: list[tuple] = []
 
         @contextmanager
         def transaction(session_id: str, agent_id: str):
@@ -35,18 +34,17 @@ class SessionMessageWriterTests(unittest.TestCase):
         writer = SessionMessageWriter(
             transaction=transaction,
             load_session=load_session,
-            save_session_data=save_session_data,
-            update_index=lambda *args, **kwargs: indexed.append((args, kwargs)),
+            persist_session=save_session_data,
             session_key_from_id=lambda agent_id, session_id: (
                 f"agent:{agent_id}:subagent:{session_id}"
             ),
             resolve_requester=lambda _key: None,
             now=lambda: 100.0,
         )
-        return writer, indexed, saved
+        return writer, saved
 
-    def test_save_message_creates_session_and_updates_transcript_index(self) -> None:
-        writer, indexed, saved = self._build_writer()
+    def test_save_message_creates_and_persists_session(self) -> None:
+        writer, saved = self._build_writer()
 
         writer.save_message("s1", "main", "user", "hello")
 
@@ -55,20 +53,19 @@ class SessionMessageWriterTests(unittest.TestCase):
             {"role": "user", "content": "hello"},
         ])
         self.assertEqual(data["updated_at"], 100.0)
-        self.assertEqual(len(indexed), 1)
 
     def test_ensure_session_resolves_parent_for_subagent(self) -> None:
-        writer, indexed, _ = self._build_writer()
+        writer, saved = self._build_writer()
         writer._resolve_requester = lambda key: ("agent:parent:main", key)
 
         data = writer.ensure_session("subagent-1", "agent-1", label=" child ")
 
         self.assertEqual(data["label"], "child")
         self.assertEqual(data["spawned_by"], "agent:parent:main")
-        self.assertEqual(indexed[0][1]["spawned_by"], "agent:parent:main")
+        self.assertEqual(saved[-1][2]["spawned_by"], "agent:parent:main")
 
     def test_save_message_preserves_tool_calls(self) -> None:
-        writer, _, saved = self._build_writer()
+        writer, saved = self._build_writer()
 
         writer.save_message(
             "s1",
@@ -98,7 +95,7 @@ class SessionMessageWriterTests(unittest.TestCase):
                 ],
             }
         }
-        writer, _, saved = self._build_writer(sessions)
+        writer, saved = self._build_writer(sessions)
 
         self.assertTrue(writer.rollback_last_turn("s1", "main"))
         self.assertEqual(len(saved), 1)
@@ -119,7 +116,7 @@ class SessionMessageWriterTests(unittest.TestCase):
                 ],
             }
         }
-        writer, _, saved = self._build_writer(sessions)
+        writer, saved = self._build_writer(sessions)
 
         self.assertFalse(writer.rollback_last_turn("s1", "main"))
         self.assertEqual(saved, [])

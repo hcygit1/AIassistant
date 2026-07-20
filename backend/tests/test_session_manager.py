@@ -395,6 +395,29 @@ class SessionManagerPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(list(self.sessions_dir.glob("*.tmp")), [])
 
+    def test_new_session_updates_index_once(self) -> None:
+        original_update = self.manager._update_session_store_entry
+
+        with patch.object(
+            self.manager,
+            "_update_session_store_entry",
+            wraps=original_update,
+        ) as update_index:
+            self.manager.ensure_session(
+                "session-1",
+                "agent-1",
+                spawned_by="agent:parent:main",
+                label="child",
+            )
+
+        self.assertEqual(update_index.call_count, 1)
+        entry = self.manager.get_session_index_entry(
+            "session-1",
+            "agent-1",
+        )
+        self.assertEqual(entry["label"], "child")
+        self.assertEqual(entry["spawnedBy"], "agent:parent:main")
+
     def test_atomic_save_preserves_existing_file_mode(self) -> None:
         path = self.sessions_dir / "sessions.json"
         path.write_text("{}", encoding="utf-8")
