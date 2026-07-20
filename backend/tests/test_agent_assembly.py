@@ -2,6 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -50,6 +51,41 @@ class AgentRuntimeComponentsTests(unittest.TestCase):
         for name, value in values.items():
             self.assertIs(getattr(manager, attribute_names[name]), value)
         self.assertIs(manager._pending_tasks, pending_tasks)
+
+
+class AgentRuntimeAssemblerDependencyTests(unittest.TestCase):
+    def test_resolves_an_injected_session_manager_provider(self) -> None:
+        from runtime.agent_runtime_assembly import AgentRuntimeAssembler
+
+        injected = object()
+        assembler = AgentRuntimeAssembler(
+            SimpleNamespace(),
+            {},
+            get_session_manager=lambda: injected,
+        )
+
+        self.assertIs(assembler._get_session_manager(), injected)
+
+    def test_agent_manager_wires_injected_session_manager_to_runtime(self) -> None:
+        from runtime.agent import AgentManager
+
+        injected = Mock()
+        injected.load_session_for_agent.return_value = []
+        with (
+            patch.object(AgentManager, "_write_skills_snapshot"),
+            patch.object(AgentManager, "_has_bootstrap", return_value=False),
+            patch.object(AgentManager, "_get_locale", return_value="zh-CN"),
+            patch.object(
+                AgentManager,
+                "_resolve_context_budget",
+                return_value=SimpleNamespace(active_tokens=1000),
+            ),
+        ):
+            manager = AgentManager(session_manager=injected)
+
+        manager._turn_preparation_adapter._load_history("s1", "main")
+
+        injected.load_session_for_agent.assert_called_once_with("s1", "main")
 
 
 class AgentManagerFacadeStructureTests(unittest.TestCase):

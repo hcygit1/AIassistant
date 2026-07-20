@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from runtime.agent_lifecycle import AgentLifecycle
 from runtime.agent_state_runtime import AgentStateRuntime
@@ -74,12 +74,20 @@ class AgentRuntimeAssembler:
         self,
         manager: Any,
         module_globals: dict[str, Any],
+        get_session_manager: Callable[[], Any] | None = None,
     ) -> None:
         self._manager = manager
         self._module_globals = module_globals
+        self._session_manager_provider = (
+            get_session_manager
+            or (lambda: self._global("session_manager"))
+        )
 
     def _global(self, name: str) -> Any:
         return self._module_globals[name]
+
+    def _get_session_manager(self) -> Any:
+        return self._session_manager_provider()
 
     def build(self) -> AgentRuntimeComponents:
         manager = self._manager
@@ -145,9 +153,10 @@ class AgentRuntimeAssembler:
             build_prompt=lambda params: self._global(
                 "prompt_builder"
             ).build_system_prompt_with_report(params),
-            load_history=lambda session_id, agent_id: self._global(
-                "session_manager"
-            ).load_session_for_agent(session_id, agent_id),
+            load_history=lambda session_id, agent_id: self._get_session_manager().load_session_for_agent(
+                session_id,
+                agent_id,
+            ),
             format_summary=lambda summary: self._global(
                 "prompt_builder"
             ).format_session_summary(summary),
@@ -163,22 +172,27 @@ class AgentRuntimeAssembler:
             resolve_agent_config=lambda agent_id: self._global(
                 "resolve_agent_config"
             )(agent_id),
-            load_session=lambda session_id, agent_id: self._global(
-                "session_manager"
-            ).load_session(session_id, agent_id),
-            compress_history=lambda session_id, agent_id, count: self._global(
-                "session_manager"
-            ).compress_history(session_id, agent_id, count),
+            load_session=lambda session_id, agent_id: self._get_session_manager().load_session(
+                session_id,
+                agent_id,
+            ),
+            compress_history=lambda session_id, agent_id, count: self._get_session_manager().compress_history(
+                session_id,
+                agent_id,
+                count,
+            ),
             get_llm=lambda agent_id: manager.get_llm(agent_id),
             log_compress=manager._log_compress,
         )
         session_commands = SessionCommands(
-            load_session=lambda session_id, agent_id: self._global(
-                "session_manager"
-            ).load_session(session_id, agent_id),
-            reset_session=lambda session_id, agent_id: self._global(
-                "session_manager"
-            ).reset_session(session_id, agent_id),
+            load_session=lambda session_id, agent_id: self._get_session_manager().load_session(
+                session_id,
+                agent_id,
+            ),
+            reset_session=lambda session_id, agent_id: self._get_session_manager().reset_session(
+                session_id,
+                agent_id,
+            ),
             resolve_agent_config=lambda agent_id: self._global(
                 "resolve_agent_config"
             )(agent_id),
@@ -186,9 +200,10 @@ class AgentRuntimeAssembler:
             audit_log=manager._audit_runtime_event,
         )
         turn_recovery = TurnRecovery(
-            reset_session=lambda session_id, agent_id: self._global(
-                "session_manager"
-            ).reset_session(session_id, agent_id),
+            reset_session=lambda session_id, agent_id: self._get_session_manager().reset_session(
+                session_id,
+                agent_id,
+            ),
             compress_session=manager._compress_for_recovery,
             audit_log=manager._audit_runtime_event,
             sleep=lambda seconds: asyncio.sleep(seconds),
@@ -202,9 +217,10 @@ class AgentRuntimeAssembler:
             get_lifecycle_hooks=lambda: manager.lifecycle_hooks,
             get_run_tracker=lambda: self._global("run_tracker"),
             get_audit_logger=lambda: self._global("audit_logger"),
-            save_message=lambda *args, **kwargs: self._global(
-                "session_manager"
-            ).save_message(*args, **kwargs),
+            save_message=lambda *args, **kwargs: self._get_session_manager().save_message(
+                *args,
+                **kwargs,
+            ),
             write_skills_snapshot=manager._write_skills_snapshot,
             emit_event=manager._emit_runtime_event,
             count_tokens=lambda text: self._global("count_tokens")(text),
@@ -289,9 +305,10 @@ class AgentRuntimeAssembler:
             resolve_agent_config=lambda agent_id: self._global(
                 "resolve_agent_config"
             )(agent_id),
-            load_session=lambda session_id, agent_id: self._global(
-                "session_manager"
-            ).load_session(session_id, agent_id),
+            load_session=lambda session_id, agent_id: self._get_session_manager().load_session(
+                session_id,
+                agent_id,
+            ),
             detect_compaction_level=self._global("detect_compaction_level"),
             audit_log=manager._audit_runtime_event,
             emit_event=manager._emit_runtime_event,

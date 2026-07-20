@@ -167,10 +167,20 @@ class AgentManager(
 
         return resolve_budget(agent_id)
 
-    def __init__(self):
+    def __init__(self, session_manager: Any | None = None):
         self.lifecycle_hooks: LifecycleHooks | None = None
         self._pending_tasks: set[asyncio.Task] = set()
-        AgentRuntimeAssembler(self, globals()).build().install_on(self)
+        self._session_manager_override = session_manager
+        AgentRuntimeAssembler(
+            self,
+            globals(),
+            get_session_manager=self._get_session_manager,
+        ).build().install_on(self)
+
+    def _get_session_manager(self) -> Any:
+        if self._session_manager_override is not None:
+            return self._session_manager_override
+        return globals()["session_manager"]
 
     def _get_state_persist_config(self, agent_id: str) -> tuple[bool, int]:
         """获取状态持久化配置 (enabled, interval_minutes)"""
