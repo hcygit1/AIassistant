@@ -16,6 +16,7 @@ from sessions.session_catalog import SessionCatalog
 from sessions.session_history_archive import SessionHistoryArchive
 from sessions.session_lifecycle import SessionLifecycleService
 from sessions.session_message_writer import SessionMessageWriter
+from sessions.session_reader import SessionReader
 from sessions.session_title import SessionTitleService
 
 
@@ -26,6 +27,7 @@ class SessionManager:
         maintenance: SessionMaintenanceService | None = None,
         title_service: SessionTitleService | None = None,
         cleanup_runtime: Callable[[str, str], None] | None = None,
+        reader: SessionReader | None = None,
     ) -> None:
         self._repository = repository or SessionRepository(
             resolve_sessions_dir=resolve_agent_sessions_dir
@@ -36,6 +38,10 @@ class SessionManager:
             cleanup_runtime=cleanup_runtime,
         )
         self._title_service = title_service or SessionTitleService()
+        self._reader = reader or SessionReader(
+            repository=self._repository,
+            is_bootstrap_text=lambda text: self._is_bootstrap_text(text),
+        )
         self._history_archive = SessionHistoryArchive(
             repository=self._repository,
             load_session=lambda session_id, agent_id: self.load_session(
@@ -169,19 +175,7 @@ class SessionManager:
         return self._repository.session_file_exists(session_id, agent_id)
 
     def load_session(self, session_id: str, agent_id: str) -> dict[str, Any] | None:
-        data = self._repository.load_session(session_id, agent_id)
-        if data is None:
-            return None
-
-        current_label = str(data.get("label", "")).strip()
-        if current_label and self._is_bootstrap_text(current_label):
-            data.pop("label", None)
-        if not data.get("label") and data.get("title"):
-            candidate = str(data.get("title", "")).strip()
-            if candidate and not self._is_bootstrap_text(candidate):
-                data["label"] = candidate
-
-        return data
+        return self._reader.load_session(session_id, agent_id)
 
     def load_session_for_agent(
         self, session_id: str, agent_id: str
@@ -190,23 +184,7 @@ class SessionManager:
         为 LLM 优化的消息列表：
         - 合并连续 assistant 消息
         """
-        data = self.load_session(session_id, agent_id)
-        if data is None:
-            return []
-
-        messages: list[dict[str, Any]] = []
-
-        raw_messages = data.get("messages", [])
-        for msg in raw_messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-
-            if messages and messages[-1]["role"] == "assistant" and role == "assistant":
-                messages[-1]["content"] += "\n\n" + content
-            else:
-                messages.append({"role": role, "content": content})
-
-        return messages
+        return self._reader.load_session_for_agent(session_id, agent_id)
 
     # ------------------------------------------------------------------
     # 写入
