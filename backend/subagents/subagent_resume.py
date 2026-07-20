@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 MAX_ANNOUNCE_RETRY = 3
 ANNOUNCE_EXPIRY_SEC = 5 * 60  # 5 分钟
+_INTERRUPTED_DELIVERY_STATES = {"queued", "delivering", "retrying"}
+_TERMINAL_DELIVERY_STATES = {"delivered", "dropped"}
 
 
 def _resolve_orphan_reason(entry: SubagentRunRecord) -> Literal["missing-session-entry", "missing-session-id", "missing-session-file"] | None:
@@ -66,6 +68,12 @@ async def _deliver_announce_for_run(run_id: str, entry: SubagentRunRecord) -> bo
     return await subagent_announce_delivery.deliver_recovered_run(run_id, entry)
 
 
+def _reset_interrupted_delivery(run_id: str, entry: SubagentRunRecord) -> None:
+    state = getattr(entry, "result_delivery_state", "pending")
+    if state in _INTERRUPTED_DELIVERY_STATES:
+        registry.set_result_delivery_state(run_id, "pending")
+
+
 async def resume_subagent_runs() -> None:
     """启动时调用：对恢复的 run 执行 reconcile + announce"""
     for run_id, entry in registry.list_run_entries():
@@ -75,7 +83,12 @@ async def resume_subagent_runs() -> None:
             _reconcile_orphaned(run_id, entry, reason)
             continue
 
-        if getattr(entry, "result_delivery_state", "pending") == "delivered":
+        delivery_state = getattr(
+            entry,
+            "result_delivery_state",
+            "pending",
+        )
+        if delivery_state in _TERMINAL_DELIVERY_STATES:
             registry.remove_run(run_id)
             continue
 
@@ -88,14 +101,13 @@ async def resume_subagent_runs() -> None:
             continue
 
         if entry.ended_at:
+            _reset_interrupted_delivery(run_id, entry)
             try:
-                delivered = await _deliver_announce_for_run(run_id, entry)
+                queued = await _deliver_announce_for_run(run_id, entry)
             except Exception as e:
                 logger.warning(f"Resume announce error run={run_id}: {e}")
-                delivered = False
-            if delivered:
-                registry.remove_run(run_id)
-            elif not registry.mark_announce_retry(run_id):
+                queued = False
+            if not queued and not registry.mark_announce_retry(run_id):
                 registry.mark_result_delivery_dropped(run_id)
                 registry.remove_run(run_id)
             continue
@@ -104,15 +116,14 @@ async def resume_subagent_runs() -> None:
         interrupted = registry.get_run(run_id)
         if interrupted is None:
             continue
+        _reset_interrupted_delivery(run_id, interrupted)
         try:
-            delivered = await _deliver_announce_for_run(
+            queued = await _deliver_announce_for_run(
                 run_id,
                 interrupted,
             )
         except Exception:
-            delivered = False
-        if delivered:
-            registry.remove_run(run_id)
-        elif not registry.mark_announce_retry(run_id):
+            queued = False
+        if not queued and not registry.mark_announce_retry(run_id):
             registry.mark_result_delivery_dropped(run_id)
             registry.remove_run(run_id)

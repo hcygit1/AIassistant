@@ -12,7 +12,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from subagents.subagent_delivery import SubagentAnnounceDelivery
-from subagents.subagent_registry import SubagentRunRecord
+from subagents.subagent_registry import SubagentRegistry, SubagentRunRecord
+from subagents.subagent_run_store import SubagentRunStore
 from sessions.session_work_delivery import SessionWorkDelivery
 from sessions.session_work_store import SessionWorkStore
 
@@ -60,6 +61,36 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
             lock_manager=_FakeLockManager(),
         )
         return SubagentAnnounceDelivery(work_delivery=work_delivery)
+
+    def _recovered_runtime(
+        self,
+        dispatcher: _FakeDispatcher,
+        entry: SubagentRunRecord,
+    ) -> tuple[
+        SubagentAnnounceDelivery,
+        SubagentRegistry,
+        Mock,
+    ]:
+        run_store = SubagentRunStore(
+            load_runs=lambda: {},
+            save_runs=lambda _runs: None,
+        )
+        registry = SubagentRegistry(store=run_store)
+        session_manager = Mock()
+        session_manager.session_id_from_session_key.return_value = (
+            "main",
+            "main-main",
+        )
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        delivery = SubagentAnnounceDelivery(
+            session_manager=session_manager,
+            work_delivery=self._delivery(dispatcher).work_delivery,
+            registry=registry,
+            event_bus=Mock(),
+        )
+        with run_store.locked_records() as records:
+            records[entry.run_id] = entry
+        return delivery, registry, session_manager
 
     async def test_deliver_to_main_requester_submits_announce_work_item(self) -> None:
         dispatcher = _FakeDispatcher()
@@ -227,6 +258,216 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         registry.mark_result_delivery_delivered.assert_called_once_with("run-4")
         self.assertTrue(event_bus.emit.called)
+
+    async def test_recovered_run_is_removed_only_after_success_callback(self) -> None:
+        dispatcher = _FakeDispatcher()
+        entry = SubagentRunRecord(
+            run_id="run-terminal-boundary",
+            child_session_key="agent:main:subagent:child-1",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+            result_summary="all good",
+            outcome="completed",
+            ended_at=3.0,
+            state="succeeded",
+        )
+        delivery, registry, _ = self._recovered_runtime(
+            dispatcher,
+            entry,
+        )
+
+        with patch("config.get_config", return_value={"app": {"locale": "en"}}):
+            queued = await delivery.deliver_recovered_run(entry.run_id, entry)
+
+        self.assertTrue(queued)
+        current = registry.get_run(entry.run_id)
+        self.assertIsNotNone(current)
+        self.assertEqual(current.result_delivery_state, "queued")
+
+        work_item = dispatcher.submitted[0]
+        self.assertIsNotNone(work_item.on_success)
+        work_item.on_success()
+
+        self.assertIsNone(registry.get_run(entry.run_id))
+
+    async def test_recovered_run_failure_falls_back_then_removes(self) -> None:
+        dispatcher = _FakeDispatcher()
+        entry = SubagentRunRecord(
+            run_id="run-recovered-failure",
+            child_session_key="agent:main:subagent:child-1",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+            result_summary="all good",
+            outcome="completed",
+            ended_at=3.0,
+            state="succeeded",
+        )
+        delivery, registry, session_manager = self._recovered_runtime(
+            dispatcher,
+            entry,
+        )
+
+        with patch("config.get_config", return_value={"app": {"locale": "en"}}):
+            await delivery.deliver_recovered_run(entry.run_id, entry)
+
+        work_item = dispatcher.submitted[0]
+        self.assertIsNotNone(work_item.on_failure)
+        work_item.on_failure()
+
+        session_manager.save_message.assert_called_once()
+        self.assertIsNone(registry.get_run(entry.run_id))
+
+    async def test_recovered_failure_cleans_up_when_fallback_save_fails(self) -> None:
+        dispatcher = _FakeDispatcher()
+        entry = SubagentRunRecord(
+            run_id="run-recovered-save-failure",
+            child_session_key="agent:main:subagent:child-1",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+            result_summary="all good",
+            outcome="completed",
+            ended_at=3.0,
+            state="succeeded",
+        )
+        delivery, registry, session_manager = self._recovered_runtime(
+            dispatcher,
+            entry,
+        )
+        session_manager.save_message.side_effect = OSError("disk full")
+
+        with patch("config.get_config", return_value={"app": {"locale": "en"}}):
+            await delivery.deliver_recovered_run(entry.run_id, entry)
+
+        work_item = dispatcher.submitted[0]
+        self.assertIsNotNone(work_item.on_failure)
+        work_item.on_failure()
+
+        self.assertIsNone(registry.get_run(entry.run_id))
+
+    async def test_recovered_event_errors_do_not_block_terminal_cleanup(self) -> None:
+        dispatcher = _FakeDispatcher()
+        entry = SubagentRunRecord(
+            run_id="run-recovered-event-failure",
+            child_session_key="agent:main:subagent:child-1",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+            result_summary="all good",
+            outcome="completed",
+            ended_at=3.0,
+            state="succeeded",
+        )
+        run_store = SubagentRunStore(
+            load_runs=lambda: {},
+            save_runs=lambda _runs: None,
+        )
+        registry = SubagentRegistry(store=run_store)
+        with run_store.locked_records() as records:
+            records[entry.run_id] = entry
+        session_manager = Mock()
+        session_manager.session_id_from_session_key.return_value = (
+            "main",
+            "main-main",
+        )
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        event_bus = Mock()
+        event_bus.emit.side_effect = RuntimeError("event failed")
+        delivery = SubagentAnnounceDelivery(
+            session_manager=session_manager,
+            work_delivery=self._delivery(dispatcher).work_delivery,
+            registry=registry,
+            event_bus=event_bus,
+        )
+
+        with patch("config.get_config", return_value={"app": {"locale": "en"}}):
+            queued = await delivery.deliver_recovered_run(entry.run_id, entry)
+
+        self.assertTrue(queued)
+        work_item = dispatcher.submitted[0]
+        self.assertIsNotNone(work_item.on_success)
+        work_item.on_success()
+
+        self.assertIsNone(registry.get_run(entry.run_id))
+
+    async def test_recovered_run_cancel_marks_dropped_then_removes(self) -> None:
+        dispatcher = _FakeDispatcher()
+        entry = SubagentRunRecord(
+            run_id="run-recovered-cancel",
+            child_session_key="agent:main:subagent:child-1",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+            result_summary="all good",
+            outcome="completed",
+            ended_at=3.0,
+            state="succeeded",
+        )
+        delivery, registry, _ = self._recovered_runtime(
+            dispatcher,
+            entry,
+        )
+
+        with patch("config.get_config", return_value={"app": {"locale": "en"}}):
+            await delivery.deliver_recovered_run(entry.run_id, entry)
+
+        work_item = dispatcher.submitted[0]
+        self.assertIsNotNone(work_item.on_cancel)
+        work_item.on_cancel()
+
+        self.assertIsNone(registry.get_run(entry.run_id))
+
+    async def test_recovered_submission_error_resets_pending_for_retry(self) -> None:
+        entry = SubagentRunRecord(
+            run_id="run-recovered-submit-error",
+            child_session_key="agent:main:subagent:child-1",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+            result_summary="all good",
+            outcome="completed",
+            ended_at=3.0,
+            state="succeeded",
+        )
+        run_store = SubagentRunStore(
+            load_runs=lambda: {},
+            save_runs=lambda _runs: None,
+        )
+        registry = SubagentRegistry(store=run_store)
+        with run_store.locked_records() as records:
+            records[entry.run_id] = entry
+        session_manager = Mock()
+        session_manager.session_id_from_session_key.return_value = (
+            "main",
+            "main-main",
+        )
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        work_delivery = Mock()
+        work_delivery.deliver.side_effect = RuntimeError("submit failed")
+        delivery = SubagentAnnounceDelivery(
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+            registry=registry,
+            event_bus=Mock(),
+        )
+
+        with (
+            patch("config.get_config", return_value={"app": {"locale": "en"}}),
+            self.assertRaisesRegex(RuntimeError, "submit failed"),
+        ):
+            await delivery.deliver_recovered_run(entry.run_id, entry)
+
+        current = registry.get_run(entry.run_id)
+        self.assertIsNotNone(current)
+        self.assertEqual(current.result_delivery_state, "pending")
 
     async def test_deliver_to_requester_uses_injected_dependencies(self) -> None:
         session_manager = Mock()
