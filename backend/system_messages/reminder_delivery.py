@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from sessions.session_dispatcher import PRIORITY_CRON
+from sessions.session_work_policy import deliver_system_work
 
 
 class ReminderDeliveryService:
@@ -67,9 +67,9 @@ class ReminderDeliveryService:
         target_session_id = session_id or self.session_manager.resolve_main_session_id(
             agent_id
         )
-        return self.work_delivery.deliver(
+        return deliver_system_work(
+            self.work_delivery,
             kind="cron",
-            priority=PRIORITY_CRON,
             content=self.build_cron_prompt(text),
             agent_id=agent_id,
             session_id=target_session_id,
@@ -78,7 +78,6 @@ class ReminderDeliveryService:
             on_success=on_success,
             on_failure=on_failure,
             on_cancel=on_cancel,
-            recover_on_restart=True,
         )
 
 

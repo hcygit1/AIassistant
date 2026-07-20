@@ -16,7 +16,7 @@ from system_messages.heartbeat_utils import (
     is_heartbeat_content_effectively_empty,
     is_within_active_hours,
 )
-from sessions.session_dispatcher import PRIORITY_HEARTBEAT
+from sessions.session_work_policy import deliver_system_work
 from infra.audit_log import audit_logger
 
 logger = logging.getLogger(__name__)
@@ -348,9 +348,9 @@ class HeartbeatRunner:
                 {"error": error_text},
             )
 
-        self.work_delivery.deliver(
+        deliver_system_work(
+            self.work_delivery,
             kind="heartbeat",
-            priority=PRIORITY_HEARTBEAT,
             content=full_prompt,
             agent_id=agent_id,
             session_id=session_id,

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sessions.session_work_policy import deliver_system_work
+
 from subagents.subagent_registry import SubagentRunRecord
 
 
@@ -198,8 +200,6 @@ class SubagentAnnounceDelivery:
         ended_at: float | None = None,
     ) -> None:
         """向 requester 交付 announce；若 requester 是子会话则触发其新 run 并递归向上。"""
-        from sessions.session_dispatcher import PRIORITY_ANNOUNCE
-
         parsed = self.parse_requester_key(requester_key)
         if not parsed:
             return
@@ -220,9 +220,9 @@ class SubagentAnnounceDelivery:
         if is_main:
             self._state.queued(req_agent, run_id)
 
-            self.work_delivery.deliver(
+            deliver_system_work(
+                self.work_delivery,
                 kind="announce",
-                priority=PRIORITY_ANNOUNCE,
                 content=announce_msg,
                 agent_id=req_agent,
                 session_id=main_session_id,
@@ -286,9 +286,9 @@ class SubagentAnnounceDelivery:
                     ended_at=ended_at,
                 )
 
-        self.work_delivery.deliver(
+        deliver_system_work(
+            self.work_delivery,
             kind="announce",
-            priority=PRIORITY_ANNOUNCE,
             content=announce_msg,
             agent_id=req_agent,
             session_id=req_session,
@@ -306,8 +306,6 @@ class SubagentAnnounceDelivery:
         与实时子 agent announce 不同，这里不做递归 requester 传播，
         而是保持当前 resume 逻辑：直接向 target requester 会话投递一条 announce。
         """
-        from sessions.session_dispatcher import PRIORITY_ANNOUNCE
-
         parsed = self.parse_requester_key(entry.requester_session_key)
         if not parsed:
             return False
@@ -326,9 +324,9 @@ class SubagentAnnounceDelivery:
 
         result_preview = (entry.result_summary or "(no output)")[:300]
         target_sid = main_sid if req_session == main_sid else req_session
-        self.work_delivery.deliver(
+        deliver_system_work(
+            self.work_delivery,
             kind="announce",
-            priority=PRIORITY_ANNOUNCE,
             content=announce_msg,
             agent_id=req_agent,
             session_id=target_sid,

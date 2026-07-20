@@ -29,6 +29,11 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 
+from sessions.session_work_policy import (
+    PRIORITY_ANNOUNCE,
+    PRIORITY_CRON,
+    PRIORITY_HEARTBEAT,
+)
 from turns.events import TurnEvent
 
 if TYPE_CHECKING:
@@ -43,9 +48,6 @@ SYSTEM_TIMEOUT_SEC = 5
 # 用户优先于所有系统任务；系统 aging 不低于 PRIORITY_MIN_SYSTEM（避免压过用户）
 PRIORITY_USER = -10
 PRIORITY_MIN_SYSTEM = -9
-PRIORITY_ANNOUNCE = 0
-PRIORITY_CRON = 2
-PRIORITY_HEARTBEAT = 3
 
 AGING_INTERVAL_SEC = 30.0
 MAX_AGING_BONUS = 3.0
