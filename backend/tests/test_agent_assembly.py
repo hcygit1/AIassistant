@@ -90,6 +90,40 @@ class AgentManagerFacadeStructureTests(unittest.TestCase):
             )
             self.assertNotIn(method_name, AgentManager.__dict__)
 
+    def test_session_runtime_facade_is_outside_agent_manager(self):
+        from runtime.agent import AgentManager
+        from runtime.agent_session_compat import (
+            AgentManagerSessionCompatibilityMixin,
+        )
+
+        facade_methods = {
+            "_ingest_completed_turn",
+            "_run_auto_compaction",
+            "_compress_for_recovery",
+            "_incremental_ingest",
+            "_batch_ingest_messages",
+            "_maybe_auto_compact",
+            "_handle_reset",
+            "_handle_reset_noflush",
+            "_handle_compact",
+            "_generate_structured_summary",
+            "_summarize_plain_fallback",
+            "_calc_compress_count_by_turns",
+        }
+
+        self.assertTrue(
+            issubclass(
+                AgentManager,
+                AgentManagerSessionCompatibilityMixin,
+            )
+        )
+        for method_name in facade_methods:
+            self.assertIn(
+                method_name,
+                AgentManagerSessionCompatibilityMixin.__dict__,
+            )
+            self.assertNotIn(method_name, AgentManager.__dict__)
+
 
 if __name__ == "__main__":
     unittest.main()
