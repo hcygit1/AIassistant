@@ -52,6 +52,7 @@ from runtime.turn_context import (
     SessionContextCacheEntry,
     TurnContext,
 )
+from runtime.turn_preparation import TurnPreparation
 from runtime.turn_service import (
     BARE_SESSION_RESET_PROMPT,
     TurnService,
@@ -291,6 +292,7 @@ class AgentManager:
             self.subagent_service
         )
         self._turn_context = TurnContext()
+        self._turn_preparation = TurnPreparation(self._turn_context)
         self._session_compactor = SessionCompactor(
             resolve_agent_config=lambda agent_id: resolve_agent_config(
                 agent_id
@@ -575,7 +577,8 @@ class AgentManager:
         )
 
     def _build_tools(self, agent_id: str, session_id: str = "") -> list:
-        return self._tool_registry.build_tools(
+        return self._turn_preparation.build_tools(
+            self._tool_registry,
             self.data_dir,
             agent_id,
             session_id,
@@ -597,7 +600,7 @@ class AgentManager:
     def _build_messages(
         self, history: list[dict[str, Any]], new_message: str
     ) -> list:
-        return self._turn_context.build_messages(
+        return self._turn_preparation.build_messages(
             history,
             new_message,
             human_message=HumanMessage,
@@ -610,7 +613,7 @@ class AgentManager:
         return TurnContext.safe_mtime(path)
 
     def _project_context_signature(self, agent_id: str, prompt_mode: str) -> tuple[Any, ...]:
-        return self._turn_context.project_context_signature(
+        return self._turn_preparation.project_context_signature(
             agent_id,
             prompt_mode,
             resolve_workspace=resolve_agent_workspace,
@@ -622,22 +625,17 @@ class AgentManager:
         self,
         agent_id: str,
     ) -> tuple[Any, ...]:
-        base_signature = (
-            self._turn_context.prompt_runtime_signature(
-                agent_id,
-                resolve_agent_config_fn=resolve_agent_config,
-                get_heartbeat_config_fn=get_heartbeat_config,
-            )
-        )
-        return (
-            *base_signature,
-            str(self.get_current_model_ref(agent_id)),
+        return self._turn_preparation.prompt_runtime_signature(
+            agent_id,
+            resolve_agent_config=resolve_agent_config,
+            get_heartbeat_config=get_heartbeat_config,
+            get_current_model=self.get_current_model_ref,
         )
 
     def _pruning_signature(self, agent_id: str) -> str:
-        return self._turn_context.pruning_signature(
+        return self._turn_preparation.pruning_signature(
             agent_id,
-            resolve_agent_config_fn=resolve_agent_config,
+            resolve_agent_config=resolve_agent_config,
         )
 
     def _tool_policy_signature(self, agent_id: str) -> tuple[Any, ...]:
@@ -647,7 +645,8 @@ class AgentManager:
         )
 
     def _get_or_build_tool_names(self, agent_id: str) -> tuple[str, ...]:
-        return self._tool_registry.get_or_build_tool_names(
+        return self._turn_preparation.get_or_build_tool_names(
+            self._tool_registry,
             agent_id,
             collect_tools=self._collect_tools,
             filter_tools=self._filter_tools_by_policy,
@@ -663,7 +662,7 @@ class AgentManager:
         extra_system_prompt: str | None,
         locale: str,
     ) -> tuple[str, Any, int]:
-        return self._turn_context.get_or_build_prompt(
+        return self._turn_preparation.get_or_build_prompt(
             agent_id=agent_id,
             prompt_mode=prompt_mode,
             available_tool_names=available_tool_names,
@@ -680,7 +679,7 @@ class AgentManager:
 
     @staticmethod
     def _session_summary_fingerprint(summary: Any) -> str | None:
-        return TurnContext.session_summary_fingerprint(summary)
+        return TurnPreparation.session_summary_fingerprint(summary)
 
     def _get_or_build_session_context(
         self,
@@ -690,13 +689,11 @@ class AgentManager:
     ) -> SessionContextCacheEntry:
         session_path = resolve_agent_dir(agent_id) / "sessions" / f"{session_id}.json"
         store = self.mem_stores.get(agent_id)
-        return self._turn_context.get_or_build_session_context(
+        return self._turn_preparation.get_or_build_session_context(
             agent_id=agent_id,
             session_id=session_id,
             session_path=session_path,
             store=store,
-            safe_mtime=self._safe_mtime,
-            summary_fingerprint=self._session_summary_fingerprint,
             load_history=session_manager.load_session_for_agent,
             format_summary=prompt_builder.format_session_summary,
             prune_history=prune_messages,
