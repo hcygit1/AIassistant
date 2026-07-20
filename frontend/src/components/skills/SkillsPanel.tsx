@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import {
   Sparkles, ToggleLeft, ToggleRight, AlertCircle,
@@ -23,7 +24,7 @@ interface SkillDetail {
 }
 
 function useStatusBadge() {
-  const { t } = useApp();
+  const { t } = useUi();
   return {
     available: { label: t.statusAvailable, color: "var(--success, #22c55e)" },
     missing_deps: { label: t.statusMissingDeps, color: "var(--warning, #f59e0b)" },
@@ -32,7 +33,8 @@ function useStatusBadge() {
 }
 
 export default function SkillsPanel() {
-  const { currentAgentId, showNotice, skillsRefreshTrigger, t } = useApp();
+  const { currentAgentId, showNotice, skillsRefreshTrigger } = useApp();
+  const { t } = useUi();
   const [skills, setSkills] = useState<SkillDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");

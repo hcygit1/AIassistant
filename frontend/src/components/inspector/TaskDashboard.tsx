@@ -6,7 +6,7 @@ import {
   CheckCircle2, AlertCircle, Loader2, Timer, Bell, Zap,
 } from "lucide-react";
 import { API_BASE } from "@/lib/api";
-import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import type { Messages } from "@/lib/i18n/locales";
 
 interface TaskItem {
@@ -64,7 +64,7 @@ function formatDuration(ms: number | null): string {
 }
 
 export default function TaskDashboard({ agentId }: { agentId: string }) {
-  const { t, locale } = useApp();
+  const { t, locale } = useUi();
   const STATUS_CONFIG = getStatusConfig(t);
   const KIND_CONFIG = getKindConfig(t);
   const [tasks, setTasks] = useState<TaskItem[]>([]);

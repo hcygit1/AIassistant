@@ -33,6 +33,19 @@ test("keeps locale, theme and modal state outside AppProvider", () => {
   expect(uiState).toContain("showMemoryModal");
 });
 
+test("exposes UI state through a dedicated context", () => {
+  const contextPath = "src/lib/uiContext.tsx";
+  expect(existsSync(contextPath)).toBe(true);
+  if (!existsSync(contextPath)) return;
+
+  const context = readFileSync(contextPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+
+  expect(context).toContain("UiProvider");
+  expect(context).toContain("useUi");
+  expect(store).not.toContain("useAppUiState()");
+});
+
 test("keeps toast notifications clear of the workspace rail", () => {
   const styles = readFileSync("src/app/globals.css", "utf8");
 

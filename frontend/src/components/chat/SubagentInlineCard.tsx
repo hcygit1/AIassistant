@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import { deriveSubagentViews } from "@/lib/subagentState";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -131,7 +132,7 @@ function formatAnnounceState(state: string): string {
 }
 
 function InlineMessage({ msg }: { msg: SubagentMessage }) {
-  const { t } = useApp();
+  const { t } = useUi();
   const isUser = msg.role === "user";
   const isAssistant = msg.role === "assistant";
   const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;

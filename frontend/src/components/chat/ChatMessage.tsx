@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { User, Copy, Check, Loader2, Info } from "lucide-react";
 import type { ChatMessage as ChatMsgType } from "@/lib/store";
-import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import ThoughtChain from "./ThoughtChain";
 import SubagentInlineCard from "./SubagentInlineCard";
 import PIPIXIAMark from "@/components/icons/PipixiaMark";
@@ -17,7 +17,7 @@ interface Props {
 }
 
 export default function ChatMessage({ message, hideAvatar, isLast }: Props) {
-  const { t } = useApp();
+  const { t } = useUi();
   const [copied, setCopied] = useState(false);
   const isUser = message.role === "user";
   const isSystem = message.role === "system";

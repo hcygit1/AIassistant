@@ -2,14 +2,14 @@
 
 import { useState } from "react";
 import { ChevronRight, Search } from "lucide-react";
-import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 
 interface Props {
   results: any[];
 }
 
 export default function RetrievalCard({ results }: Props) {
-  const { t } = useApp();
+  const { t } = useUi();
   const [expanded, setExpanded] = useState(false);
 
   if (results.length === 0) return null;

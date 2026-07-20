@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import { Clock, Zap, AlertCircle, CheckCircle } from "lucide-react";
 
 const EVENT_ICONS: Record<string, typeof Clock> = {
@@ -31,7 +32,8 @@ function getEventLabels(t: any): Record<string, string> {
 }
 
 export default function EventTimeline() {
-  const { lifecycleEvents, t } = useApp();
+  const { lifecycleEvents } = useApp();
+  const { t } = useUi();
   const [filter, setFilter] = useState<"all" | "memory" | "error">("all");
   const EVENT_LABELS = getEventLabels(t);
 

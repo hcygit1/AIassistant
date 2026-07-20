@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useApp } from "@/lib/store";
+import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import {
   ChevronDown, Sun, Moon, Monitor,
@@ -13,10 +14,9 @@ import PIPIXIAMark from "@/components/icons/PipixiaMark";
 export default function Navbar() {
   const {
     agents, currentAgentId, switchAgent,
-    theme, setTheme,
     isStreaming, runningSubagents,
-    locale, setLocale, t,
   } = useApp();
+  const { theme, setTheme, locale, setLocale, t } = useUi();
 
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [showThemeMenu, setShowThemeMenu] = useState(false);

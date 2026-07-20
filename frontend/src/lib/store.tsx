@@ -6,7 +6,7 @@ import type { TokenUsage } from "./api";
 import { useChat } from "./hooks/useChat";
 import { useSubagents } from "./hooks/useSubagents";
 import { useInspectorState } from "./hooks/useInspectorState";
-import { useAppUiState } from "./hooks/useAppUiState";
+import { UiProvider, useUi } from "./uiContext";
 import type { UiNotice } from "./hooks/useAppUiState";
 import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
 import type { Locale, Messages } from "./i18n/locales";
@@ -89,7 +89,7 @@ interface AppState {
 
 const AppContext = createContext<AppState | null>(null);
 
-export function AppProvider({ children }: { children: React.ReactNode }) {
+function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [agents, setAgents] = useState<any[]>([]);
   const [currentAgentId, setCurrentAgentId] = useState("main");
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -115,7 +115,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     uiNotice,
     showNotice,
     clearNotice,
-  } = useAppUiState();
+  } = useUi();
   const {
     inspectorWidth,
     setInspectorWidth,
@@ -354,6 +354,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+}
+
+export function AppProvider({ children }: { children: React.ReactNode }) {
+  return (
+    <UiProvider>
+      <AppStateProvider>{children}</AppStateProvider>
+    </UiProvider>
+  );
 }
 
 export function useApp(): AppState {
