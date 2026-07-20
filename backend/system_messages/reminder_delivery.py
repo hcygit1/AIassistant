@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from sessions.session_dispatcher import PRIORITY_CRON
 
@@ -59,6 +59,10 @@ class ReminderDeliveryService:
         text: str,
         session_id: str | None = None,
         run_id: str | None = None,
+        on_record_created: Callable[[Any], Any] | None = None,
+        on_success: Callable[[], Any] | None = None,
+        on_failure: Callable[[], Any] | None = None,
+        on_cancel: Callable[[], Any] | None = None,
     ) -> int:
         target_session_id = session_id or self.session_manager.resolve_main_session_id(
             agent_id
@@ -70,6 +74,10 @@ class ReminderDeliveryService:
             agent_id=agent_id,
             session_id=target_session_id,
             run_id=run_id,
+            on_record_created=on_record_created,
+            on_success=on_success,
+            on_failure=on_failure,
+            on_cancel=on_cancel,
             recover_on_restart=True,
         )
 

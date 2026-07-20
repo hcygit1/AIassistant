@@ -42,6 +42,7 @@ class CronJob:
     last_run_status: str | None = None  # ok | error | skipped
     schedule_revision: int = 0
     active_run_token: str | None = None
+    active_run_work_id: str | None = None
     active_run_due_at_ms: int | None = None
     active_run_schedule_revision: int | None = None
 
@@ -69,6 +70,7 @@ class CronJob:
             "lastRunStatus": self.last_run_status,
             "scheduleRevision": self.schedule_revision,
             "activeRunToken": self.active_run_token,
+            "activeRunWorkId": self.active_run_work_id,
             "activeRunDueAtMs": self.active_run_due_at_ms,
             "activeRunScheduleRevision": self.active_run_schedule_revision,
         }
@@ -108,6 +110,7 @@ class CronJob:
             last_run_status=d.get("lastRunStatus"),
             schedule_revision=int(d.get("scheduleRevision", 0) or 0),
             active_run_token=d.get("activeRunToken"),
+            active_run_work_id=d.get("activeRunWorkId"),
             active_run_due_at_ms=d.get("activeRunDueAtMs"),
             active_run_schedule_revision=d.get(
                 "activeRunScheduleRevision"

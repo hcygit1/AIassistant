@@ -20,6 +20,30 @@ from scheduler.cron_types import CronJob, CronStore
 
 
 class CronStoreTests(unittest.TestCase):
+    def test_active_work_claim_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "jobs.json"
+            save_cron_store(
+                CronStore(
+                    jobs=[
+                        CronJob(
+                            id="cron-active",
+                            name="active",
+                            active_run_token="token-1",
+                            active_run_work_id="work-1",
+                        )
+                    ]
+                ),
+                path,
+            )
+
+            restored = load_cron_store(path)
+
+        self.assertEqual(
+            restored.jobs[0].active_run_work_id,
+            "work-1",
+        )
+
     def test_failed_save_preserves_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "jobs.json"

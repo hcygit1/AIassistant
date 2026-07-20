@@ -27,8 +27,19 @@ from sessions.session_work_store import (
 )
 
 INTERRUPTED_WORK_ERROR = "interrupted by process restart"
+STALE_RECOVERABLE_WORK_ERROR = "stale recoverable work claim"
 
 logger = logging.getLogger(__name__)
+
+
+def _default_recovery_callback_resolver(
+    record: SessionWorkRecord,
+) -> dict[str, Any] | None:
+    if record.kind != "cron" or not record.run_id:
+        return {}
+    from scheduler.cron_service import cron_service
+
+    return cron_service.recovery_callbacks(record.run_id, record.id)
 
 
 class SessionWorkDelivery:
@@ -38,7 +49,18 @@ class SessionWorkDelivery:
         work_store: SessionWorkStore | None = None,
         dispatcher_manager: DispatcherManager | None = None,
         lock_manager: SessionLockManager | None = None,
+        recovery_callback_resolver: (
+            Callable[
+                [SessionWorkRecord],
+                dict[str, Any] | None,
+            ] | None
+        ) = None,
     ) -> None:
+        uses_default_runtime = (
+            work_store is None
+            and dispatcher_manager is None
+            and lock_manager is None
+        )
         if work_store is not None:
             resolved_work_store = work_store
         elif dispatcher_manager is not None:
@@ -62,6 +84,14 @@ class SessionWorkDelivery:
         self._lock_manager = (
             lock_manager if lock_manager is not None else session_lock_manager
         )
+        if recovery_callback_resolver is not None:
+            self._recovery_callback_resolver = recovery_callback_resolver
+        elif uses_default_runtime:
+            self._recovery_callback_resolver = (
+                _default_recovery_callback_resolver
+            )
+        else:
+            self._recovery_callback_resolver = lambda _record: {}
 
     @property
     def work_store(self) -> SessionWorkStore:
@@ -182,7 +212,21 @@ class SessionWorkDelivery:
             record.started_at_ms = None
             record.finished_at_ms = None
             record.last_error = None
-            self._submit_record(record)
+            callbacks = self._recovery_callback_resolver(record)
+            if callbacks is None:
+                self.work_store.mark_failed(
+                    record.id,
+                    STALE_RECOVERABLE_WORK_ERROR,
+                )
+                continue
+            self._submit_record(
+                record,
+                result_handler=callbacks.get("result_handler"),
+                on_success=callbacks.get("on_success"),
+                on_failure=callbacks.get("on_failure"),
+                on_failure_async=callbacks.get("on_failure_async"),
+                on_cancel=callbacks.get("on_cancel"),
+            )
             recovered += 1
         return recovered
 

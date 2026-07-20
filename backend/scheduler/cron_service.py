@@ -375,6 +375,7 @@ class CronService:
                     f"Job {job_id} is already being triggered",
                 )
             job.active_run_token = token
+            job.active_run_work_id = None
             job.active_run_due_at_ms = None
             job.active_run_schedule_revision = job.schedule_revision
             job.last_run_at_ms = now_ms
@@ -383,7 +384,11 @@ class CronService:
             self._save(store, path)
 
         try:
-            position = self._deliver_job(claimed)
+            position = self._deliver_job(
+                claimed,
+                token,
+                attempted_at_ms=now_ms,
+            )
         except Exception as exc:
             self._finalize_claim(
                 claimed.id,
@@ -394,11 +399,6 @@ class CronService:
                 "delivery_failed",
                 f"Failed to trigger {job_id}: {exc}",
             ) from exc
-        self._finalize_claim(
-            claimed.id,
-            token,
-            status="ok",
-        )
         return RunReceipt(claimed.id, position)
 
     def wake(self, *, agent_id: str, text: str) -> RunReceipt:
@@ -443,6 +443,7 @@ class CronService:
                     )
                     stale_due_at_ms = job.active_run_due_at_ms
                     job.active_run_token = None
+                    job.active_run_work_id = None
                     job.active_run_due_at_ms = None
                     job.active_run_schedule_revision = None
                     job.last_run_status = "error"
@@ -467,6 +468,7 @@ class CronService:
                 token = uuid.uuid4().hex
                 due_at_ms = job.next_run_at_ms
                 job.active_run_token = token
+                job.active_run_work_id = None
                 job.active_run_due_at_ms = due_at_ms
                 job.active_run_schedule_revision = (
                     job.schedule_revision
@@ -486,7 +488,11 @@ class CronService:
 
         for claimed, token in claims:
             try:
-                self._deliver_job(claimed)
+                self._deliver_job(
+                    claimed,
+                    token,
+                    attempted_at_ms=current_ms,
+                )
             except Exception:
                 failed += 1
                 self._finalize_claim(
@@ -497,12 +503,6 @@ class CronService:
                 )
             else:
                 fired += 1
-                self._finalize_claim(
-                    claimed.id,
-                    token,
-                    status="ok",
-                    attempted_at_ms=current_ms,
-                )
 
         with self._transaction() as (store, _):
             next_wake = current_ms + 60_000
@@ -524,11 +524,11 @@ class CronService:
         *,
         status: str,
         attempted_at_ms: int | None = None,
-    ) -> None:
+    ) -> bool:
         with self._transaction() as (store, path):
             job = self._find(store, job_id, agent_id=None)
             if job is None or job.active_run_token != token:
-                return
+                return False
             due_at_ms = job.active_run_due_at_ms
             schedule_unchanged = (
                 job.active_run_schedule_revision is None
@@ -536,6 +536,7 @@ class CronService:
                 == job.schedule_revision
             )
             job.active_run_token = None
+            job.active_run_work_id = None
             job.active_run_due_at_ms = None
             job.active_run_schedule_revision = None
             job.last_run_status = status
@@ -559,6 +560,7 @@ class CronService:
                         + self.RETRY_DELAY_MS
                     )
             self._save(store, path)
+            return True
 
     def _build_schedule(
         self,
@@ -639,11 +641,130 @@ class CronService:
             )
         return CronPayload(kind="systemEvent", text=text)
 
-    def _deliver_job(self, job: CronJob) -> int:
+    def _bind_claim_work(
+        self,
+        job_id: str,
+        token: str,
+        work_id: str,
+    ) -> bool:
+        normalized_work_id = (work_id or "").strip()
+        if not normalized_work_id:
+            return False
+        with self._transaction() as (store, path):
+            job = self._find(store, job_id, agent_id=None)
+            if job is None or job.active_run_token != token:
+                return False
+            job.active_run_work_id = normalized_work_id
+            self._save(store, path)
+            return True
+
+    def _claim_callbacks(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        attempted_at_ms: int | None,
+    ) -> dict[str, Callable[..., Any]]:
+        return {
+            "on_success": lambda: self._finalize_claim(
+                job_id,
+                token,
+                status="ok",
+                attempted_at_ms=attempted_at_ms,
+            ),
+            "on_failure": lambda: self._finalize_claim(
+                job_id,
+                token,
+                status="error",
+                attempted_at_ms=attempted_at_ms,
+            ),
+            "on_cancel": lambda: self._finalize_claim(
+                job_id,
+                token,
+                status="error",
+                attempted_at_ms=attempted_at_ms,
+            ),
+        }
+
+    def recovery_callbacks(
+        self,
+        job_id: str,
+        work_id: str,
+    ) -> dict[str, Callable[..., Any]] | None:
+        normalized_work_id = (work_id or "").strip()
+        if not normalized_work_id:
+            return None
+        with self._transaction() as (store, path):
+            job = self._find(store, job_id, agent_id=None)
+            if job is None or not job.active_run_token:
+                return {}
+            if job.active_run_work_id not in (
+                None,
+                normalized_work_id,
+            ):
+                return None
+            if job.active_run_work_id is None:
+                job.active_run_work_id = normalized_work_id
+                self._save(store, path)
+            token = job.active_run_token
+            attempted_at_ms = job.last_run_at_ms
+        return self._claim_callbacks(
+            job_id,
+            token,
+            attempted_at_ms=attempted_at_ms,
+        )
+
+    def reconcile_active_work(
+        self,
+        get_work: Callable[[str], Any],
+    ) -> int:
+        reconciled = 0
+        for job in self.list_jobs():
+            token = job.active_run_token
+            work_id = job.active_run_work_id
+            if not token or not work_id:
+                continue
+            record = get_work(work_id)
+            if record is None:
+                continue
+            work_status = str(getattr(record, "status", "") or "")
+            if work_status == "done":
+                status = "ok"
+            elif work_status in ("failed", "cancelled"):
+                status = "error"
+            else:
+                continue
+            if self._finalize_claim(
+                job.id,
+                token,
+                status=status,
+                attempted_at_ms=job.last_run_at_ms,
+            ):
+                reconciled += 1
+        return reconciled
+
+    def _deliver_job(
+        self,
+        job: CronJob,
+        token: str,
+        *,
+        attempted_at_ms: int | None,
+    ) -> int:
+        callbacks = self._claim_callbacks(
+            job.id,
+            token,
+            attempted_at_ms=attempted_at_ms,
+        )
         return self._deliver(
             agent_id=job.agent_id or "main",
             text=job.payload.text,
             run_id=job.id,
+            on_record_created=lambda record: self._bind_claim_work(
+                job.id,
+                token,
+                getattr(record, "id", ""),
+            ),
+            **callbacks,
         )
 
     @staticmethod

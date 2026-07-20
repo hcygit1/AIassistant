@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -181,6 +182,65 @@ class SessionWorkDeliveryTests(unittest.TestCase):
         self.assertEqual(recovered, 1)
         self.assertEqual(len(dispatcher.submitted), 1)
         self.assertEqual(dispatcher.submitted[0].work_id, record.id)
+
+    def test_recovery_restores_callbacks_for_recoverable_work(self) -> None:
+        dispatcher = _FakeDispatcher()
+        on_success = Mock()
+        resolver = Mock(return_value={"on_success": on_success})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            record = store.create_record(
+                kind="cron",
+                agent_id="main",
+                session_id="main-main",
+                content="recover callbacks",
+                priority=2,
+                run_id="cron-recover",
+                recover_on_restart=True,
+            )
+            store.insert(record)
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                dispatcher_manager=_FakeDispatcherManager(dispatcher),
+                lock_manager=_FakeLockManager(),
+                recovery_callback_resolver=resolver,
+            )
+
+            recovered = delivery.recover_pending_work()
+
+        self.assertEqual(recovered, 1)
+        resolver.assert_called_once()
+        self.assertEqual(resolver.call_args.args[0].id, record.id)
+        self.assertIs(dispatcher.submitted[0].on_success, on_success)
+
+    def test_recovery_drops_work_rejected_by_callback_resolver(self) -> None:
+        dispatcher = _FakeDispatcher()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            record = store.create_record(
+                kind="cron",
+                agent_id="main",
+                session_id="main-main",
+                content="stale work",
+                priority=2,
+                run_id="cron-stale",
+                recover_on_restart=True,
+            )
+            store.insert(record)
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                dispatcher_manager=_FakeDispatcherManager(dispatcher),
+                lock_manager=_FakeLockManager(),
+                recovery_callback_resolver=lambda _record: None,
+            )
+
+            recovered = delivery.recover_pending_work()
+            current = store.get(record.id)
+
+        self.assertEqual(recovered, 0)
+        self.assertEqual(dispatcher.submitted, [])
+        self.assertEqual(current.status, "failed")
+        self.assertEqual(current.last_error, "stale recoverable work claim")
 
     def test_recovery_requeues_interrupted_running_record(self) -> None:
         dispatcher = _FakeDispatcher()

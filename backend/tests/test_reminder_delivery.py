@@ -118,11 +118,19 @@ class ReminderDeliveryServiceTests(unittest.TestCase):
             session_manager=session_manager,
             work_delivery=work_delivery,
         )
+        on_record_created = Mock()
+        on_success = Mock()
+        on_failure = Mock()
+        on_cancel = Mock()
 
         position = service.deliver_cron_reminder(
             agent_id="main",
             text="review queue",
             run_id="cron-injected",
+            on_record_created=on_record_created,
+            on_success=on_success,
+            on_failure=on_failure,
+            on_cancel=on_cancel,
         )
 
         self.assertEqual(position, 4)
@@ -132,6 +140,22 @@ class ReminderDeliveryServiceTests(unittest.TestCase):
         self.assertEqual(
             work_delivery.deliver.call_args.kwargs["session_id"],
             "main-main",
+        )
+        self.assertIs(
+            work_delivery.deliver.call_args.kwargs["on_record_created"],
+            on_record_created,
+        )
+        self.assertIs(
+            work_delivery.deliver.call_args.kwargs["on_success"],
+            on_success,
+        )
+        self.assertIs(
+            work_delivery.deliver.call_args.kwargs["on_failure"],
+            on_failure,
+        )
+        self.assertIs(
+            work_delivery.deliver.call_args.kwargs["on_cancel"],
+            on_cancel,
         )
 
 

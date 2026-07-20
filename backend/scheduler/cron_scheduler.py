@@ -17,6 +17,12 @@ from .cron_types import CronJob
 logger = logging.getLogger(__name__)
 
 
+def _default_get_work(work_id: str):
+    from sessions.session_work_store import session_work_store
+
+    return session_work_store.get(work_id)
+
+
 def _compute_next_run(
     job: CronJob,
     now_ms: int,
@@ -35,6 +41,7 @@ class CronScheduler:
         *,
         service: CronService | None = None,
         now_ms=None,
+        get_work=None,
     ):
         if service is not None:
             self._service = service
@@ -47,6 +54,7 @@ class CronScheduler:
         self._now_ms = now_ms or (
             lambda: int(time.time() * 1000)
         )
+        self._get_work = get_work or _default_get_work
         self._running = False
         self._task: asyncio.Task | None = None
 
@@ -54,6 +62,7 @@ class CronScheduler:
         """启动调度循环。"""
         if self._running:
             return
+        self._service.reconcile_active_work(self._get_work)
         self._running = True
         self._task = asyncio.create_task(self._loop())
         logger.info("Cron scheduler started")

@@ -121,6 +121,19 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(sleep_seconds, 5)
 
+    async def test_scheduler_reconciles_terminal_work_before_loop(self) -> None:
+        service = Mock()
+        get_work = Mock()
+        scheduler = CronScheduler(
+            service=service,
+            get_work=get_work,
+        )
+
+        await scheduler.start()
+        await scheduler.stop()
+
+        service.reconcile_active_work.assert_called_once_with(get_work)
+
     async def test_task_history_api_delegates_to_unified_service(self) -> None:
         service = Mock()
         service.query.return_value = SimpleNamespace(

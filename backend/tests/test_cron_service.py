@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -172,9 +173,97 @@ class CronServiceTests(unittest.TestCase):
             {item["run_id"] for item in self.deliveries},
             {recurring.id, one_time.id},
         )
+        current = self.service.get_job(one_time.id)
+        self.assertEqual(current.last_run_status, "running")
+        one_time_delivery = next(
+            item
+            for item in self.deliveries
+            if item["run_id"] == one_time.id
+        )
+        one_time_delivery["on_success"]()
         self.assertIsNone(
             self.service.find_job(one_time.id)
         )
+
+    def test_execution_failure_retries_one_time_job_after_queueing(self) -> None:
+        job = self.service.create_job(
+            name="one time failure",
+            agent_id="main",
+            schedule={
+                "kind": "at",
+                "at": "1970-01-01T00:16:41+00:00",
+            },
+            payload={"kind": "systemEvent", "text": "retry me"},
+        )
+
+        result = self.service.process_due_jobs(now_ms=1_001_000)
+        self.deliveries[0]["on_failure"]()
+
+        current = self.service.get_job(job.id)
+        self.assertEqual(result.fired, 1)
+        self.assertEqual(current.last_run_status, "error")
+        self.assertEqual(current.next_run_at_ms, 1_061_000)
+
+    def test_recovered_work_finalizes_only_its_bound_claim(self) -> None:
+        def deliver(**kwargs):
+            kwargs["on_record_created"](
+                SimpleNamespace(id="work-1")
+            )
+            self.deliveries.append(kwargs)
+            return 1
+
+        self.service._deliver = deliver
+        job = self.service.create_job(
+            name="recoverable one time",
+            agent_id="main",
+            delete_after_run=True,
+            schedule={
+                "kind": "at",
+                "at": "1970-01-01T00:16:41+00:00",
+            },
+            payload={"kind": "systemEvent", "text": "recover me"},
+        )
+
+        self.service.process_due_jobs(now_ms=1_001_000)
+
+        current = self.service.get_job(job.id)
+        self.assertEqual(current.active_run_work_id, "work-1")
+        self.assertIsNone(
+            self.service.recovery_callbacks(job.id, "stale-work"),
+        )
+        callbacks = self.service.recovery_callbacks(job.id, "work-1")
+        callbacks["on_success"]()
+        self.assertIsNone(self.service.find_job(job.id))
+
+    def test_reconcile_finalizes_terminal_bound_work_after_restart(self) -> None:
+        def deliver(**kwargs):
+            kwargs["on_record_created"](
+                SimpleNamespace(id="work-done")
+            )
+            return 1
+
+        self.service._deliver = deliver
+        job = self.service.create_job(
+            name="reconcile one time",
+            agent_id="main",
+            delete_after_run=True,
+            schedule={
+                "kind": "at",
+                "at": "1970-01-01T00:16:41+00:00",
+            },
+            payload={"kind": "systemEvent", "text": "done"},
+        )
+        self.service.process_due_jobs(now_ms=1_001_000)
+
+        reconciled = self.service.reconcile_active_work(
+            lambda work_id: SimpleNamespace(
+                id=work_id,
+                status="done",
+            )
+        )
+
+        self.assertEqual(reconciled, 1)
+        self.assertIsNone(self.service.find_job(job.id))
 
     def test_disabled_service_allows_reads_but_rejects_mutations(self) -> None:
         self._create_job("main", "existing")
