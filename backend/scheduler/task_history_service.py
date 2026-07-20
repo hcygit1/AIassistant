@@ -55,6 +55,8 @@ class TaskHistoryService:
         if task_store is None:
             from scheduler.task_store import task_store
         if work_store is None:
+            work_store = getattr(dispatcher_manager, "work_store", None)
+        if work_store is None:
             from sessions.session_work_store import session_work_store
 
             work_store = session_work_store

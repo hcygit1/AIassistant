@@ -20,7 +20,10 @@ from scheduler.task_store import (
     TaskStatus,
     TaskStore,
 )
+from sessions.session_dispatcher import DispatcherManager
+from sessions.session_dispatcher import dispatcher_manager
 from sessions.session_work_store import SessionWorkStore
+from sessions.session_work_store import session_work_store
 
 
 class _DispatcherManager:
@@ -40,9 +43,9 @@ class _DispatcherManager:
 class TaskHistoryServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        root = Path(self.tmp.name)
-        self.task_store = TaskStore(root / "tasks.db")
-        self.work_store = SessionWorkStore(root / "work.db")
+        self.root = Path(self.tmp.name)
+        self.task_store = TaskStore(self.root / "tasks.db")
+        self.work_store = SessionWorkStore(self.root / "work.db")
         self.dispatchers = _DispatcherManager()
         self.service = TaskHistoryService(
             task_store=self.task_store,
@@ -153,6 +156,43 @@ class TaskHistoryServiceTests(unittest.TestCase):
         with self.assertRaises(TaskHistoryError) as raised:
             self.service.cancel(running.id)
         self.assertEqual(raised.exception.code, "running")
+
+    def test_inherits_work_store_from_injected_dispatcher_manager(self) -> None:
+        inherited_store = SessionWorkStore(self.root / "inherited-work.db")
+        dispatcher_manager = DispatcherManager(work_store=inherited_store)
+        service = TaskHistoryService(
+            task_store=self.task_store,
+            dispatcher_manager=dispatcher_manager,
+        )
+        record = inherited_store.create_record(
+            kind="cron",
+            agent_id="main",
+            session_id="main-main",
+            content="inherited",
+            priority=2,
+        )
+        record.id = "inherited-work"
+        inherited_store.insert(record)
+
+        page = service.query(kind="cron")
+
+        self.assertEqual([item["id"] for item in page.items], [record.id])
+
+    def test_explicit_work_store_overrides_dispatcher_store(self) -> None:
+        dispatcher_store = SessionWorkStore(self.root / "dispatcher-work.db")
+        service = TaskHistoryService(
+            task_store=self.task_store,
+            work_store=self.work_store,
+            dispatcher_manager=DispatcherManager(work_store=dispatcher_store),
+        )
+
+        self.assertIs(service._work_store, self.work_store)
+
+    def test_default_runtime_keeps_global_store_and_dispatcher(self) -> None:
+        service = TaskHistoryService(task_store=self.task_store)
+
+        self.assertIs(service._work_store, session_work_store)
+        self.assertIs(service._dispatcher_manager, dispatcher_manager)
 
     def _insert_work(
         self,
