@@ -50,6 +50,7 @@ AGING_INTERVAL_SEC = 30.0
 MAX_AGING_BONUS = 3.0
 
 SystemStream = Callable[..., AsyncIterator[dict[str, Any]]]
+UserStream = Callable[..., AsyncIterator[TurnEvent]]
 
 
 def _default_system_stream(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
@@ -57,6 +58,23 @@ def _default_system_stream(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
     from runtime.agent import agent_manager
 
     return agent_manager.astream(**kwargs)
+
+
+def _default_user_stream(
+    message: str,
+    session_id: str,
+    agent_id: str,
+    turn_id: str,
+) -> AsyncIterator[TurnEvent]:
+    from runtime.user_turn_stream import iter_user_turn_events
+
+    return iter_user_turn_events(message, session_id, agent_id, turn_id)
+
+
+def _default_turn_coordinator() -> Any:
+    from turns.coordinator import user_turn_coordinator
+
+    return user_turn_coordinator
 
 
 @dataclass(order=False)
@@ -97,10 +115,18 @@ class SessionDispatcher:
         lock: asyncio.Lock,
         work_store: "SessionWorkStore | None" = None,
         system_stream: SystemStream | None = None,
+        user_stream: UserStream | None = None,
+        turn_coordinator: Any | None = None,
     ):
         self._lock = lock
         self._work_store = work_store
         self._system_stream = system_stream or _default_system_stream
+        self._user_stream = user_stream or _default_user_stream
+        self._turn_coordinator = (
+            turn_coordinator
+            if turn_coordinator is not None
+            else _default_turn_coordinator()
+        )
         self._queue: list[SessionWorkItem] = []
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -180,9 +206,6 @@ class SessionDispatcher:
             await self._execute_system(task)
 
     async def _execute_user(self, task: SessionWorkItem) -> None:
-        from runtime.user_turn_stream import iter_user_turn_events
-        from turns.coordinator import user_turn_coordinator
-
         if not task.turn_id or not task.stream_queue:
             logger.error("user task missing turn_id or stream_queue")
             return
@@ -193,17 +216,20 @@ class SessionDispatcher:
             await self._lock.acquire()
             lock_acquired = True
         except asyncio.CancelledError:
-            user_turn_coordinator.set_error(task.turn_id, "cancelled before lock")
+            self._turn_coordinator.set_error(
+                task.turn_id,
+                "cancelled before lock",
+            )
             await task.stream_queue.put(None)
             return
 
         self._current_executing_turn_id = task.turn_id
-        user_turn_coordinator.set_running(task.turn_id)
+        self._turn_coordinator.set_running(task.turn_id)
 
         async def _run_user_inner() -> tuple[str, str | None]:
             terminal_status = "done"
             terminal_error: str | None = None
-            async for event in iter_user_turn_events(
+            async for event in self._user_stream(
                 task.content,
                 task.session_id,
                 task.agent_id,
@@ -218,29 +244,29 @@ class SessionDispatcher:
             return terminal_status, terminal_error
 
         inner = asyncio.create_task(_run_user_inner())
-        user_turn_coordinator.bind_execution_task(task.turn_id, inner)
+        self._turn_coordinator.bind_execution_task(task.turn_id, inner)
 
         try:
             terminal_status, terminal_error = await inner
         except asyncio.CancelledError:
-            user_turn_coordinator.set_cancelled(task.turn_id)
+            self._turn_coordinator.set_cancelled(task.turn_id)
         except Exception as e:
             logger.error("User turn execution failed: %s", e)
             await task.stream_queue.put(TurnEvent.error(str(e)))
-            user_turn_coordinator.set_error(task.turn_id, str(e))
+            self._turn_coordinator.set_error(task.turn_id, str(e))
         else:
             if terminal_status == "error":
-                user_turn_coordinator.set_error(
+                self._turn_coordinator.set_error(
                     task.turn_id,
                     terminal_error or "user turn failed",
                 )
             elif terminal_status == "cancelled":
-                user_turn_coordinator.set_cancelled(task.turn_id)
+                self._turn_coordinator.set_cancelled(task.turn_id)
             else:
-                user_turn_coordinator.set_done(task.turn_id)
+                self._turn_coordinator.set_done(task.turn_id)
         finally:
             self._current_executing_turn_id = None
-            user_turn_coordinator.bind_execution_task(task.turn_id, None)
+            self._turn_coordinator.bind_execution_task(task.turn_id, None)
             try:
                 await task.stream_queue.put(None)
             except Exception:
@@ -356,10 +382,14 @@ class DispatcherManager:
         self,
         work_store: "SessionWorkStore | None" = None,
         system_stream: SystemStream | None = None,
+        user_stream: UserStream | None = None,
+        turn_coordinator: Any | None = None,
     ):
         self._dispatchers: dict[str, SessionDispatcher] = {}
         self._work_store = work_store
         self._system_stream = system_stream
+        self._user_stream = user_stream
+        self._turn_coordinator = turn_coordinator
 
     def get(self, agent_id: str, session_id: str, lock: asyncio.Lock) -> SessionDispatcher:
         key = f"{agent_id}:{session_id}"
@@ -368,6 +398,8 @@ class DispatcherManager:
                 lock=lock,
                 work_store=self._work_store,
                 system_stream=self._system_stream,
+                user_stream=self._user_stream,
+                turn_coordinator=self._turn_coordinator,
             )
             d.start()
             self._dispatchers[key] = d

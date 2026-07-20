@@ -6,7 +6,7 @@ import sys
 import unittest
 import weakref
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -278,6 +278,41 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         retained = user_turn_coordinator.get(runtime.turn_id)
         self.assertIsNotNone(retained)
         self.assertEqual(retained.status, "cancelled")
+
+    async def test_dispatcher_uses_injected_user_stream_and_coordinator(self) -> None:
+        observed: list[tuple[str, str, str, str]] = []
+        coordinator = Mock()
+        stream_queue: asyncio.Queue[TurnEvent | None] = asyncio.Queue()
+
+        async def injected_stream(message, session_id, agent_id, turn_id):
+            observed.append((message, session_id, agent_id, turn_id))
+            yield TurnEvent.from_payload({"type": "token", "content": "ok"})
+
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            user_stream=injected_stream,
+            turn_coordinator=coordinator,
+        )
+        task = SessionWorkItem(
+            kind="user",
+            priority=PRIORITY_USER,
+            content="injected user turn",
+            agent_id="main",
+            session_id="main-main",
+            turn_id="turn-injected",
+            stream_queue=stream_queue,
+        )
+
+        await dispatcher._execute_user(task)
+
+        self.assertEqual(
+            observed,
+            [("injected user turn", "main-main", "main", "turn-injected")],
+        )
+        self.assertTrue(coordinator.set_running.called)
+        coordinator.set_done.assert_called_once_with("turn-injected")
+        self.assertEqual((await stream_queue.get()).type, "token")
+        self.assertIsNone(await stream_queue.get())
 
 
 class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
