@@ -17,6 +17,7 @@ from sessions.session_repository import (
     SessionRepository,
 )
 from sessions.session_maintenance import SessionMaintenanceService
+from sessions.session_catalog import SessionCatalog
 from sessions.session_title import SessionTitleService
 
 logger = logging.getLogger(__name__)
@@ -37,9 +38,43 @@ class SessionManager:
             get_config=get_config,
         )
         self._title_service = title_service or SessionTitleService()
+        self._catalog = SessionCatalog(
+            repository=self._repository,
+            load_store=lambda agent_id: self._load_session_store(agent_id),
+            save_store=lambda agent_id, store: self._save_session_store(
+                agent_id,
+                store,
+            ),
+            load_session=lambda session_id, agent_id: self.load_session(
+                session_id,
+                agent_id,
+            ),
+            derive_title=lambda data, **kwargs: self.derive_session_title(
+                data,
+                **kwargs,
+            ),
+            resolve_main_session_id=self.resolve_main_session_id,
+            session_key_from_session_id=self.session_key_from_session_id,
+            resolve_requester=self._resolve_requester_for_child_session,
+            run_maintenance=lambda agent_id, **kwargs: self.run_maintenance(
+                agent_id,
+                **kwargs,
+            ),
+        )
 
     def _is_bootstrap_text(self, text: str | None) -> bool:
         return self._title_service.is_bootstrap_text(text)
+
+    @staticmethod
+    def _resolve_requester_for_child_session(
+        child_session_key: str,
+    ) -> tuple[str, str] | None:
+        try:
+            from subagents.subagent_registry import registry
+
+            return registry.resolve_requester_for_child_session(child_session_key)
+        except Exception:
+            return None
 
     def _get_store_lock(self, agent_id: str):
         return self._repository.get_agent_lock(agent_id)
@@ -163,14 +198,10 @@ class SessionManager:
         if data is not None:
             return data
         if not spawned_by and session_id.startswith("subagent-"):
-            try:
-                from subagents.subagent_registry import registry
-                child_sk = self.session_key_from_session_id(agent_id, session_id)
-                resolved = registry.resolve_requester_for_child_session(child_sk)
-                if resolved:
-                    spawned_by = resolved[0]
-            except Exception:
-                pass
+            child_sk = self.session_key_from_session_id(agent_id, session_id)
+            resolved = self._resolve_requester_for_child_session(child_sk)
+            if resolved:
+                spawned_by = resolved[0]
         data = {
             "session_id": session_id,
             "agent_id": agent_id,
@@ -254,12 +285,7 @@ class SessionManager:
         session_id: str,
         agent_id: str,
     ) -> dict[str, Any] | None:
-        session_key = self.session_key_from_session_id(
-            agent_id,
-            session_id,
-        )
-        entry = self._load_session_store(agent_id).get(session_key)
-        return dict(entry) if isinstance(entry, dict) else None
+        return self._catalog.get_entry(session_id, agent_id)
 
     def _update_session_store_entry(
         self,
@@ -271,35 +297,18 @@ class SessionManager:
         spawned_by: str | None = None,
     ) -> None:
         """更新 sessions.json 中的会话条目，并在 mode=enforce 时执行 maintenance"""
-        lock = self._get_store_lock(agent_id)
-        with lock:
-            store = self._load_session_store(agent_id)
-            entry = store.get(session_key, {})
-            entry["sessionId"] = session_id
-            entry["updatedAt"] = int(updated_at * 1000)
-            if label:
-                entry["label"] = label
-            elif "label" in entry:
-                entry.pop("label", None)
-            if "title" in entry:
-                entry.pop("title", None)
-            if spawned_by:
-                entry["spawnedBy"] = spawned_by
-            store[session_key] = entry
-            store, _ = self.run_maintenance(
-                agent_id,
-                store=store,
-                enforce=False,
-            )
-            self._save_session_store(agent_id, store)
+        self._catalog.update_entry(
+            agent_id,
+            session_key,
+            session_id,
+            updated_at,
+            label=label,
+            spawned_by=spawned_by,
+        )
 
     def _remove_session_store_entry(self, agent_id: str, session_key: str) -> None:
         """从 sessions.json 移除会话"""
-        lock = self._get_store_lock(agent_id)
-        with lock:
-            store = self._load_session_store(agent_id)
-            store.pop(session_key, None)
-            self._save_session_store(agent_id, store)
+        self._catalog.remove_entry(agent_id, session_key)
 
     def run_maintenance(
         self,
@@ -342,96 +351,10 @@ class SessionManager:
         agent_id: str,
         spawned_by_session_key: str | None = None,
     ) -> list[dict[str, Any]]:
-        """列出会话。优先从 sessions.json 索引读取并按 updatedAt 排序。
-        spawned_by_session_key: 仅返回该 requester 派生的子会话。"""
-        sessions_dir = self._repository.sessions_dir(agent_id)
-        store = self._load_session_store(agent_id)
-        main_sid = self.resolve_main_session_id(agent_id)
-        main_key = self.session_key_from_session_id(agent_id, main_sid)
-
-        # 确保主会话在 store 中
-        if main_key not in store:
-            main_data = self.load_session(main_sid, agent_id)
-            if main_data:
-                if isinstance(main_data, list):
-                    main_data = {"messages": main_data, "label": "未命名"}
-            else:
-                main_data = {"messages": [], "label": "主会话", "created_at": 0, "updated_at": 0}
-            self._update_session_store_entry(
-                agent_id, main_key, main_sid,
-                main_data.get("updated_at", time.time()),
-                label=main_data.get("label", "主会话"),
-            )
-            store[main_key] = {
-                "sessionId": main_sid,
-                "updatedAt": int((main_data.get("updated_at") or 0) * 1000),
-                "label": main_data.get("label", "主会话"),
-            }
-
-        # 扫描 subagent-*.json，补充 store 中缺失的
-        if sessions_dir.exists():
-            for fp in sessions_dir.glob("subagent-*.json"):
-                session_id = fp.stem
-                sk = self.session_key_from_session_id(agent_id, session_id)
-                if sk not in store:
-                    try:
-                        data = self.load_session(session_id, agent_id)
-                        if data is None:
-                            continue
-                        spawned_by = data.get("spawned_by")
-                        if not spawned_by:
-                            try:
-                                from subagents.subagent_registry import registry
-                                resolved = registry.resolve_requester_for_child_session(sk)
-                                if resolved:
-                                    spawned_by = resolved[0]
-                            except Exception:
-                                pass
-                        self._update_session_store_entry(
-                            agent_id, sk, session_id,
-                            data.get("updated_at", fp.stat().st_mtime),
-                            label=data.get("label", ""),
-                            spawned_by=spawned_by,
-                        )
-                        store[sk] = {
-                            "sessionId": session_id,
-                            "updatedAt": int((data.get("updated_at") or 0) * 1000),
-                            "label": data.get("label", ""),
-                            "spawnedBy": spawned_by,
-                        }
-                    except Exception:
-                        continue
-
-        result: list[dict[str, Any]] = []
-        for session_key, entry in store.items():
-            if spawned_by_session_key and entry.get("spawnedBy") != spawned_by_session_key:
-                continue
-            session_id = entry.get("sessionId", "")
-            data = self.load_session(session_id, agent_id)
-            if data is None and session_id != main_sid:
-                continue
-            if data:
-                if isinstance(data, list):
-                    data = {"messages": data, "label": "未命名"}
-            else:
-                data = {"messages": [], "label": "主会话", "created_at": 0, "updated_at": 0}
-            resolved_title = self.derive_session_title(
-                data,
-                session_id=session_id,
-                updated_at=data.get("updated_at"),
-            )
-            result.append({
-                "session_id": session_id,
-                "session_key": session_key,
-                "title": resolved_title,
-                "created_at": data.get("created_at"),
-                "updated_at": data.get("updated_at"),
-                "message_count": len(data.get("messages", [])),
-                "spawned_by": entry.get("spawnedBy"),
-            })
-
-        result.sort(key=lambda x: (x.get("updated_at") or 0), reverse=True)
-        return result
+        return self._catalog.list_sessions(
+            agent_id,
+            spawned_by_session_key=spawned_by_session_key,
+        )
 
     def create_session(self, agent_id: str, title: str = "新会话") -> str:
         session_id = uuid.uuid4().hex[:12]
