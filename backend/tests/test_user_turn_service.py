@@ -4,7 +4,8 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
@@ -14,7 +15,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from turns.coordinator import user_turn_coordinator
 from turns.events import TurnEvent
-from turns.service import user_turn_service
+from turns.service import UserTurnService, user_turn_service
 
 
 class _FakeLock:
@@ -40,6 +41,37 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
         user_turn_coordinator._runtimes.clear()
         user_turn_coordinator._session_to_turn.clear()
         user_turn_coordinator._terminal_turns.clear()
+
+    async def test_submit_uses_injected_turn_dependencies(self) -> None:
+        runtime = SimpleNamespace(
+            turn_id="turn-injected",
+            stream_queue=asyncio.Queue(),
+        )
+        coordinator = Mock()
+        coordinator.has_active_user_turn.return_value = False
+        coordinator.create_queued.return_value = runtime
+        lock = _FakeLock()
+        lock_manager = Mock()
+        lock_manager.get_lock.return_value = lock
+        dispatcher = _FakeDispatcher(position=2)
+        dispatcher_manager = Mock()
+        dispatcher_manager.get.return_value = dispatcher
+        service = UserTurnService(
+            coordinator=coordinator,
+            lock_manager=lock_manager,
+            dispatcher_manager=dispatcher_manager,
+        )
+
+        result = await service.submit(" hello ", "main", "main-main")
+
+        self.assertEqual(result["turn_id"], "turn-injected")
+        coordinator.create_queued.assert_called_once_with("main", "main-main")
+        lock_manager.get_lock.assert_called_once_with("main", "main-main")
+        dispatcher_manager.get.assert_called_once_with(
+            "main",
+            "main-main",
+            lock.lock,
+        )
 
     async def test_submit_creates_turn_and_enqueues_user_work_item(self) -> None:
         dispatcher = _FakeDispatcher(position=1)

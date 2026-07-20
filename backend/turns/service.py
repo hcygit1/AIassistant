@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from fastapi import HTTPException
 
@@ -10,28 +11,68 @@ from .events import TurnEvent
 class UserTurnService:
     """Application-facing orchestration layer for user turns."""
 
+    def __init__(
+        self,
+        *,
+        coordinator: Any | None = None,
+        lock_manager: Any | None = None,
+        dispatcher_manager: Any | None = None,
+    ) -> None:
+        self._coordinator = coordinator
+        self._lock_manager = lock_manager
+        self._dispatcher_manager = dispatcher_manager
+
+    @property
+    def coordinator(self) -> Any:
+        if self._coordinator is None:
+            from turns.coordinator import user_turn_coordinator
+
+            return user_turn_coordinator
+        return self._coordinator
+
+    @property
+    def lock_manager(self) -> Any:
+        if self._lock_manager is None:
+            from sessions.session_lock_manager import session_lock_manager
+
+            return session_lock_manager
+        return self._lock_manager
+
+    @property
+    def dispatcher_manager(self) -> Any:
+        if self._dispatcher_manager is None:
+            from sessions.session_dispatcher import dispatcher_manager
+
+            return dispatcher_manager
+        return self._dispatcher_manager
+
+    def _get_dispatcher(self, agent_id: str, session_id: str) -> Any:
+        session_lock = self.lock_manager.get_lock(agent_id, session_id)
+        return self.dispatcher_manager.get(
+            agent_id,
+            session_id,
+            session_lock.lock,
+        )
+
     async def submit(self, message: str, agent_id: str, session_id: str) -> dict:
-        from sessions.session_lock_manager import session_lock_manager
-        from sessions.session_dispatcher import PRIORITY_USER, SessionWorkItem, dispatcher_manager
-        from turns.coordinator import user_turn_coordinator
+        from sessions.session_dispatcher import PRIORITY_USER, SessionWorkItem
 
         cleaned = (message or "").strip()
         if not cleaned:
             raise HTTPException(status_code=400, detail="message is required")
 
-        if user_turn_coordinator.has_active_user_turn(agent_id, session_id):
+        if self.coordinator.has_active_user_turn(agent_id, session_id):
             raise HTTPException(
                 status_code=409,
                 detail="A user turn is already queued or running for this session",
             )
 
         try:
-            runtime = user_turn_coordinator.create_queued(agent_id, session_id)
+            runtime = self.coordinator.create_queued(agent_id, session_id)
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
 
-        session_lock = session_lock_manager.get_lock(agent_id, session_id)
-        dispatcher = dispatcher_manager.get(agent_id, session_id, session_lock.lock)
+        dispatcher = self._get_dispatcher(agent_id, session_id)
         task = SessionWorkItem(
             kind="user",
             priority=PRIORITY_USER,
@@ -53,25 +94,15 @@ class UserTurnService:
         }
 
     async def status(self, turn_id: str) -> dict:
-        from turns.coordinator import user_turn_coordinator
-
-        runtime = user_turn_coordinator.get(turn_id)
+        runtime = self.coordinator.get(turn_id)
         if not runtime:
             raise HTTPException(status_code=404, detail="unknown turn_id")
 
         position = 0
         if runtime.status == "queued":
-            from sessions.session_lock_manager import session_lock_manager
-            from sessions.session_dispatcher import dispatcher_manager
-
-            session_lock = session_lock_manager.get_lock(
+            dispatcher = self._get_dispatcher(
                 runtime.agent_id,
                 runtime.session_id,
-            )
-            dispatcher = dispatcher_manager.get(
-                runtime.agent_id,
-                runtime.session_id,
-                session_lock.lock,
             )
             pos = dispatcher.turn_queue_position(turn_id)
             position = pos if pos is not None else 0
@@ -86,16 +117,11 @@ class UserTurnService:
         }
 
     async def pending(self, agent_id: str, session_id: str) -> dict:
-        from sessions.session_lock_manager import session_lock_manager
-        from sessions.session_dispatcher import dispatcher_manager
-        from turns.coordinator import user_turn_coordinator
-
-        runtime = user_turn_coordinator.get_pending_for_session(agent_id, session_id)
+        runtime = self.coordinator.get_pending_for_session(agent_id, session_id)
         if not runtime:
             return {"turn_id": None, "status": None, "session_id": session_id}
 
-        session_lock = session_lock_manager.get_lock(agent_id, session_id)
-        dispatcher = dispatcher_manager.get(agent_id, session_id, session_lock.lock)
+        dispatcher = self._get_dispatcher(agent_id, session_id)
         position = 0
         if runtime.status == "queued":
             pos = dispatcher.turn_queue_position(runtime.turn_id)
@@ -109,9 +135,7 @@ class UserTurnService:
         }
 
     async def stream(self, turn_id: str) -> AsyncGenerator[TurnEvent, None]:
-        from turns.coordinator import user_turn_coordinator
-
-        runtime = user_turn_coordinator.get(turn_id)
+        runtime = self.coordinator.get(turn_id)
         if not runtime:
             yield TurnEvent.error("unknown turn_id")
             return
@@ -136,17 +160,18 @@ class UserTurnService:
         turn_id: str = "",
         user_initiated: bool = True,
     ) -> dict:
-        from turns.coordinator import user_turn_coordinator
-
         if (turn_id or "").strip():
-            current = user_turn_coordinator.current_turn_id_for_session(agent_id, session_id)
+            current = self.coordinator.current_turn_id_for_session(
+                agent_id,
+                session_id,
+            )
             if current and current != turn_id.strip():
                 raise HTTPException(
                     status_code=409,
                     detail="turn_id does not match active session turn",
                 )
 
-        aborted = user_turn_coordinator.abort_turn(
+        aborted = self.coordinator.abort_turn(
             agent_id,
             session_id,
             turn_id=turn_id,
