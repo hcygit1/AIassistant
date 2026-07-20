@@ -1,12 +1,10 @@
 "use client";
 
-import React, { createContext, useContext, useCallback } from "react";
-import type { TokenUsage } from "./api";
-import { useChat } from "./hooks/useChat";
+import React, { createContext, useContext, useCallback, useMemo } from "react";
 import { useAppWorkspace } from "./hooks/useAppWorkspace";
-import { useLifecycleNotices } from "./hooks/useLifecycleNotices";
-import { useSubagents } from "./hooks/useSubagents";
+import type { useSubagents } from "./hooks/useSubagents";
 import { ApprovalProvider, useApproval } from "./approvalContext";
+import { ChatProvider } from "./chatContext";
 import { UiProvider, useUi } from "./uiContext";
 import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
 
@@ -21,16 +19,6 @@ interface AppState {
   currentAgentId: string;
   currentSessionId: string | null;
   currentModel: any | null;
-
-  // Chat (from useChat)
-  messages: ReturnType<typeof useChat>["messages"];
-  isStreaming: boolean;
-  lifecycleEvents: ReturnType<typeof useChat>["lifecycleEvents"];
-  lastUsage: TokenUsage | null;
-  contextUtilization: number | null;
-  sessionError: string | null;
-  sendMessage: (text: string) => Promise<void>;
-  stopStreaming: () => void;
 
   // Config
   ragMode: boolean;
@@ -68,7 +56,7 @@ interface AppState {
 const AppContext = createContext<AppState | null>(null);
 
 function AppStateProvider({ children }: { children: React.ReactNode }) {
-  const { t, showNotice } = useUi();
+  const { t } = useUi();
   const { setPendingApproval } = useApproval();
   const formatCommandResponse = useCallback(
     (raw: string) => formatLocalizedCommandResponse(raw, t),
@@ -111,22 +99,11 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     triggerSkillsRefresh,
   } = workspace;
 
-  useLifecycleNotices(chat.lifecycleEvents, showNotice);
-
-  const value: AppState = {
+  const value = useMemo<AppState>(() => ({
     agents,
     currentAgentId,
     currentSessionId,
     currentModel,
-
-    messages: chat.messages,
-    isStreaming: chat.isStreaming,
-    lifecycleEvents: chat.lifecycleEvents,
-    lastUsage: chat.lastUsage,
-    contextUtilization: chat.contextUtilization,
-    sessionError: chat.sessionError,
-    sendMessage: chat.sendMessage,
-    stopStreaming: chat.stopStreaming,
 
     ragMode,
     setRagMode,
@@ -155,9 +132,42 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     loadMainSession,
     skillsRefreshTrigger,
     triggerSkillsRefresh,
-  };
+  }), [
+    agents,
+    currentAgentId,
+    currentSessionId,
+    currentModel,
+    ragMode,
+    setRagMode,
+    inspectorWidth,
+    setInspectorWidth,
+    isCompactLayout,
+    inspectorPanelMode,
+    setInspectorPanelMode,
+    inspectorTab,
+    setInspectorTab,
+    inspectorFile,
+    inspectorFileLoading,
+    openFile,
+    saveInspectorFile,
+    subagentTree,
+    subagents,
+    runningSubagents,
+    subagentTraceMap,
+    subagentsLoading,
+    refreshSubagents,
+    loadAgents,
+    switchAgent,
+    loadMainSession,
+    skillsRefreshTrigger,
+    triggerSkillsRefresh,
+  ]);
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      <ChatProvider chat={chat}>{children}</ChatProvider>
+    </AppContext.Provider>
+  );
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useApp } from "@/lib/store";
+import { useChatState } from "@/lib/chatContext";
 import { useUi } from "@/lib/uiContext";
 import * as api from "@/lib/api";
 import {
@@ -14,8 +15,9 @@ import PIPIXIAMark from "@/components/icons/PipixiaMark";
 export default function Navbar() {
   const {
     agents, currentAgentId, switchAgent,
-    isStreaming, runningSubagents,
+    runningSubagents,
   } = useApp();
+  const { isStreaming } = useChatState();
   const { theme, setTheme, locale, setLocale, t } = useUi();
 
   const [showAgentMenu, setShowAgentMenu] = useState(false);

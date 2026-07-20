@@ -125,13 +125,63 @@ test("keeps lifecycle notice side effects outside AppStateProvider", () => {
 
   const hook = readFileSync(hookPath, "utf8");
   const store = readFileSync("src/lib/store.tsx", "utf8");
+  const chatContext = readFileSync("src/lib/chatContext.tsx", "utf8");
 
-  expect(store).toContain("useLifecycleNotices(");
+  expect(store).not.toContain("useLifecycleNotices(");
   expect(store).not.toContain("lastLifecycleNoticeKeyRef");
   expect(store).not.toContain('last.event === "session_memory_saved"');
   expect(store).not.toContain('last.event === "session_memory_failed"');
   expect(hook).toContain("session_memory_saved");
   expect(hook).toContain("session_memory_failed");
+  expect(chatContext).toContain("useLifecycleNotices(");
+});
+
+test("isolates Chat state in a dedicated context broadcast domain", () => {
+  const contextPath = "src/lib/chatContext.tsx";
+  expect(existsSync(contextPath)).toBe(true);
+  if (!existsSync(contextPath)) return;
+
+  const context = readFileSync(contextPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+  const chatFields = [
+    "messages",
+    "isStreaming",
+    "lifecycleEvents",
+    "lastUsage",
+    "contextUtilization",
+    "sessionError",
+    "sendMessage",
+    "stopStreaming",
+  ];
+  const interfaceStart = store.indexOf("interface AppState {");
+  const interfaceEnd = store.indexOf("\n}\n\nconst AppContext", interfaceStart);
+  const valueStart = store.indexOf("const value = useMemo<AppState>");
+  const providerStart = store.indexOf("<AppContext.Provider");
+  const appState = store.slice(interfaceStart, interfaceEnd);
+
+  expect(context).toContain("ChatProvider");
+  expect(context).toContain("useChatState");
+  expect(context).toContain("useMemo<ChatState>");
+  expect(context).toContain("useLifecycleNotices(");
+  expect(store).toContain("<ChatProvider chat={chat}>");
+  expect(valueStart).toBeGreaterThanOrEqual(0);
+  expect(providerStart).toBeGreaterThan(valueStart);
+  for (const field of chatFields) {
+    expect(appState, `${field} should not be in AppState`).not.toMatch(
+      new RegExp(`\\b${field}\\b`),
+    );
+  }
+
+  const chatConsumers = [
+    "src/app/page.tsx",
+    "src/components/chat/ChatInput.tsx",
+    "src/components/chat/ChatPanel.tsx",
+    "src/components/inspector/EventTimeline.tsx",
+    "src/components/layout/Navbar.tsx",
+  ];
+  for (const file of chatConsumers) {
+    expect(readFileSync(file, "utf8"), file).toContain("useChatState()");
+  }
 });
 
 test("keeps UI-only fields out of useApp consumers", () => {
@@ -177,8 +227,8 @@ test("keeps UI and i18n fields out of the AppContext contract", () => {
   const store = readFileSync("src/lib/store.tsx", "utf8");
   const interfaceStart = store.indexOf("interface AppState {");
   const interfaceEnd = store.indexOf("\n}\n\nconst AppContext", interfaceStart);
-  const valueStart = store.indexOf("const value: AppState = {");
-  const valueEnd = store.indexOf("\n  };", valueStart);
+  const valueStart = store.indexOf("const value = useMemo<AppState>");
+  const valueEnd = store.indexOf("\n  }), [", valueStart);
   const appState = store.slice(interfaceStart, interfaceEnd);
   const appValue = store.slice(valueStart, valueEnd);
   const uiFields = [

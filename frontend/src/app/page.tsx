@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import * as api from "@/lib/api";
 import { useApp } from "@/lib/store";
+import { useChatState } from "@/lib/chatContext";
 import { useUi } from "@/lib/uiContext";
 import Navbar from "@/components/layout/Navbar";
 import ChatPanel from "@/components/chat/ChatPanel";
@@ -21,8 +22,8 @@ export default function HomePage() {
     setInspectorWidth,
     isCompactLayout,
     inspectorPanelMode,
-    sessionError,
   } = useApp();
+  const { sessionError } = useChatState();
   const { uiNotice, clearNotice, setShowConfigModal } = useUi();
   const initCheckedRef = useRef(false);
 

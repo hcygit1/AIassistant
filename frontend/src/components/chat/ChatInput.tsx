@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useMemo } from "react";
 import { useApp } from "@/lib/store";
+import { useChatState } from "@/lib/chatContext";
 import { useUi } from "@/lib/uiContext";
 import { StopCircle, ArrowUp, ChevronDown, Sparkles } from "lucide-react";
 
@@ -51,14 +52,14 @@ function ContextMiniRing({ utilization }: { utilization: number | null }) {
 }
 
 export default function ChatInput() {
+  const { currentModel } = useApp();
   const {
     sendMessage,
     isStreaming,
     stopStreaming,
-    currentModel,
     lastUsage,
     contextUtilization,
-  } = useApp();
+  } = useChatState();
   const { setShowConfigModal, t } = useUi();
   const [text, setText] = useState("");
   const [showCommands, setShowCommands] = useState(false);
