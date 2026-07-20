@@ -157,6 +157,44 @@ test("keeps UI-only fields out of useApp consumers", () => {
   }
 });
 
+test("keeps UI and i18n fields out of the AppContext contract", () => {
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+  const interfaceStart = store.indexOf("interface AppState {");
+  const interfaceEnd = store.indexOf("\n}\n\nconst AppContext", interfaceStart);
+  const valueStart = store.indexOf("const value: AppState = {");
+  const valueEnd = store.indexOf("\n  };", valueStart);
+  const appState = store.slice(interfaceStart, interfaceEnd);
+  const appValue = store.slice(valueStart, valueEnd);
+  const uiFields = [
+    "showConfigModal",
+    "setShowConfigModal",
+    "showMemoryModal",
+    "setShowMemoryModal",
+    "theme",
+    "effectiveTheme",
+    "setTheme",
+    "uiNotice",
+    "showNotice",
+    "clearNotice",
+    "locale",
+    "setLocale",
+    "t",
+  ];
+
+  expect(interfaceStart).toBeGreaterThanOrEqual(0);
+  expect(interfaceEnd).toBeGreaterThan(interfaceStart);
+  expect(valueStart).toBeGreaterThanOrEqual(0);
+  expect(valueEnd).toBeGreaterThan(valueStart);
+  for (const field of uiFields) {
+    expect(appState, `${field} should not be in AppState`).not.toMatch(
+      new RegExp(`\\b${field}\\b`),
+    );
+    expect(appValue, `${field} should not be in AppContext value`).not.toMatch(
+      new RegExp(`\\b${field}\\b`),
+    );
+  }
+});
+
 test("keeps toast notifications clear of the workspace rail", () => {
   const styles = readFileSync("src/app/globals.css", "utf8");
 

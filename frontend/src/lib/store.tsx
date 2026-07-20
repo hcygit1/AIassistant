@@ -7,9 +7,7 @@ import { useAppWorkspace } from "./hooks/useAppWorkspace";
 import { useSubagents } from "./hooks/useSubagents";
 import { ApprovalProvider, useApproval } from "./approvalContext";
 import { UiProvider, useUi } from "./uiContext";
-import type { UiNotice } from "./hooks/useAppUiState";
 import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
-import type { Locale, Messages } from "./i18n/locales";
 
 export type { ChatMessage, LifecycleEvent } from "./hooks/useChat";
 export type { ThemeMode, EffectiveTheme } from "./hooks/useTheme";
@@ -58,23 +56,6 @@ interface AppState {
   subagentsLoading: boolean;
   refreshSubagents: () => Promise<void>;
 
-  // UI
-  showConfigModal: boolean;
-  setShowConfigModal: (v: boolean) => void;
-  showMemoryModal: boolean;
-  setShowMemoryModal: (v: boolean) => void;
-  theme: "system" | "light" | "dark";
-  effectiveTheme: "light" | "dark";
-  setTheme: (mode: "system" | "light" | "dark") => void;
-  uiNotice: UiNotice | null;
-  showNotice: (notice: UiNotice) => void;
-  clearNotice: () => void;
-
-  // i18n
-  locale: Locale;
-  setLocale: (locale: Locale) => void;
-  t: Messages;
-
   // Actions
   loadAgents: () => Promise<void>;
   switchAgent: (agentId: string) => Promise<void>;
@@ -88,21 +69,7 @@ const AppContext = createContext<AppState | null>(null);
 function AppStateProvider({ children }: { children: React.ReactNode }) {
   const lastLifecycleNoticeKeyRef = useRef("");
 
-  const {
-    locale,
-    setLocale,
-    t,
-    theme,
-    effectiveTheme,
-    setTheme,
-    showConfigModal,
-    setShowConfigModal,
-    showMemoryModal,
-    setShowMemoryModal,
-    uiNotice,
-    showNotice,
-    clearNotice,
-  } = useUi();
+  const { t, showNotice } = useUi();
   const { setPendingApproval } = useApproval();
   const formatCommandResponse = useCallback(
     (raw: string) => formatLocalizedCommandResponse(raw, t),
@@ -201,21 +168,6 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     subagentTraceMap,
     subagentsLoading,
     refreshSubagents,
-
-    showConfigModal,
-    setShowConfigModal,
-    showMemoryModal,
-    setShowMemoryModal,
-    theme,
-    effectiveTheme,
-    setTheme,
-    uiNotice,
-    showNotice,
-    clearNotice,
-
-    locale,
-    setLocale,
-    t,
 
     loadAgents,
     switchAgent,
