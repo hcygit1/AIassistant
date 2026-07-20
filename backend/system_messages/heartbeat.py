@@ -307,14 +307,9 @@ class HeartbeatRunner:
                     event_bus.emit(agent_id, Events.heartbeat_message(session_id=session_id, agent_id=agent_id))
                 audit_logger.log(agent_id, "heartbeat_response", {"response": response[:500]})
 
-        self.work_delivery.deliver(
-            kind="heartbeat",
-            priority=PRIORITY_HEARTBEAT,
-            content=full_prompt,
-            agent_id=agent_id,
-            session_id=session_id,
-            result_handler=_handle_heartbeat_result,
-            on_failure=lambda: (
+        async def _handle_heartbeat_failure(error: Exception) -> None:
+            error_text = str(error) or "heartbeat execution failed"
+            if isinstance(error, asyncio.TimeoutError):
                 emit_heartbeat_event(
                     agent_id,
                     HeartbeatEvent(
@@ -324,9 +319,37 @@ class HeartbeatRunner:
                         duration_ms=int((time.time() - started) * 1000),
                         agent_id=agent_id,
                     ),
+                )
+                audit_logger.log(
+                    agent_id,
+                    "heartbeat_skipped",
+                    {"reason": "session-busy"},
+                )
+                return
+            emit_heartbeat_event(
+                agent_id,
+                HeartbeatEvent(
+                    ts=int(time.time() * 1000),
+                    status="failed",
+                    reason=error_text,
+                    duration_ms=int((time.time() - started) * 1000),
+                    agent_id=agent_id,
                 ),
-                audit_logger.log(agent_id, "heartbeat_skipped", {"reason": "session-busy"}),
-            ),
+            )
+            audit_logger.log(
+                agent_id,
+                "heartbeat_failed",
+                {"error": error_text},
+            )
+
+        self.work_delivery.deliver(
+            kind="heartbeat",
+            priority=PRIORITY_HEARTBEAT,
+            content=full_prompt,
+            agent_id=agent_id,
+            session_id=session_id,
+            result_handler=_handle_heartbeat_result,
+            on_failure_async=_handle_heartbeat_failure,
         )
 
     @property

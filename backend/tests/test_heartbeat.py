@@ -75,6 +75,45 @@ class HeartbeatRunnerTests(unittest.IsolatedAsyncioTestCase):
             "main-main",
         )
 
+    async def test_execution_failure_is_recorded_as_failed(self) -> None:
+        session_manager = Mock()
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        work_delivery = Mock()
+        runner = HeartbeatRunner(
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+        )
+
+        with (
+            patch(
+                "system_messages.heartbeat.get_heartbeat_config",
+                return_value={"enabled": True, "prompt": "check status"},
+            ),
+            patch(
+                "system_messages.heartbeat.resolve_agent_workspace",
+                return_value=Path("/missing-workspace"),
+            ),
+            patch(
+                "system_messages.heartbeat.is_within_active_hours",
+                return_value=True,
+            ),
+            patch(
+                "config.resolve_agent_config",
+                return_value={"user_timezone": "UTC"},
+            ),
+            patch("system_messages.heartbeat.emit_heartbeat_event") as emit,
+            patch("system_messages.heartbeat.audit_logger.log") as audit,
+        ):
+            await runner._run_heartbeat("main")
+            await work_delivery.deliver.call_args.kwargs["on_failure_async"](
+                RuntimeError("model failed")
+            )
+
+        event = emit.call_args.args[1]
+        self.assertEqual(event.status, "failed")
+        self.assertEqual(event.reason, "model failed")
+        audit.assert_called_with("main", "heartbeat_failed", {"error": "model failed"})
+
 
 if __name__ == "__main__":
     unittest.main()
