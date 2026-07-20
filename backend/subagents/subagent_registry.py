@@ -7,12 +7,8 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal
 
-from infra.state_machine import (
-    SUBAGENT_ANNOUNCE_TRANSITIONS,
-    SUBAGENT_RUN_TRANSITIONS,
-    transition,
-)
 from subagents.subagent_relationships import SubagentRelationshipService
+from subagents.subagent_run_state import SubagentRunStateService
 from subagents.subagent_run_store import SubagentRunStore
 
 logger = logging.getLogger(__name__)
@@ -68,6 +64,10 @@ def _resolve_archive_after_ms() -> float | None:
 class SubagentRegistry:
     def __init__(self, store: SubagentRunStore | None = None):
         self._store = store or SubagentRunStore()
+        self._state = SubagentRunStateService(
+            store=self._store,
+            persist=lambda: self._persist_to_disk(),
+        )
         self._relationships = SubagentRelationshipService(self.list_runs)
         self._restore_from_disk()
 
@@ -154,18 +154,7 @@ class SubagentRegistry:
         return False
 
     def mark_started(self, run_id: str) -> None:
-        with self._store.locked_records() as runs:
-            r = runs.get(run_id)
-            if not r or r.ended_at is not None:
-                return
-            r.started_at = time.time()
-            transition(
-                r,
-                "state",
-                "running",
-                table=SUBAGENT_RUN_TRANSITIONS,
-            )
-        self._persist_to_disk()
+        self._state.mark_started(run_id)
 
     def mark_completed(
         self,
@@ -174,51 +163,15 @@ class SubagentRegistry:
         outcome: str = "completed",
         terminal_reason: str | None = None,
     ) -> None:
-        with self._store.locked_records() as runs:
-            r = runs.get(run_id)
-            if not r or r.ended_at is not None:
-                return
-            r.ended_at = time.time()
-            r.outcome = outcome
-            r.result_summary = result_summary[:1000]
-            transition(r, "state", "succeeded", table=SUBAGENT_RUN_TRANSITIONS)
-            r.terminal_reason = terminal_reason
-            transition(r, "result_delivery_state", "pending", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
-        self._persist_to_disk()
+        self._state.mark_completed(
+            run_id,
+            result_summary=result_summary,
+            outcome=outcome,
+            terminal_reason=terminal_reason,
+        )
 
     def mark_terminated(self, run_id: str, reason: str = "killed") -> None:
-        with self._store.locked_records() as runs:
-            r = runs.get(run_id)
-            if not r or r.ended_at is not None:
-                return
-            self._mark_terminated_record(r, reason)
-        self._persist_to_disk()
-
-    @staticmethod
-    def _mark_terminated_record(
-        record: SubagentRunRecord,
-        reason: str,
-    ) -> None:
-        record.ended_at = time.time()
-        record.outcome = reason
-        lowered = (reason or "").lower()
-        if "timeout" in lowered:
-            new_state = "timed_out"
-        elif "killed" in lowered or "cancel" in lowered:
-            new_state = "cancelled"
-        elif "orphaned" in lowered:
-            new_state = "orphaned"
-        elif "restart-interrupted" in lowered:
-            new_state = "interrupted"
-        else:
-            new_state = "failed"
-        transition(
-            record,
-            "state",
-            new_state,
-            table=SUBAGENT_RUN_TRANSITIONS,
-        )
-        record.terminal_reason = reason
+        self._state.mark_terminated(run_id, reason)
 
     def kill(self, run_id: str, cascade: bool = True) -> bool:
         """终止 run，cascade=True 时递归终止其子 runs"""
@@ -250,7 +203,7 @@ class SubagentRegistry:
                         and child.ended_at is None
                     )
 
-                self._mark_terminated_record(record, "killed")
+                self._state.terminate_record(record, "killed")
                 if record.asyncio_task is not None:
                     tasks_to_cancel.append(record.asyncio_task)
 
@@ -322,58 +275,19 @@ class SubagentRegistry:
 
     def mark_announce_retry(self, run_id: str) -> bool:
         """标记 announce 重试，返回是否可继续重试（未超限且未过期）"""
-        with self._store.locked_records() as runs:
-            r = runs.get(run_id)
-            if not r:
-                return False
-            MAX_RETRY = 3
-            EXPIRE_MS = 5 * 60 * 1000
-            if r.announce_retry_count >= MAX_RETRY:
-                return False
-            if r.ended_at and (time.time() * 1000 - r.ended_at * 1000) > EXPIRE_MS:
-                return False
-            r.announce_retry_count = getattr(r, "announce_retry_count", 0) + 1
-            r.last_announce_retry_at = time.time()
-            transition(
-                r,
-                "result_delivery_state",
-                "retrying",
-                table=SUBAGENT_ANNOUNCE_TRANSITIONS,
-            )
-        self._persist_to_disk()
-        return True
+        return self._state.mark_announce_retry(run_id)
 
     def mark_result_delivery_delivered(self, run_id: str) -> None:
-        with self._store.locked_records() as runs:
-            r = runs.get(run_id)
-            if not r:
-                return
-            transition(r, "result_delivery_state", "delivered", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
-        self._persist_to_disk()
+        self._state.mark_result_delivery_delivered(run_id)
 
     def mark_result_delivery_dropped(self, run_id: str) -> None:
-        with self._store.locked_records() as runs:
-            r = runs.get(run_id)
-            if not r:
-                return
-            transition(r, "result_delivery_state", "dropped", table=SUBAGENT_ANNOUNCE_TRANSITIONS)
-        self._persist_to_disk()
+        self._state.mark_result_delivery_dropped(run_id)
 
     def set_result_delivery_state(self, run_id: str, new_state: str) -> None:
-        with self._store.locked_records() as runs:
-            r = runs.get(run_id)
-            if not r:
-                return
-            transition(r, "result_delivery_state", new_state, table=SUBAGENT_ANNOUNCE_TRANSITIONS)
-        self._persist_to_disk()
+        self._state.set_result_delivery_state(run_id, new_state)
 
     def set_delivery_work_id(self, run_id: str, work_id: str | None) -> None:
-        with self._store.locked_records() as runs:
-            r = runs.get(run_id)
-            if not r:
-                return
-            r.delivery_work_id = (work_id or "").strip() or None
-        self._persist_to_disk()
+        self._state.set_delivery_work_id(run_id, work_id)
 
     def get_requester_depth(self, requester_session_key: str) -> int:
         return self._relationships.get_requester_depth(requester_session_key)
@@ -480,8 +394,7 @@ class SubagentRegistry:
                     continue
                 if r.ended_at is None:
                     continue
-                transition(r, "state", "archived", table=SUBAGENT_RUN_TRANSITIONS)
-                r.ended_at = time.time()
+                self._state.mark_archived(r)
                 to_remove.append((rid, r))
             for rid, _ in to_remove:
                 runs.pop(rid, None)
