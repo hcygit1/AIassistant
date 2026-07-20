@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable
 from sessions.session_dispatcher import (
     DispatcherManager,
     SessionWorkItem,
-    dispatcher_manager,
+    dispatcher_manager as dispatcher_manager_global,
 )
 from sessions.session_lock_manager import (
     SessionLockManager,
@@ -36,30 +36,34 @@ class SessionWorkDelivery:
         dispatcher_manager: DispatcherManager | None = None,
         lock_manager: SessionLockManager | None = None,
     ) -> None:
-        self._work_store = work_store
+        resolved_work_store = (
+            work_store if work_store is not None else session_work_store
+        )
         if dispatcher_manager is not None:
-            self._dispatcher_manager = dispatcher_manager
+            resolved_dispatcher_manager = dispatcher_manager
         elif work_store is not None:
-            self._dispatcher_manager = DispatcherManager(work_store=work_store)
+            resolved_dispatcher_manager = DispatcherManager(
+                work_store=resolved_work_store,
+            )
         else:
-            self._dispatcher_manager = None
-        self._lock_manager = lock_manager
-
-    @property
-    def work_store(self) -> SessionWorkStore:
-        return self._work_store if self._work_store is not None else session_work_store
-
-    @property
-    def dispatcher_manager(self) -> DispatcherManager:
-        return (
-            self._dispatcher_manager
-            if self._dispatcher_manager is not None
-            else dispatcher_manager
+            resolved_dispatcher_manager = dispatcher_manager_global
+        self._work_store = resolved_work_store
+        self._dispatcher_manager = resolved_dispatcher_manager
+        self._lock_manager = (
+            lock_manager if lock_manager is not None else session_lock_manager
         )
 
     @property
+    def work_store(self) -> SessionWorkStore:
+        return self._work_store
+
+    @property
+    def dispatcher_manager(self) -> DispatcherManager:
+        return self._dispatcher_manager
+
+    @property
     def lock_manager(self) -> SessionLockManager:
-        return self._lock_manager if self._lock_manager is not None else session_lock_manager
+        return self._lock_manager
 
     def _submit_record(
         self,

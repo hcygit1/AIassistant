@@ -5,7 +5,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -101,13 +100,15 @@ class SessionWorkDeliveryTests(unittest.TestCase):
                 recover_on_restart=True,
             )
             store.insert(record)
+            dispatcher_manager = _FakeDispatcherManager(dispatcher)
+            lock_manager = _FakeLockManager()
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                dispatcher_manager=dispatcher_manager,
+                lock_manager=lock_manager,
+            )
 
-            with (
-                patch("sessions.session_work_delivery.session_work_store", store),
-                patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
-                patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
-            ):
-                recovered = self.delivery.recover_pending_work()
+            recovered = delivery.recover_pending_work()
 
         self.assertEqual(recovered, 1)
         self.assertEqual(len(dispatcher.submitted), 1)
@@ -128,24 +129,36 @@ class SessionWorkDeliveryTests(unittest.TestCase):
             record.status = "running"
             record.started_at_ms = 123
             store.insert(record)
+            dispatcher_manager = _FakeDispatcherManager(dispatcher)
+            lock_manager = _FakeLockManager()
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                dispatcher_manager=dispatcher_manager,
+                lock_manager=lock_manager,
+            )
 
-            with (
-                patch("sessions.session_work_delivery.session_work_store", store),
-                patch(
-                    "sessions.session_lock_manager.session_lock_manager.get_lock",
-                    return_value=_FakeLock(),
-                ),
-                patch(
-                    "sessions.session_dispatcher.dispatcher_manager.get",
-                    return_value=dispatcher,
-                ),
-            ):
-                recovered = self.delivery.recover_pending_work()
-                current = store.get(record.id)
+            recovered = delivery.recover_pending_work()
+            current = store.get(record.id)
 
         self.assertEqual(recovered, 1)
         self.assertEqual(current.status, "queued")
         self.assertIsNone(current.started_at_ms)
+
+    def test_constructor_resolves_defaults_once(self) -> None:
+        dispatcher = _FakeDispatcher()
+        dispatcher_manager = _FakeDispatcherManager(dispatcher)
+        lock_manager = _FakeLockManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            delivery = SessionWorkDelivery(
+                work_store=store,
+                dispatcher_manager=dispatcher_manager,
+                lock_manager=lock_manager,
+            )
+
+            self.assertIs(delivery.work_store, store)
+            self.assertIs(delivery.dispatcher_manager, dispatcher_manager)
+            self.assertIs(delivery.lock_manager, lock_manager)
 
     def test_store_fails_only_unrecoverable_pending_work_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
