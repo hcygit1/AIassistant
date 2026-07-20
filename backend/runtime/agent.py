@@ -39,6 +39,7 @@ from llm.llm_factory import create_llm, llm_cache
 from llm.models_config import models_config
 from runtime.agent_state import AgentState
 from runtime.agent_state_runtime import AgentStateRuntime
+from runtime.agent_lifecycle import AgentLifecycle
 from runtime.memory_runtime import MemoryRuntime
 from runtime.model_runtime import ModelRuntime
 from runtime.session_commands import SessionCommands
@@ -96,6 +97,22 @@ from infra.event_bus import event_bus
 # ---------------------------------------------------------------------------
 
 class AgentManager:
+    @property
+    def data_dir(self) -> str:
+        return self._lifecycle.data_dir
+
+    @data_dir.setter
+    def data_dir(self, value: str) -> None:
+        self._lifecycle.data_dir = value
+
+    @property
+    def _initialized(self) -> bool:
+        return self._lifecycle.initialized
+
+    @_initialized.setter
+    def _initialized(self, value: bool) -> None:
+        self._lifecycle.initialized = value
+
     @property
     def _states(self) -> dict[str, AgentState]:
         return self._state_runtime.states
@@ -255,8 +272,6 @@ class AgentManager:
         return resolve_budget(agent_id)
 
     def __init__(self):
-        self.data_dir: str = ""
-        self._initialized = False
         self._state_runtime = AgentStateRuntime(
             resolve_persist_config=self._get_state_persist_config,
             resolve_state_path=self._get_state_path,
@@ -462,6 +477,16 @@ class AgentManager:
             pending_tasks=self._pending_tasks,
         )
         self._tool_name_cache = self._tool_registry.name_cache
+        self._lifecycle = AgentLifecycle(
+            state_runtime=self._state_runtime,
+            memory_runtime=self._memory_runtime,
+            model_runtime=self._model_runtime,
+            list_agents=list_agents,
+            ensure_workspace=self._ensure_agent_workspace,
+            prompt_cache=self._prompt_cache,
+            session_context_cache=self._session_context_cache,
+            tool_name_cache=self._tool_name_cache,
+        )
 
     def _get_state_persist_config(self, agent_id: str) -> tuple[bool, int]:
         """获取状态持久化配置 (enabled, interval_minutes)"""
@@ -490,19 +515,14 @@ class AgentManager:
     def _init_mem_system(self, agent_id: str) -> None:
         self._memory_runtime.initialize_agent(agent_id)
 
-    async def initialize(self, data_dir: str) -> None:
-        self.data_dir = data_dir
-
+    @staticmethod
+    def _ensure_agent_workspace(agent_id: str) -> None:
         from runtime.workspace import ensure_agent_workspace
 
-        for agent in list_agents():
-            agent_id = agent["id"]
-            ensure_agent_workspace(agent_id)
-            self._init_mem_system(agent_id)
+        ensure_agent_workspace(agent_id)
 
-            self._state_runtime.initialize_agent(agent_id)
-
-        self._initialized = True
+    async def initialize(self, data_dir: str) -> None:
+        await self._lifecycle.initialize(data_dir)
 
     def get_llm(self, agent_id: str = "main"):
         """获取指定 Agent 的 LLM 实例（per-agent 动态创建，按 Provider 配置路由）"""
@@ -546,43 +566,22 @@ class AgentManager:
 
     async def wait_for_pending_tasks(self, timeout: float = 30.0) -> None:
         """等待所有后台任务完成，用于应用关闭前确保数据不丢失"""
-        # 先保存所有 Agent 状态
-        try:
-            await self._save_all_states()
-        except Exception as e:
-            logger.error("关闭前保存 Agent 状态失败: %s", e)
-
-        await self._state_runtime.stop_periodic_saves()
-
-        if not self._pending_tasks:
-            return
-        logger.info(f"等待 {len(self._pending_tasks)} 个后台任务完成...")
-        # 创建所有任务的副本
-        pending = list(self._pending_tasks)
-        self._pending_tasks.clear()
-        try:
-            await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=timeout)
-            logger.info("所有后台任务已完成")
-        except asyncio.TimeoutError:
-            logger.warning(f"等待后台任务超时（{timeout}秒），部分任务可能未完成")
-        except Exception as e:
-            logger.error(f"等待后台任务时出错: {e}")
+        await self._lifecycle.wait_for_pending_tasks(
+            pending_tasks=self._pending_tasks,
+            timeout=timeout,
+            save_all_states=self._save_all_states,
+        )
 
     async def close(self, timeout: float = 30.0) -> None:
         """停止后台任务、关闭持久化资源，并将管理器恢复为未初始化状态。"""
-        self._initialized = False
         try:
-            await self.wait_for_pending_tasks(timeout=timeout)
+            await self._lifecycle.close(
+                pending_tasks=self._pending_tasks,
+                timeout=timeout,
+                save_all_states=self._save_all_states,
+            )
         finally:
-            self._memory_runtime.close()
-            self._model_runtime.clear()
-            self._state_runtime.clear()
-            self._pending_tasks.clear()
-            self._prompt_cache.clear()
-            self._session_context_cache.clear()
-            self._tool_name_cache.clear()
             self.lifecycle_hooks = None
-            self.data_dir = ""
 
     async def _save_all_states(self) -> None:
         """保存所有 Agent 状态到磁盘"""
