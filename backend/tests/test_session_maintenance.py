@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -131,6 +131,7 @@ class SessionMaintenanceServiceTests(unittest.TestCase):
                     }
                 },
             )
+            cleanup = Mock()
             service = SessionMaintenanceService(
                 repository=repository,
                 get_config=lambda: {
@@ -145,12 +146,10 @@ class SessionMaintenanceServiceTests(unittest.TestCase):
                     }
                 },
                 now_ms=lambda: 100_000_000,
+                cleanup_runtime=cleanup,
             )
 
-            with patch(
-                "sessions.session_lock_manager.cleanup_session_runtime"
-            ) as cleanup:
-                service.run("agent-1", enforce=True)
+            service.run("agent-1", enforce=True)
 
         cleanup.assert_called_once_with("agent-1", "subagent-old")
 

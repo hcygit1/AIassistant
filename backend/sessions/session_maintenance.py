@@ -13,6 +13,15 @@ from sessions.session_repository import SessionRepository
 logger = logging.getLogger(__name__)
 
 
+def _default_cleanup_runtime(agent_id: str, session_id: str) -> None:
+    try:
+        from sessions.session_lock_manager import cleanup_session_runtime
+
+        cleanup_session_runtime(agent_id, session_id)
+    except Exception as exc:
+        logger.warning("cleanup_session_runtime after session prune: %s", exc)
+
+
 class SessionMaintenanceService:
     def __init__(
         self,
@@ -20,10 +29,16 @@ class SessionMaintenanceService:
         repository: SessionRepository,
         get_config: Callable[[], dict[str, Any]],
         now_ms: Callable[[], int] | None = None,
+        cleanup_runtime: Callable[[str, str], None] | None = None,
     ) -> None:
         self._repository = repository
         self._get_config = get_config
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
+        self._cleanup_runtime = (
+            cleanup_runtime
+            if cleanup_runtime is not None
+            else _default_cleanup_runtime
+        )
 
     def run(
         self,
@@ -235,12 +250,3 @@ class SessionMaintenanceService:
         except OSError:
             self._repository.delete_session_file(session_id, agent_id)
         self._cleanup_runtime(agent_id, session_id)
-
-    @staticmethod
-    def _cleanup_runtime(agent_id: str, session_id: str) -> None:
-        try:
-            from sessions.session_lock_manager import cleanup_session_runtime
-
-            cleanup_session_runtime(agent_id, session_id)
-        except Exception as exc:
-            logger.warning("cleanup_session_runtime after session prune: %s", exc)

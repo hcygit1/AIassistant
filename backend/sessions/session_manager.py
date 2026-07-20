@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Callable
 
 from config import get_config, resolve_agent_sessions_dir
 from sessions.session_repository import (
@@ -25,6 +25,7 @@ class SessionManager:
         repository: SessionRepository | None = None,
         maintenance: SessionMaintenanceService | None = None,
         title_service: SessionTitleService | None = None,
+        cleanup_runtime: Callable[[str, str], None] | None = None,
     ) -> None:
         self._repository = repository or SessionRepository(
             resolve_sessions_dir=resolve_agent_sessions_dir
@@ -32,6 +33,7 @@ class SessionManager:
         self._maintenance = maintenance or SessionMaintenanceService(
             repository=self._repository,
             get_config=get_config,
+            cleanup_runtime=cleanup_runtime,
         )
         self._title_service = title_service or SessionTitleService()
         self._history_archive = SessionHistoryArchive(
@@ -103,6 +105,7 @@ class SessionManager:
                 session_id,
                 agent_id,
             ),
+            cleanup_runtime=cleanup_runtime,
         )
 
     def _is_bootstrap_text(self, text: str | None) -> bool:

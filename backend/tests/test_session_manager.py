@@ -7,8 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -20,6 +19,23 @@ from sessions.session_repository import SessionRepository
 
 
 class SessionManagerPersistenceTests(unittest.TestCase):
+    def test_manager_wires_cleanup_runtime_to_session_services(self) -> None:
+        cleanup_runtime = Mock()
+
+        manager = SessionManager(
+            repository=Mock(),
+            cleanup_runtime=cleanup_runtime,
+        )
+
+        self.assertIs(
+            manager._maintenance._cleanup_runtime,
+            cleanup_runtime,
+        )
+        self.assertIs(
+            manager._lifecycle._cleanup_runtime,
+            cleanup_runtime,
+        )
+
     def test_list_sessions_scans_injected_repository_directory(self) -> None:
         with (
             tempfile.TemporaryDirectory() as repo_tmp,
