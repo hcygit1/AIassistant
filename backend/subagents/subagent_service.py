@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from sessions.session_identity import session_key_from_session_id
 from subagents.subagent_registry import (
     SubagentCapacityError,
     SubagentRunRecord,
@@ -126,9 +127,9 @@ class SubagentService:
         child_session_id = (
             f"subagent-{self._id_factory()}"
         )
-        child_session_key = (
-            f"agent:{target_agent_id}:subagent:"
-            f"{child_session_id}"
+        child_session_key = session_key_from_session_id(
+            target_agent_id,
+            child_session_id,
         )
         run_id = self._id_factory()
         try:

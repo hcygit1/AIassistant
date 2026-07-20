@@ -6,6 +6,8 @@ import asyncio
 import time
 from typing import Any
 
+from sessions.session_identity import session_key_from_session_id
+
 
 class SubagentRunner:
     _FAILURE_HINTS = (
@@ -157,8 +159,9 @@ class SubagentRunner:
 
         result_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
-        child_session_key = (
-            f"agent:{agent_id}:subagent:{session_id}"
+        child_session_key = session_key_from_session_id(
+            agent_id,
+            session_id,
         )
         started_at: float | None = None
 

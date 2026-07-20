@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sessions.session_identity import session_key_from_session_id
 from sessions.session_work_policy import deliver_system_work
 
 from subagents.subagent_registry import SubagentRunRecord
@@ -241,7 +242,10 @@ class SubagentAnnounceDelivery:
 
         self._state.queued(req_agent, run_id)
 
-        parent_child_key = f"agent:{req_agent}:subagent:{req_session}"
+        parent_child_key = session_key_from_session_id(
+            req_agent,
+            req_session,
+        )
 
         async def _sub_session_announce_result(parent_reply: str) -> None:
             grandparent = self.registry.resolve_requester_for_child_session(

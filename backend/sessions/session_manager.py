@@ -14,6 +14,11 @@ from sessions.session_repository import (
 from sessions.session_maintenance import SessionMaintenanceService
 from sessions.session_catalog import SessionCatalog
 from sessions.session_history_archive import SessionHistoryArchive
+from sessions.session_identity import (
+    resolve_main_session_id as _resolve_main_session_id,
+    session_id_from_session_key as _session_id_from_session_key,
+    session_key_from_session_id as _session_key_from_session_id,
+)
 from sessions.session_lifecycle import SessionLifecycleService
 from sessions.session_manager_assembly import SessionManagerAssembler
 from sessions.session_message_writer import SessionMessageWriter
@@ -63,38 +68,9 @@ class SessionManager:
             with self._repository.get_session_lock(session_id, agent_id):
                 yield
 
-    # ------------------------------------------------------------------
-    # 主会话 — 每个 Agent 有且仅有一个主会话
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def resolve_main_session_id(agent_id: str) -> str:
-        """返回 Agent 的固定主会话 ID（用于文件命名）"""
-        return f"{agent_id}-main"
-
-    @staticmethod
-    def session_key_from_session_id(agent_id: str, session_id: str) -> str:
-        """session_id -> session_key（agent:agentId:main / agent:agentId:subagent:xxx）"""
-        main_sid = f"{agent_id}-main"
-        if session_id == main_sid:
-            return f"agent:{agent_id}:main"
-        return f"agent:{agent_id}:subagent:{session_id}"
-
-    @staticmethod
-    def session_id_from_session_key(session_key: str) -> tuple[str, str] | None:
-        """session_key -> (agent_id, session_id)。主会话 session_id=agent_id-main；子会话 session_id=subagent-xxx"""
-        parts = (session_key or "").strip().split(":")
-        if len(parts) < 3:
-            return None
-        if parts[0].lower() != "agent":
-            return None
-        agent_id = parts[1]
-        rest = ":".join(parts[2:])
-        if rest == "main":
-            return (agent_id, f"{agent_id}-main")
-        if len(parts) >= 4 and parts[2].lower() == "subagent":
-            return (agent_id, parts[3])  # session_id = subagent-xxx
-        return (agent_id, rest)
+    resolve_main_session_id = staticmethod(_resolve_main_session_id)
+    session_key_from_session_id = staticmethod(_session_key_from_session_id)
+    session_id_from_session_key = staticmethod(_session_id_from_session_key)
 
     # ------------------------------------------------------------------
     # 读取

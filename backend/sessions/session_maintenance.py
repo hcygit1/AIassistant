@@ -7,6 +7,7 @@ import re
 import time
 from typing import Any, Callable
 
+from sessions.session_identity import main_session_key
 from sessions.session_repository import SessionRepository
 
 
@@ -71,7 +72,7 @@ class SessionMaintenanceService:
                     "diskBudget": disk,
                 }
 
-            main_key = f"agent:{agent_id}:main"
+            main_key = main_session_key(agent_id)
             cutoff_ms = self._now_ms() - self._parse_duration_ms(
                 maintenance.get("pruneAfter", "30d")
             )
@@ -185,7 +186,7 @@ class SessionMaintenanceService:
             removed_files += archive_count
             freed += archive_freed
 
-            main_key = f"agent:{agent_id}:main"
+            main_key = main_session_key(agent_id)
             oldest = sorted(
                 (key for key in store if key != main_key),
                 key=lambda key: store[key].get("updatedAt") or 0,
