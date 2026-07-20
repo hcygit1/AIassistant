@@ -4,16 +4,16 @@ import { useCallback, useRef, useEffect, useReducer } from "react";
 import * as api from "../api";
 import type { SSEEvent } from "../api";
 import { createChatStreamEventHandler } from "../chatStreamEvents";
+import { submitChatTurn } from "../chatTurnSubmission";
 import { startPendingTurnRecovery } from "../chatTurnRecovery";
 import {
   chatStateReducer,
   clearAgentChatRuntime,
   createChatState,
   getAgentChatRuntime,
-  appendTurnMessages,
   selectAgentChatState,
 } from "../chatState";
-import { clear as clearQueuedMessages, dequeue, enqueue } from "../messageQueue";
+import { clear as clearQueuedMessages, dequeue } from "../messageQueue";
 import type {
   AgentChatState,
   ChatMessage,
@@ -196,113 +196,35 @@ export function useChat(
     knownSessionId: string | null,
     displayedMessageId?: string,
   ) => {
-    const normalized = text.trim();
-    if (!normalized) return;
-
     const runtime = getAgentChatRuntime(runtimeRegistryRef.current, agentId);
     const agentState = selectAgentChatState(chatState, agentId);
-    if (agentState.isStreaming || runtime.controller) {
-      const now = Date.now();
-      const messageId = displayedMessageId || `user-${now}`;
-      enqueue(agentId, normalized, messageId);
-      if (!displayedMessageId) {
-        setMessagesForAgent(agentId, (previous) => [...previous, {
-          id: messageId,
-          role: "user",
-          content: normalized,
-          createdAt: now,
-        }]);
-      }
-      return;
-    }
-
-    let sessionId = knownSessionId || runtime.sessionId;
-    if (!sessionId) {
-      try {
-        const session = await api.fetchMainSession(agentId);
-        sessionId = session.session_id;
-        if (agentId === currentAgentId) setCurrentSessionId(sessionId);
-        patchAgentState(agentId, { sessionError: null });
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : "Failed to fetch session";
-        patchAgentState(agentId, { sessionError: message });
-        return;
-      }
-    }
-    const resolvedSessionId = sessionId;
-    if (!resolvedSessionId) return;
-    runtime.sessionId = resolvedSessionId;
-
-    const now = Date.now();
-    const userMsg: ChatMessage = {
-      id: displayedMessageId || `user-${now}`,
-      role: "user",
-      content: normalized,
-      createdAt: now,
-    };
-    const assistantMsg: ChatMessage = {
-      id: `assistant-${now}`,
-      role: "assistant",
-      content: "",
-      createdAt: now,
-      toolCalls: [],
-      retrievals: [],
-      isStreaming: true,
-    };
-    const assistantMsgId = assistantMsg.id;
-    runtime.assistantMessageId = assistantMsgId;
-
-    setMessagesForAgent(agentId, (previous) => appendTurnMessages(
-      previous,
-      userMsg,
-      assistantMsg,
+    await submitChatTurn({
+      agentId,
+      text,
+      knownSessionId,
       displayedMessageId,
-    ));
-    patchAgentState(agentId, { isStreaming: true });
-
-    const controller = new AbortController();
-    runtime.controller = controller;
-    runtime.userStopped = false;
-
-    const streamState = { doneReceived: false, terminalErrorReceived: false };
-
-    const timeoutMs = await getTimeoutMs();
-
-    try {
-      const sub = await api.submitChat(normalized, resolvedSessionId, agentId);
-      runtime.turnId = sub.turn_id;
-      const shouldStream = await api.waitUntilTurnRunning(sub.turn_id, controller.signal);
-      if (!shouldStream) {
-        streamState.doneReceived = true;
-        await loadMessages(agentId, resolvedSessionId);
-      } else {
-        const onEvent = createStreamEventHandler(agentId, assistantMsgId, streamState);
-        await api.streamTurn(sub.turn_id, onEvent, { signal: controller.signal, timeoutMs });
-      }
-    } catch (error: unknown) {
-      const isAbort = error instanceof Error && error.name === "AbortError";
-      if (!isAbort) {
-        streamState.terminalErrorReceived = true;
-        streamState.doneReceived = true;
-        const message = error instanceof Error ? error.message : String(error);
-        const friendly = message.includes("timeout")
-          ? message
-          : `**Connection error:** ${message}`;
-        setMessagesForAgent(agentId, (previous) => {
-          const targetId = runtime.assistantMessageId || assistantMsgId;
-          const idx = previous.findIndex((item) => item.id === targetId);
-          const last = idx >= 0 ? previous[idx] : null;
-          if (idx >= 0 && last?.role === "assistant") {
-            const updated = previous.slice();
-            updated[idx] = { ...last, content: last.content + `\n\n${friendly}`, isStreaming: false };
-            return updated;
-          }
-          return previous;
-        });
-      }
-    } finally {
-      await finalizeStreamTurn(agentId, assistantMsgId, resolvedSessionId, streamState, true);
-    }
+      runtime,
+      isStreaming: agentState.isStreaming,
+      onSessionResolved: agentId === currentAgentId
+        ? setCurrentSessionId
+        : undefined,
+      updateMessages: (updater) => setMessagesForAgent(agentId, updater),
+      patchState: (patch) => patchAgentState(agentId, patch),
+      getTimeoutMs,
+      loadMessages,
+      createEventHandler: (assistantMessageId, streamState) => (
+        createStreamEventHandler(agentId, assistantMessageId, streamState)
+      ),
+      finalize: (assistantMessageId, sessionId, streamState) => (
+        finalizeStreamTurn(
+          agentId,
+          assistantMessageId,
+          sessionId,
+          streamState,
+          true,
+        )
+      ),
+    });
   }, [
     chatState,
     createStreamEventHandler,
