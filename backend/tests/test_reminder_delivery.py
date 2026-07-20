@@ -12,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from system_messages.reminder_delivery import ReminderDeliveryService
+from sessions.session_work_delivery import SessionWorkDelivery
 from sessions.session_work_store import SessionWorkStore
 
 
@@ -29,34 +30,54 @@ class _FakeDispatcher:
         return len(self.submitted)
 
 
+class _FakeDispatcherManager:
+    def __init__(self, dispatcher: _FakeDispatcher) -> None:
+        self._dispatcher = dispatcher
+
+    def get(self, agent_id: str, session_id: str, lock: asyncio.Lock):
+        return self._dispatcher
+
+
+class _FakeLockManager:
+    def __init__(self) -> None:
+        self._lock = _FakeLock()
+
+    def get_lock(self, agent_id: str, session_id: str) -> _FakeLock:
+        return self._lock
+
+
 class ReminderDeliveryServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
-        store = SessionWorkStore(Path(tempdir.name) / "session_work.db")
-        store_patch = patch(
-            "sessions.session_work_delivery.session_work_store",
-            store,
+        self.store = SessionWorkStore(Path(tempdir.name) / "session_work.db")
+
+    def _service(
+        self,
+        dispatcher: _FakeDispatcher,
+        session_manager: Mock,
+    ) -> ReminderDeliveryService:
+        work_delivery = SessionWorkDelivery(
+            work_store=self.store,
+            dispatcher_manager=_FakeDispatcherManager(dispatcher),
+            lock_manager=_FakeLockManager(),
         )
-        store_patch.start()
-        self.addCleanup(store_patch.stop)
-        self.service = ReminderDeliveryService()
+        return ReminderDeliveryService(
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+        )
 
     def test_deliver_cron_reminder_submits_cron_work_item_to_main_session(self) -> None:
         dispatcher = _FakeDispatcher()
         session_manager = Mock()
         session_manager.resolve_main_session_id.return_value = "main-main"
+        service = self._service(dispatcher, session_manager)
 
-        with (
-            patch("sessions.session_manager.session_manager", session_manager),
-            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
-            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
-        ):
-            position = self.service.deliver_cron_reminder(
-                agent_id="main",
-                text="remember to review docs",
-                run_id="cron-1",
-            )
+        position = service.deliver_cron_reminder(
+            agent_id="main",
+            text="remember to review docs",
+            run_id="cron-1",
+        )
 
         self.assertEqual(position, 1)
         self.assertEqual(len(dispatcher.submitted), 1)
@@ -70,18 +91,14 @@ class ReminderDeliveryServiceTests(unittest.TestCase):
     def test_deliver_cron_reminder_respects_explicit_session_id(self) -> None:
         dispatcher = _FakeDispatcher()
         session_manager = Mock()
+        service = self._service(dispatcher, session_manager)
 
-        with (
-            patch("sessions.session_manager.session_manager", session_manager),
-            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
-            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
-        ):
-            self.service.deliver_cron_reminder(
-                agent_id="main",
-                session_id="subagent-1",
-                text="ping child session",
-                run_id="cron-2",
-            )
+        service.deliver_cron_reminder(
+            agent_id="main",
+            session_id="subagent-1",
+            text="ping child session",
+            run_id="cron-2",
+        )
 
         session_manager.resolve_main_session_id.assert_not_called()
         work_item = dispatcher.submitted[0]
@@ -89,7 +106,7 @@ class ReminderDeliveryServiceTests(unittest.TestCase):
         self.assertIn("ping child session", work_item.content)
 
     def test_build_cron_prompt_handles_empty_text(self) -> None:
-        prompt = self.service.build_cron_prompt("")
+        prompt = ReminderDeliveryService().build_cron_prompt("")
         self.assertIn("no reminder content", prompt.lower())
 
     def test_deliver_cron_reminder_uses_injected_dependencies(self) -> None:

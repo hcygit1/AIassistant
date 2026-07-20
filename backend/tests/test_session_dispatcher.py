@@ -316,6 +316,11 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatcher_resolves_default_work_store_at_construction(self) -> None:
+        dispatcher = SessionDispatcher(lock=asyncio.Lock())
+
+        self.assertIsNotNone(dispatcher._work_store)
+
     async def test_dispatcher_uses_injected_system_stream(self) -> None:
         work_store = _RecordingWorkStore()
         observed: list[tuple[str, str, str]] = []

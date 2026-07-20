@@ -77,6 +77,12 @@ def _default_turn_coordinator() -> Any:
     return user_turn_coordinator
 
 
+def _default_work_store() -> "SessionWorkStore":
+    from sessions.session_work_store import session_work_store
+
+    return session_work_store
+
+
 @dataclass(order=False)
 class SessionWorkItem:
     """会话正式工作项。
@@ -119,7 +125,9 @@ class SessionDispatcher:
         turn_coordinator: Any | None = None,
     ):
         self._lock = lock
-        self._work_store = work_store
+        self._work_store = (
+            work_store if work_store is not None else _default_work_store()
+        )
         self._system_stream = system_stream or _default_system_stream
         self._user_stream = user_stream or _default_user_stream
         self._turn_coordinator = (
@@ -279,10 +287,6 @@ class SessionDispatcher:
 
     async def _execute_system(self, task: SessionWorkItem) -> None:
         work_store = self._work_store
-        if work_store is None:
-            from sessions.session_work_store import session_work_store
-
-            work_store = session_work_store
 
         timeout = ANNOUNCE_TIMEOUT_SEC if task.kind == "announce" else SYSTEM_TIMEOUT_SEC
         lock_acquired = False
@@ -386,7 +390,9 @@ class DispatcherManager:
         turn_coordinator: Any | None = None,
     ):
         self._dispatchers: dict[str, SessionDispatcher] = {}
-        self._work_store = work_store
+        self._work_store = (
+            work_store if work_store is not None else _default_work_store()
+        )
         self._system_stream = system_stream
         self._user_stream = user_stream
         self._turn_coordinator = turn_coordinator

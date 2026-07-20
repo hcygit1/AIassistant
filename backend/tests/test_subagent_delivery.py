@@ -13,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from subagents.subagent_delivery import SubagentAnnounceDelivery
 from subagents.subagent_registry import SubagentRunRecord
+from sessions.session_work_delivery import SessionWorkDelivery
 from sessions.session_work_store import SessionWorkStore
 
 
@@ -30,36 +31,52 @@ class _FakeDispatcher:
         return len(self.submitted)
 
 
+class _FakeDispatcherManager:
+    def __init__(self, dispatcher: _FakeDispatcher) -> None:
+        self._dispatcher = dispatcher
+
+    def get(self, agent_id: str, session_id: str, lock: asyncio.Lock):
+        return self._dispatcher
+
+
+class _FakeLockManager:
+    def __init__(self) -> None:
+        self._lock = _FakeLock()
+
+    def get_lock(self, agent_id: str, session_id: str) -> _FakeLock:
+        return self._lock
+
+
 class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
-        store = SessionWorkStore(Path(tempdir.name) / "session_work.db")
-        store_patch = patch(
-            "sessions.session_work_delivery.session_work_store",
-            store,
+        self.store = SessionWorkStore(Path(tempdir.name) / "session_work.db")
+
+    def _delivery(self, dispatcher: _FakeDispatcher) -> SubagentAnnounceDelivery:
+        work_delivery = SessionWorkDelivery(
+            work_store=self.store,
+            dispatcher_manager=_FakeDispatcherManager(dispatcher),
+            lock_manager=_FakeLockManager(),
         )
-        store_patch.start()
-        self.addCleanup(store_patch.stop)
-        self.delivery = SubagentAnnounceDelivery()
+        return SubagentAnnounceDelivery(work_delivery=work_delivery)
 
     async def test_deliver_to_main_requester_submits_announce_work_item(self) -> None:
         dispatcher = _FakeDispatcher()
         registry = Mock()
         event_bus = Mock()
         session_manager = Mock()
+        delivery = self._delivery(dispatcher)
         session_manager.session_id_from_session_key.return_value = ("main", "main-main")
         session_manager.resolve_main_session_id.return_value = "main-main"
 
         with (
             patch("config.get_config", return_value={"app": {"locale": "en"}}),
             patch("sessions.session_manager.session_manager", session_manager),
-            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
-            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
             patch("subagents.subagent_registry.registry", registry),
             patch("infra.event_bus.event_bus", event_bus),
         ):
-            await self.delivery.deliver_to_requester(
+            await delivery.deliver_to_requester(
                 requester_key="agent:main:main",
                 child_session_key="agent:main:subagent:child-1",
                 run_id="run-1",
@@ -81,18 +98,17 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         registry = Mock()
         event_bus = Mock()
         session_manager = Mock()
+        delivery = self._delivery(dispatcher)
         session_manager.session_id_from_session_key.return_value = ("main", "main-main")
         session_manager.resolve_main_session_id.return_value = "main-main"
 
         with (
             patch("config.get_config", return_value={"app": {"locale": "en"}}),
             patch("sessions.session_manager.session_manager", session_manager),
-            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
-            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
             patch("subagents.subagent_registry.registry", registry),
             patch("infra.event_bus.event_bus", event_bus),
         ):
-            await self.delivery.deliver_to_requester(
+            await delivery.deliver_to_requester(
                 requester_key="agent:main:main",
                 child_session_key="agent:main:subagent:child-1",
                 run_id="run-2",
@@ -112,6 +128,7 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         registry = Mock()
         event_bus = Mock()
         session_manager = Mock()
+        delivery = self._delivery(dispatcher)
         session_manager.session_id_from_session_key.return_value = (
             "main",
             "main-main",
@@ -121,18 +138,10 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("config.get_config", return_value={"app": {"locale": "en"}}),
             patch("sessions.session_manager.session_manager", session_manager),
-            patch(
-                "sessions.session_lock_manager.session_lock_manager.get_lock",
-                return_value=_FakeLock(),
-            ),
-            patch(
-                "sessions.session_dispatcher.dispatcher_manager.get",
-                return_value=dispatcher,
-            ),
             patch("subagents.subagent_registry.registry", registry),
             patch("infra.event_bus.event_bus", event_bus),
         ):
-            await self.delivery.deliver_to_requester(
+            await delivery.deliver_to_requester(
                 requester_key="agent:main:main",
                 child_session_key="agent:main:subagent:child-1",
                 run_id="run-cancelled",
@@ -153,6 +162,7 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         registry = Mock()
         event_bus = Mock()
         session_manager = Mock()
+        delivery = self._delivery(dispatcher)
         session_manager.session_id_from_session_key.return_value = ("main", "main-main")
         session_manager.resolve_main_session_id.return_value = "main-main"
 
@@ -173,12 +183,10 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("config.get_config", return_value={"app": {"locale": "en"}}),
             patch("sessions.session_manager.session_manager", session_manager),
-            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
-            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
             patch("subagents.subagent_registry.registry", registry),
             patch("infra.event_bus.event_bus", event_bus),
         ):
-            delivered = await self.delivery.deliver_recovered_run("run-3", entry)
+            delivered = await delivery.deliver_recovered_run("run-3", entry)
 
         self.assertTrue(delivered)
         self.assertEqual(len(dispatcher.submitted), 1)
@@ -192,6 +200,7 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         registry = Mock()
         event_bus = Mock()
         session_manager = Mock()
+        delivery = self._delivery(dispatcher)
         session_manager.session_id_from_session_key.return_value = ("main", "main-main")
         session_manager.resolve_main_session_id.return_value = "main-main"
 
@@ -208,12 +217,10 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("config.get_config", return_value={"app": {"locale": "en"}}),
             patch("sessions.session_manager.session_manager", session_manager),
-            patch("sessions.session_lock_manager.session_lock_manager.get_lock", return_value=_FakeLock()),
-            patch("sessions.session_dispatcher.dispatcher_manager.get", return_value=dispatcher),
             patch("subagents.subagent_registry.registry", registry),
             patch("infra.event_bus.event_bus", event_bus),
         ):
-            await self.delivery.deliver_recovered_run("run-4", entry)
+            await delivery.deliver_recovered_run("run-4", entry)
             work_item = dispatcher.submitted[0]
             self.assertIsNotNone(work_item.on_success)
             work_item.on_success()
