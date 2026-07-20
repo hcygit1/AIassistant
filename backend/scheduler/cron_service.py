@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
 
+from scheduler.cron_run_lifecycle import CronRunLifecycle
 from scheduler.cron_types import (
     CronJob,
     CronPayload,
@@ -110,6 +111,7 @@ class CronService:
         now_ms: Callable[[], int] | None = None,
         id_factory: Callable[[], str] | None = None,
         default_timezone: Callable[[], str] | None = None,
+        run_lifecycle: CronRunLifecycle | None = None,
     ) -> None:
         if load_store is None:
             from scheduler.cron_store import load_cron_store
@@ -154,6 +156,13 @@ class CronService:
             default_timezone or self._resolve_default_timezone
         )
         self._lock = threading.RLock()
+        self._run_lifecycle = run_lifecycle or CronRunLifecycle(
+            transaction=lambda: self._transaction(),
+            save_store=lambda store, path: self._save(store, path),
+            list_jobs=lambda: self.list_jobs(),
+            deliver=lambda **kwargs: self._deliver(**kwargs),
+            retry_delay_ms=self.RETRY_DELAY_MS,
+        )
 
     def is_enabled(self) -> bool:
         return bool(self._is_enabled())
@@ -525,42 +534,12 @@ class CronService:
         status: str,
         attempted_at_ms: int | None = None,
     ) -> bool:
-        with self._transaction() as (store, path):
-            job = self._find(store, job_id, agent_id=None)
-            if job is None or job.active_run_token != token:
-                return False
-            due_at_ms = job.active_run_due_at_ms
-            schedule_unchanged = (
-                job.active_run_schedule_revision is None
-                or job.active_run_schedule_revision
-                == job.schedule_revision
-            )
-            job.active_run_token = None
-            job.active_run_work_id = None
-            job.active_run_due_at_ms = None
-            job.active_run_schedule_revision = None
-            job.last_run_status = status
-            if (
-                due_at_ms is not None
-                and schedule_unchanged
-                and job.schedule.kind == "at"
-            ):
-                if status == "ok":
-                    job.enabled = False
-                    job.next_run_at_ms = None
-                    if job.delete_after_run:
-                        store.jobs = [
-                            current
-                            for current in store.jobs
-                            if current.id != job.id
-                        ]
-                else:
-                    job.next_run_at_ms = (
-                        (attempted_at_ms or due_at_ms)
-                        + self.RETRY_DELAY_MS
-                    )
-            self._save(store, path)
-            return True
+        return self._run_lifecycle.finalize_claim(
+            job_id,
+            token,
+            status=status,
+            attempted_at_ms=attempted_at_ms,
+        )
 
     def _build_schedule(
         self,
@@ -647,16 +626,11 @@ class CronService:
         token: str,
         work_id: str,
     ) -> bool:
-        normalized_work_id = (work_id or "").strip()
-        if not normalized_work_id:
-            return False
-        with self._transaction() as (store, path):
-            job = self._find(store, job_id, agent_id=None)
-            if job is None or job.active_run_token != token:
-                return False
-            job.active_run_work_id = normalized_work_id
-            self._save(store, path)
-            return True
+        return self._run_lifecycle.bind_claim_work(
+            job_id,
+            token,
+            work_id,
+        )
 
     def _claim_callbacks(
         self,
@@ -665,83 +639,27 @@ class CronService:
         *,
         attempted_at_ms: int | None,
     ) -> dict[str, Callable[..., Any]]:
-        return {
-            "on_success": lambda: self._finalize_claim(
-                job_id,
-                token,
-                status="ok",
-                attempted_at_ms=attempted_at_ms,
-            ),
-            "on_failure": lambda: self._finalize_claim(
-                job_id,
-                token,
-                status="error",
-                attempted_at_ms=attempted_at_ms,
-            ),
-            "on_cancel": lambda: self._finalize_claim(
-                job_id,
-                token,
-                status="error",
-                attempted_at_ms=attempted_at_ms,
-            ),
-        }
+        return self._run_lifecycle.claim_callbacks(
+            job_id,
+            token,
+            attempted_at_ms=attempted_at_ms,
+        )
 
     def recovery_callbacks(
         self,
         job_id: str,
         work_id: str,
     ) -> dict[str, Callable[..., Any]] | None:
-        normalized_work_id = (work_id or "").strip()
-        if not normalized_work_id:
-            return None
-        with self._transaction() as (store, path):
-            job = self._find(store, job_id, agent_id=None)
-            if job is None or not job.active_run_token:
-                return {}
-            if job.active_run_work_id not in (
-                None,
-                normalized_work_id,
-            ):
-                return None
-            if job.active_run_work_id is None:
-                job.active_run_work_id = normalized_work_id
-                self._save(store, path)
-            token = job.active_run_token
-            attempted_at_ms = job.last_run_at_ms
-        return self._claim_callbacks(
+        return self._run_lifecycle.recovery_callbacks(
             job_id,
-            token,
-            attempted_at_ms=attempted_at_ms,
+            work_id,
         )
 
     def reconcile_active_work(
         self,
         get_work: Callable[[str], Any],
     ) -> int:
-        reconciled = 0
-        for job in self.list_jobs():
-            token = job.active_run_token
-            work_id = job.active_run_work_id
-            if not token or not work_id:
-                continue
-            record = get_work(work_id)
-            if record is None:
-                continue
-            work_status = str(getattr(record, "status", "") or "")
-            if work_status == "done":
-                status = "ok"
-            elif work_status in ("failed", "cancelled"):
-                status = "error"
-            else:
-                continue
-            if self._finalize_claim(
-                job.id,
-                token,
-                status=status,
-                attempted_at_ms=job.last_run_at_ms,
-            ):
-                reconciled += 1
-        return reconciled
+        return self._run_lifecycle.reconcile_active_work(get_work)
 
     def _deliver_job(
         self,
@@ -750,21 +668,10 @@ class CronService:
         *,
         attempted_at_ms: int | None,
     ) -> int:
-        callbacks = self._claim_callbacks(
-            job.id,
+        return self._run_lifecycle.deliver_job(
+            job,
             token,
             attempted_at_ms=attempted_at_ms,
-        )
-        return self._deliver(
-            agent_id=job.agent_id or "main",
-            text=job.payload.text,
-            run_id=job.id,
-            on_record_created=lambda record: self._bind_claim_work(
-                job.id,
-                token,
-                getattr(record, "id", ""),
-            ),
-            **callbacks,
         )
 
     @staticmethod
