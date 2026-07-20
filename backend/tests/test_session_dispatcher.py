@@ -348,7 +348,10 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
             agent_id="main",
             session_id="main-main",
             work_id="work-injected",
-            on_success=lambda: succeeded.append("done"),
+            on_success=lambda: (
+                succeeded.append("done"),
+                work_store.events.append(("callback", "success")),
+            ),
         )
 
         await dispatcher._execute_system(task)
@@ -356,6 +359,14 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observed, [("run injected stream", "main-main", "main")])
         self.assertEqual(succeeded, ["done"])
         self.assertEqual(work_store.done, ["work-injected"])
+        self.assertEqual(
+            work_store.events,
+            [
+                ("running", "work-injected"),
+                ("done", "work-injected"),
+                ("callback", "success"),
+            ],
+        )
 
     async def test_dispatcher_manager_passes_store_to_session_dispatcher(self) -> None:
         work_store = _RecordingWorkStore()
@@ -374,6 +385,10 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         succeeded: list[str] = []
         failed: list[str] = []
+        async def record_failure(error: Exception) -> None:
+            failed.append(str(error))
+            work_store.events.append(("callback", "failure"))
+
         task = SessionWorkItem(
             kind="cron",
             priority=PRIORITY_CRON,
@@ -382,7 +397,7 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
             session_id="main-main",
             work_id="work-1",
             on_success=lambda: succeeded.append("done"),
-            on_failure_async=lambda error: _record_failure(failed, error),
+            on_failure_async=record_failure,
         )
 
         async def fake_stream(*args, **kwargs):
@@ -396,6 +411,51 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(work_store.running, ["work-1"])
         self.assertEqual(work_store.done, [])
         self.assertEqual(work_store.failed, [("work-1", "model failed")])
+        self.assertEqual(
+            work_store.events,
+            [
+                ("running", "work-1"),
+                ("failed", "work-1"),
+                ("callback", "failure"),
+            ],
+        )
+
+    async def test_lock_timeout_marks_work_failed_before_failure_callback(self) -> None:
+        lock = asyncio.Lock()
+        await lock.acquire()
+        work_store = _RecordingWorkStore()
+
+        async def record_failure(_error: Exception) -> None:
+            work_store.events.append(("callback", "failure"))
+
+        dispatcher = SessionDispatcher(
+            lock=lock,
+            work_store=work_store,
+        )
+        task = SessionWorkItem(
+            kind="heartbeat",
+            priority=PRIORITY_HEARTBEAT,
+            content="heartbeat",
+            agent_id="main",
+            session_id="main-main",
+            work_id="work-timeout",
+            on_failure_async=record_failure,
+        )
+
+        try:
+            with patch("sessions.session_dispatcher.SYSTEM_TIMEOUT_SEC", 0.001):
+                await dispatcher._execute_system(task)
+        finally:
+            lock.release()
+
+        self.assertEqual(
+            work_store.events,
+            [
+                ("running", "work-timeout"),
+                ("failed", "work-timeout"),
+                ("callback", "failure"),
+            ],
+        )
 
 
 class _RecordingWorkStore:
@@ -403,21 +463,19 @@ class _RecordingWorkStore:
         self.running: list[str] = []
         self.done: list[str] = []
         self.failed: list[tuple[str, str]] = []
+        self.events: list[tuple[str, str]] = []
 
     def mark_running(self, work_id: str) -> bool:
         self.running.append(work_id)
+        self.events.append(("running", work_id))
         return True
 
     def mark_done(self, work_id: str) -> None:
         self.done.append(work_id)
+        self.events.append(("done", work_id))
 
     def mark_failed(self, work_id: str, error: str) -> None:
         self.failed.append((work_id, error))
-
-
-async def _record_failure(target: list[str], error: Exception) -> None:
-    target.append(str(error))
-
-
+        self.events.append(("failed", work_id))
 if __name__ == "__main__":
     unittest.main()

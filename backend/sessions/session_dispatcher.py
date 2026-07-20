@@ -304,6 +304,8 @@ class SessionDispatcher:
                 "Dispatcher timeout acquiring lock for %s (priority=%d, timeout=%ds)",
                 task.kind, task.priority, timeout,
             )
+            if task.work_id:
+                work_store.mark_failed(task.work_id, str(te))
             if task.on_failure_async:
                 try:
                     await task.on_failure_async(te)
@@ -311,8 +313,6 @@ class SessionDispatcher:
                     logger.warning("on_failure_async (lock timeout): %s", e2)
             elif task.on_failure:
                 _safe_call(task.on_failure)
-            if task.work_id:
-                work_store.mark_failed(task.work_id, str(te))
             return
 
         try:
@@ -348,13 +348,15 @@ class SessionDispatcher:
             if task.result_handler:
                 await task.result_handler(response)
 
-            if task.on_success:
-                _safe_call(task.on_success)
             if task.work_id:
                 work_store.mark_done(task.work_id)
+            if task.on_success:
+                _safe_call(task.on_success)
 
         except Exception as e:
             logger.error("Dispatcher execution failed for %s: %s", task.kind, e)
+            if task.work_id:
+                work_store.mark_failed(task.work_id, str(e))
             if task.on_failure_async:
                 try:
                     await task.on_failure_async(e)
@@ -362,8 +364,6 @@ class SessionDispatcher:
                     logger.warning("on_failure_async failed: %s", e2)
             elif task.on_failure:
                 _safe_call(task.on_failure)
-            if task.work_id:
-                work_store.mark_failed(task.work_id, str(e))
         finally:
             if lock_acquired:
                 try:
