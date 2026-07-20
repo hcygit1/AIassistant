@@ -98,7 +98,24 @@ test("keeps Agent workspace orchestration outside AppStateProvider", () => {
   expect(hook).toContain("useSubagents(");
   expect(store).not.toContain("useChat(");
   expect(store).not.toContain("useSubagents(");
-  expect(store).toContain("useAgentWorkspace(");
+  expect(store).toContain("useAppWorkspace(");
+});
+
+test("keeps workspace runtime composition outside AppStateProvider", () => {
+  const hookPath = "src/lib/hooks/useAppWorkspace.ts";
+  expect(existsSync(hookPath)).toBe(true);
+  if (!existsSync(hookPath)) return;
+
+  const hook = readFileSync(hookPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+
+  expect(hook).toContain("useAgentWorkspace(");
+  expect(hook).toContain("useInspectorState(");
+  expect(hook).toContain("useAgentEvents(");
+  expect(hook).toContain("updateRagMode");
+  expect(store).toContain("useAppWorkspace(");
+  expect(store).not.toContain("useInspectorState(");
+  expect(store).not.toContain("useAgentEvents(");
 });
 
 test("keeps UI-only fields out of useApp consumers", () => {

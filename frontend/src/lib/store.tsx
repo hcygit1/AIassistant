@@ -1,13 +1,10 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
-import * as api from "./api";
+import React, { createContext, useContext, useCallback, useEffect, useRef } from "react";
 import type { TokenUsage } from "./api";
 import { useChat } from "./hooks/useChat";
+import { useAppWorkspace } from "./hooks/useAppWorkspace";
 import { useSubagents } from "./hooks/useSubagents";
-import { useInspectorState } from "./hooks/useInspectorState";
-import { useAgentEvents } from "./hooks/useAgentEvents";
-import { useAgentWorkspace } from "./hooks/useAgentWorkspace";
 import { ApprovalProvider, useApproval } from "./approvalContext";
 import { UiProvider, useUi } from "./uiContext";
 import type { UiNotice } from "./hooks/useAppUiState";
@@ -89,9 +86,6 @@ interface AppState {
 const AppContext = createContext<AppState | null>(null);
 
 function AppStateProvider({ children }: { children: React.ReactNode }) {
-  const [currentAgentId, setCurrentAgentId] = useState("main");
-  const [ragMode, setRagModeState] = useState(false);
-  const [skillsRefreshTrigger, setSkillsRefreshTrigger] = useState(0);
   const lastLifecycleNoticeKeyRef = useRef("");
 
   const {
@@ -110,29 +104,18 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     clearNotice,
   } = useUi();
   const { setPendingApproval } = useApproval();
-  const {
-    inspectorWidth,
-    setInspectorWidth,
-    isCompactLayout,
-    inspectorPanelMode,
-    setInspectorPanelMode,
-    inspectorTab,
-    setInspectorTab,
-    inspectorFile,
-    inspectorFileLoading,
-    openFile,
-    saveInspectorFile,
-    resetInspector,
-  } = useInspectorState(currentAgentId);
-
-  const triggerSkillsRefresh = useCallback(() => setSkillsRefreshTrigger((n) => n + 1), []);
   const formatCommandResponse = useCallback(
     (raw: string) => formatLocalizedCommandResponse(raw, t),
     [t],
   );
+  const workspace = useAppWorkspace({
+    formatCommandResponse,
+    onApprovalRequired: setPendingApproval,
+  });
 
   const {
     agents,
+    currentAgentId,
     currentSessionId,
     currentModel,
     loadAgents,
@@ -145,31 +128,22 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     traceMap: subagentTraceMap,
     loading: subagentsLoading,
     refreshSubagents,
-  } = useAgentWorkspace({
-    currentAgentId,
-    setCurrentAgentId,
-    formatCommandResponse,
-    onTurnComplete: triggerSkillsRefresh,
-    resetInspector,
-  });
-
-  const handleApprovalRequired = useCallback(
-    (approval: { approval_id: string; tool: string; input_preview: string }) => {
-      setPendingApproval(approval);
-    },
-    [setPendingApproval],
-  );
-
-  useAgentEvents(currentAgentId, {
-    onSkillsUpdated: triggerSkillsRefresh,
-    onHeartbeatMessage: loadMainSession,
-    onApprovalRequired: handleApprovalRequired,
-  });
-
-  const setRagMode = useCallback(async (enabled: boolean) => {
-    await api.updateRagMode(enabled);
-    setRagModeState(enabled);
-  }, []);
+    inspectorWidth,
+    setInspectorWidth,
+    isCompactLayout,
+    inspectorPanelMode,
+    setInspectorPanelMode,
+    inspectorTab,
+    setInspectorTab,
+    inspectorFile,
+    inspectorFileLoading,
+    openFile,
+    saveInspectorFile,
+    ragMode,
+    setRagMode,
+    skillsRefreshTrigger,
+    triggerSkillsRefresh,
+  } = workspace;
 
   useEffect(() => {
     if (!chat.lifecycleEvents.length) return;
