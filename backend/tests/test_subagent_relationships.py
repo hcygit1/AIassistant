@@ -91,6 +91,67 @@ class SubagentRelationshipServiceTests(unittest.TestCase):
             3,
         )
 
+    def test_each_descendant_query_uses_one_registry_snapshot(self) -> None:
+        calls = 0
+
+        def list_runs() -> list[SubagentRunRecord]:
+            nonlocal calls
+            calls += 1
+            return list(self.records)
+
+        service = SubagentRelationshipService(list_runs)
+
+        service.list_descendant_runs("agent:main:main")
+        self.assertEqual(calls, 1)
+
+        calls = 0
+        service.count_active_descendant_runs("agent:main:main")
+        self.assertEqual(calls, 1)
+
+    def test_preserves_recent_list_and_active_count_traversal_rules(self) -> None:
+        self.records[0].ended_at = 1.0
+
+        self.assertEqual(
+            self.service.list_descendant_runs(
+                "agent:main:main",
+                include_recent_minutes=1,
+            ),
+            [],
+        )
+        self.assertEqual(
+            self.service.count_active_descendant_runs("agent:main:main"),
+            1,
+        )
+
+    def test_duplicate_child_key_keeps_runs_and_expands_subtree_once(self) -> None:
+        self.records.append(
+            SubagentRunRecord(
+                run_id="run-root-child-retry",
+                child_session_key="agent:worker:subagent:child-1",
+                requester_session_key="agent:main:main",
+                requester_agent_id="main",
+                target_agent_id="worker",
+                task="root child retry",
+                spawn_depth=1,
+                created_at=1.5,
+            )
+        )
+
+        descendants = self.service.list_descendant_runs("agent:main:main")
+
+        self.assertEqual(
+            [record.run_id for record in descendants],
+            [
+                "run-nested-child",
+                "run-root-child-retry",
+                "run-root-child",
+            ],
+        )
+        self.assertEqual(
+            self.service.count_active_descendant_runs("agent:main:main"),
+            3,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

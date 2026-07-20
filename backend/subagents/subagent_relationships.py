@@ -38,26 +38,13 @@ class SubagentRelationshipService:
         if not root:
             return []
 
-        pending = [root]
-        visited: set[str] = {root}
-        descendants: list[Any] = []
-        while pending:
-            requester = pending.pop(0)
-            for record in self._list_runs():
-                if record.requester_session_key != requester:
-                    continue
-                if (
-                    record.ended_at is not None
-                    and record.ended_at < cutoff
-                ):
-                    continue
-                descendants.append(record)
-                child_key = self.session_key_from_child_session_key(
-                    record.child_session_key
-                )
-                if child_key and child_key not in visited:
-                    visited.add(child_key)
-                    pending.append(child_key)
+        descendants = self._collect_descendants(
+            self._list_runs(),
+            root,
+            include=lambda record: (
+                record.ended_at is None or record.ended_at >= cutoff
+            ),
+        )
 
         return sorted(
             descendants,
@@ -90,20 +77,39 @@ class SubagentRelationshipService:
         if not root:
             return 0
 
-        pending = [root]
-        visited: set[str] = {root}
-        count = 0
-        while pending:
-            requester = pending.pop(0)
-            for record in self._list_runs():
-                if record.requester_session_key != requester:
+        descendants = self._collect_descendants(self._list_runs(), root)
+        return sum(
+            1 for record in descendants if record.ended_at is None
+        )
+
+    def _collect_descendants(
+        self,
+        records: list[Any],
+        root_session_key: str,
+        include: Callable[[Any], bool] | None = None,
+    ) -> list[Any]:
+        by_requester: dict[str, list[Any]] = {}
+        for record in records:
+            by_requester.setdefault(
+                record.requester_session_key,
+                [],
+            ).append(record)
+
+        pending = [root_session_key]
+        visited: set[str] = {root_session_key}
+        descendants: list[Any] = []
+        next_index = 0
+        while next_index < len(pending):
+            requester = pending[next_index]
+            next_index += 1
+            for record in by_requester.get(requester, []):
+                if include is not None and not include(record):
                     continue
-                if record.ended_at is None:
-                    count += 1
+                descendants.append(record)
                 child_key = self.session_key_from_child_session_key(
                     record.child_session_key
                 )
                 if child_key and child_key not in visited:
                     visited.add(child_key)
                     pending.append(child_key)
-        return count
+        return descendants
