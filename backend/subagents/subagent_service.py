@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from typing import Any, Callable
 
 from sessions.session_identity import session_key_from_session_id
@@ -11,39 +10,15 @@ from subagents.subagent_run_model import (
     SubagentCapacityError,
     SubagentRunRecord,
 )
-
-
-class SubagentServiceError(Exception):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-@dataclass(frozen=True, slots=True)
-class SpawnResult:
-    record: SubagentRunRecord
-    session_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class SubagentListResult:
-    records: list[SubagentRunRecord]
-    recent_minutes: int
-    requester_key: str
-
-
-@dataclass(frozen=True, slots=True)
-class KillResult:
-    killed: int
-    scope: str
-    run_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SteerResult:
-    record: SubagentRunRecord
-    replaced_run_id: str
-    label: str
+from subagents.subagent_run_operations import SubagentRunOperations
+from subagents.subagent_scope import SubagentScopeResolver
+from subagents.subagent_service_models import (
+    KillResult,
+    SpawnResult,
+    SteerResult,
+    SubagentListResult,
+    SubagentServiceError,
+)
 
 
 RunnerFactory = Callable[[str], Any]
@@ -51,7 +26,7 @@ RunnerFactory = Callable[[str], Any]
 
 class SubagentService:
     MAX_STEER_MESSAGE_CHARS = 4000
-    MAX_RECENT_MINUTES = 24 * 60
+    MAX_RECENT_MINUTES = SubagentScopeResolver.MAX_RECENT_MINUTES
 
     def __init__(
         self,
@@ -62,6 +37,8 @@ class SubagentService:
         get_config: Callable[[], dict[str, Any]] | None = None,
         runner_factory: RunnerFactory | None = None,
         id_factory: Callable[[], str] | None = None,
+        scope: Any = None,
+        run_operations: Any = None,
     ) -> None:
         if registry is None:
             from subagents.subagent_registry import registry
@@ -75,10 +52,25 @@ class SubagentService:
         self._registry = registry
         self._session_manager = session_manager
         self._resolve_agent_config = resolve_agent_config
-        self._get_config = get_config
         self._runner_factory = runner_factory
         self._id_factory = id_factory or (
             lambda: uuid.uuid4().hex[:12]
+        )
+        self._scope = (
+            scope
+            if scope is not None
+            else SubagentScopeResolver(
+                session_manager=session_manager,
+                get_config=get_config,
+            )
+        )
+        self._run_operations = (
+            run_operations
+            if run_operations is not None
+            else SubagentRunOperations(
+                registry=registry,
+                scope=self._scope,
+            )
         )
 
     def spawn(
@@ -196,25 +188,11 @@ class SubagentService:
         recent_minutes: int | None = None,
         recursive: bool = False,
     ) -> SubagentListResult:
-        requester_key = self._requester_key(
-            requester_agent_id,
-            requester_session_id,
-        )
-        minutes = self._recent_minutes(recent_minutes)
-        if recursive:
-            records = self._registry.list_descendant_runs(
-                requester_key,
-                include_recent_minutes=minutes,
-            )
-        else:
-            records = self._registry.list_runs_for_requester(
-                requester_key,
-                include_recent_minutes=minutes,
-            )
-        return SubagentListResult(
-            records=records,
-            recent_minutes=minutes,
-            requester_key=requester_key,
+        return self._run_operations.list_runs(
+            requester_agent_id=requester_agent_id,
+            requester_session_id=requester_session_id,
+            recent_minutes=recent_minutes,
+            recursive=recursive,
         )
 
     def kill(
@@ -224,60 +202,10 @@ class SubagentService:
         requester_session_id: str,
         target: str,
     ) -> KillResult:
-        target = (target or "").strip()
-        if not target:
-            raise SubagentServiceError(
-                "missing_target",
-                "missing target",
-            )
-        requester_key = self._requester_key(
-            requester_agent_id,
-            requester_session_id,
-        )
-        records = self._registry.list_descendant_runs(
-            requester_key,
-            include_recent_minutes=self.MAX_RECENT_MINUTES,
-        )
-
-        if target in ("all", "*"):
-            killed = 0
-            for record in records:
-                if (
-                    record.ended_at is None
-                    and self._registry.kill(record.run_id)
-                ):
-                    killed += 1
-            return KillResult(
-                killed=killed,
-                scope=requester_key,
-            )
-
-        allowed = {record.run_id for record in records}
-        if target not in allowed:
-            raise SubagentServiceError(
-                "out_of_scope",
-                "run not found in current session scope",
-            )
-        record = self._registry.get_run(target)
-        if record is None:
-            raise SubagentServiceError(
-                "not_found",
-                "run not found",
-            )
-        if record.ended_at is not None:
-            raise SubagentServiceError(
-                "already_ended",
-                "run already finished",
-            )
-        if not self._registry.kill(target):
-            raise SubagentServiceError(
-                "kill_failed",
-                "failed to kill run",
-            )
-        return KillResult(
-            killed=1,
-            scope=requester_key,
-            run_id=target,
+        return self._run_operations.kill(
+            requester_agent_id=requester_agent_id,
+            requester_session_id=requester_session_id,
+            target=target,
         )
 
     def steer(
@@ -425,16 +353,7 @@ class SubagentService:
         agent_id: str,
         session_id: str | None,
     ) -> str:
-        effective_session_id = (
-            (session_id or "").strip()
-            or self._session_manager.resolve_main_session_id(
-                agent_id
-            )
-        )
-        return self._session_manager.session_key_from_session_id(
-            agent_id,
-            effective_session_id,
-        )
+        return self._scope.requester_key(agent_id, session_id)
 
     def _validate_target_allowed(
         self,
@@ -461,26 +380,6 @@ class SubagentService:
                 "Current agent is not allowed to spawn tasks "
                 f"for '{target_agent_id}'",
             )
-
-    def _recent_minutes(self, value: int | None) -> int:
-        if value is not None and value > 0:
-            return max(
-                1,
-                min(self.MAX_RECENT_MINUTES, int(value)),
-            )
-        config = self._get_config() or {}
-        default = (
-            config.get("agents", {})
-            .get("defaults", {})
-            .get("subagents", {})
-            .get("recent_minutes")
-        )
-        if not isinstance(default, (int, float)):
-            default = 30
-        return max(
-            1,
-            min(self.MAX_RECENT_MINUTES, int(default)),
-        )
 
     def _start_runner(self, **kwargs: Any) -> None:
         if self._runner_factory is None:
