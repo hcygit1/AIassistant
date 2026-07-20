@@ -51,17 +51,36 @@ class TaskHistoryService:
         task_store=None,
         work_store=None,
         dispatcher_manager=None,
+        runtime=None,
     ) -> None:
         if task_store is None:
             from scheduler.task_store import task_store
-        if work_store is None:
-            work_store = getattr(dispatcher_manager, "work_store", None)
-        if work_store is None:
-            from sessions.session_work_store import session_work_store
+        if runtime is not None and (
+            work_store is not None or dispatcher_manager is not None
+        ):
+            raise ValueError(
+                "runtime cannot be combined with legacy dependencies"
+            )
+        if (
+            runtime is None
+            and work_store is None
+            and dispatcher_manager is None
+        ):
+            from sessions.session_work_runtime import session_work_runtime
 
-            work_store = session_work_store
-        if dispatcher_manager is None:
-            from sessions.session_dispatcher import dispatcher_manager
+            runtime = session_work_runtime
+        if runtime is not None:
+            work_store = runtime.work_store
+            dispatcher_manager = runtime.dispatcher_manager
+        else:
+            if work_store is None:
+                work_store = getattr(dispatcher_manager, "work_store", None)
+            if work_store is None:
+                from sessions.session_work_store import session_work_store
+
+                work_store = session_work_store
+            if dispatcher_manager is None:
+                from sessions.session_dispatcher import dispatcher_manager
 
         self._task_store = task_store
         self._work_store = work_store

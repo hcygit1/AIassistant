@@ -12,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from sessions.session_work_delivery import SessionWorkDelivery
+from sessions.session_work_runtime import SessionWorkRuntime
 from sessions.session_work_store import SessionWorkStore
 
 
@@ -320,6 +321,39 @@ class SessionWorkDeliveryTests(unittest.TestCase):
             self.assertIs(delivery.work_store, store)
             self.assertIs(delivery.dispatcher_manager, dispatcher_manager)
             self.assertIs(delivery.lock_manager, lock_manager)
+
+    def test_delivery_uses_explicit_runtime_composition(self) -> None:
+        dispatcher = _FakeDispatcher()
+        dispatcher_manager = _FakeDispatcherManager(dispatcher)
+        lock_manager = _FakeLockManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            runtime = SessionWorkRuntime(
+                work_store=store,
+                lock_manager=lock_manager,
+                dispatcher_manager=dispatcher_manager,
+            )
+
+            delivery = SessionWorkDelivery(runtime=runtime)
+
+        self.assertIs(delivery.runtime, runtime)
+        self.assertIs(delivery.work_store, store)
+        self.assertIs(delivery.lock_manager, lock_manager)
+        self.assertIs(delivery.dispatcher_manager, dispatcher_manager)
+
+    def test_delivery_rejects_runtime_mixed_with_legacy_dependencies(self) -> None:
+        dispatcher = _FakeDispatcher()
+        lock_manager = _FakeLockManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            runtime = SessionWorkRuntime(
+                work_store=store,
+                lock_manager=lock_manager,
+                dispatcher_manager=_FakeDispatcherManager(dispatcher),
+            )
+
+            with self.assertRaisesRegex(ValueError, "runtime cannot be combined"):
+                SessionWorkDelivery(runtime=runtime, work_store=store)
 
     def test_delivery_uses_dispatcher_store_when_store_is_omitted(self) -> None:
         dispatcher = _FakeDispatcher()

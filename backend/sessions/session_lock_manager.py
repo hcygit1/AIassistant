@@ -83,7 +83,12 @@ def cleanup_session_runtime(
 
     须先停止 dispatcher（共享同一把 asyncio.Lock），再移除 SessionLock。
     """
-    if dispatcher_manager is None:
+    if dispatcher_manager is None and lock_manager is None:
+        from sessions.session_work_runtime import session_work_runtime
+
+        dispatcher_manager = session_work_runtime.dispatcher_manager
+        lock_manager = session_work_runtime.lock_manager
+    elif dispatcher_manager is None:
         from sessions.session_dispatcher import dispatcher_manager as default_manager
 
         dispatcher_manager = default_manager

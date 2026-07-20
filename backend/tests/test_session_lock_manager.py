@@ -4,7 +4,9 @@ import sys
 import asyncio
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
+from unittest.mock import patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -51,6 +53,33 @@ class _TurnCoordinator:
 
 
 class SessionRuntimeCleanupTests(unittest.TestCase):
+    def test_default_cleanup_uses_shared_session_work_runtime(self) -> None:
+        calls: list[tuple] = []
+        lock_manager = _LockManager(calls)
+        runtime = SimpleNamespace(
+            dispatcher_manager=_DispatcherManager(calls, lock_manager),
+            lock_manager=lock_manager,
+        )
+
+        with patch(
+            "sessions.session_work_runtime.session_work_runtime",
+            runtime,
+        ):
+            cleanup_session_runtime(
+                "main",
+                "main-main",
+                turn_coordinator=_TurnCoordinator(calls),
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("dispatcher", "main", "main-main"),
+                ("lock", "main", "main-main"),
+                ("turn", "main", "main-main"),
+            ],
+        )
+
     def test_cleanup_uses_injected_runtime_components(self) -> None:
         calls: list[tuple] = []
 

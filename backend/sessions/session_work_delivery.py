@@ -14,16 +14,15 @@ from typing import Any, Awaitable, Callable
 from sessions.session_dispatcher import (
     DispatcherManager,
     SessionWorkItem,
-    dispatcher_manager as dispatcher_manager_global,
 )
-from sessions.session_lock_manager import (
-    SessionLockManager,
-    session_lock_manager,
+from sessions.session_lock_manager import SessionLockManager
+from sessions.session_work_runtime import (
+    SessionWorkRuntime,
+    session_work_runtime,
 )
 from sessions.session_work_store import (
     SessionWorkRecord,
     SessionWorkStore,
-    session_work_store,
 )
 
 INTERRUPTED_WORK_ERROR = "interrupted by process restart"
@@ -49,6 +48,7 @@ class SessionWorkDelivery:
         work_store: SessionWorkStore | None = None,
         dispatcher_manager: DispatcherManager | None = None,
         lock_manager: SessionLockManager | None = None,
+        runtime: SessionWorkRuntime | None = None,
         recovery_callback_resolver: (
             Callable[
                 [SessionWorkRecord],
@@ -56,51 +56,28 @@ class SessionWorkDelivery:
             ] | None
         ) = None,
     ) -> None:
+        legacy_dependencies = (
+            work_store,
+            dispatcher_manager,
+            lock_manager,
+        )
+        if runtime is not None and any(
+            dependency is not None for dependency in legacy_dependencies
+        ):
+            raise ValueError(
+                "runtime cannot be combined with legacy dependencies"
+            )
         uses_default_runtime = (
-            work_store is None
+            runtime is None
+            and work_store is None
             and dispatcher_manager is None
             and lock_manager is None
         )
-        if dispatcher_manager is not None:
-            resolved_dispatcher_manager = dispatcher_manager
-            resolved_work_store = work_store
-            if resolved_work_store is None:
-                resolved_work_store = getattr(
-                    dispatcher_manager,
-                    "work_store",
-                    None,
-                )
-            if resolved_work_store is None:
-                resolved_work_store = session_work_store
-            resolved_lock_manager = lock_manager
-            if resolved_lock_manager is None:
-                resolved_lock_manager = getattr(
-                    dispatcher_manager,
-                    "lock_manager",
-                    None,
-                )
-            if resolved_lock_manager is None:
-                resolved_lock_manager = session_lock_manager
-        elif work_store is not None or lock_manager is not None:
-            resolved_work_store = (
-                work_store if work_store is not None else session_work_store
-            )
-            resolved_lock_manager = (
-                lock_manager
-                if lock_manager is not None
-                else session_lock_manager
-            )
-            resolved_dispatcher_manager = DispatcherManager(
-                work_store=resolved_work_store,
-                lock_manager=resolved_lock_manager,
-            )
-        else:
-            resolved_work_store = session_work_store
-            resolved_dispatcher_manager = dispatcher_manager_global
-            resolved_lock_manager = session_lock_manager
-        self._work_store = resolved_work_store
-        self._dispatcher_manager = resolved_dispatcher_manager
-        self._lock_manager = resolved_lock_manager
+        self._runtime = runtime or SessionWorkRuntime.resolve(
+            work_store=work_store,
+            dispatcher_manager=dispatcher_manager,
+            lock_manager=lock_manager,
+        )
         if recovery_callback_resolver is not None:
             self._recovery_callback_resolver = recovery_callback_resolver
         elif uses_default_runtime:
@@ -111,16 +88,20 @@ class SessionWorkDelivery:
             self._recovery_callback_resolver = lambda _record: {}
 
     @property
+    def runtime(self) -> SessionWorkRuntime:
+        return self._runtime
+
+    @property
     def work_store(self) -> SessionWorkStore:
-        return self._work_store
+        return self.runtime.work_store
 
     @property
     def dispatcher_manager(self) -> DispatcherManager:
-        return self._dispatcher_manager
+        return self.runtime.dispatcher_manager
 
     @property
     def lock_manager(self) -> SessionLockManager:
-        return self._lock_manager
+        return self.runtime.lock_manager
 
     def _submit_record(
         self,
@@ -253,4 +234,7 @@ class SessionWorkDelivery:
         )
 
 
-session_work_delivery = SessionWorkDelivery()
+session_work_delivery = SessionWorkDelivery(
+    runtime=session_work_runtime,
+    recovery_callback_resolver=_default_recovery_callback_resolver,
+)
