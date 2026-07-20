@@ -39,6 +39,7 @@ from llm.llm_factory import create_llm, llm_cache
 from llm.models_config import models_config
 from runtime.agent_state import AgentState
 from runtime.agent_compat import AgentManagerCompatibilityMixin
+from runtime.agent_turn_preparation import AgentTurnPreparationAdapter
 from runtime.agent_state_runtime import AgentStateRuntime
 from runtime.agent_lifecycle import AgentLifecycle
 from runtime.memory_runtime import MemoryRuntime
@@ -235,6 +236,45 @@ class AgentManager(AgentManagerCompatibilityMixin):
         )
         self._turn_context = TurnContext()
         self._turn_preparation = TurnPreparation(self._turn_context)
+        self._turn_preparation_adapter = AgentTurnPreparationAdapter(
+            preparation=self._turn_preparation,
+            tool_registry=self._tool_registry,
+            get_data_dir=lambda: self.data_dir,
+            get_memory_store=lambda agent_id: self.mem_stores.get(agent_id),
+            resolve_workspace=lambda agent_id: resolve_agent_workspace(
+                agent_id
+            ),
+            resolve_agent_dir=lambda agent_id: resolve_agent_dir(agent_id),
+            resolve_agent_config=lambda agent_id: resolve_agent_config(
+                agent_id
+            ),
+            get_heartbeat_config=lambda agent_id: get_heartbeat_config(
+                agent_id
+            ),
+            get_current_model=lambda agent_id: self.get_current_model_ref(
+                agent_id
+            ),
+            build_prompt=lambda params: (
+                prompt_builder.build_system_prompt_with_report(params)
+            ),
+            load_history=lambda session_id, agent_id: (
+                session_manager.load_session_for_agent(
+                    session_id,
+                    agent_id,
+                )
+            ),
+            format_summary=lambda summary: (
+                prompt_builder.format_session_summary(summary)
+            ),
+            prune_history=lambda history, **kwargs: prune_messages(
+                history,
+                **kwargs,
+            ),
+            count_tokens=lambda text: count_tokens(text),
+            count_messages_tokens=lambda messages: (
+                count_messages_tokens(messages)
+            ),
+        )
         self._session_compactor = SessionCompactor(
             resolve_agent_config=lambda agent_id: resolve_agent_config(
                 agent_id
@@ -510,20 +550,20 @@ class AgentManager(AgentManagerCompatibilityMixin):
         await self._state_runtime.save_all_states()
 
     def _collect_tools(self, agent_id: str, session_id: str = "") -> list:
-        return self._tool_registry.collect_tools(agent_id, session_id)
+        return self._turn_preparation_adapter.collect_tools(
+            agent_id,
+            session_id,
+        )
 
     def _wrap_tools_for_session(self, agent_id: str, session_id: str, tools: list) -> list:
-        return self._tool_registry.wrap_tools(
-            self.data_dir,
+        return self._turn_preparation_adapter.wrap_tools_for_session(
             agent_id,
             session_id,
             tools,
         )
 
     def _build_tools(self, agent_id: str, session_id: str = "") -> list:
-        return self._turn_preparation.build_tools(
-            self._tool_registry,
-            self.data_dir,
+        return self._turn_preparation_adapter.build_tools(
             agent_id,
             session_id,
             collect_tools=self._collect_tools,
@@ -532,10 +572,10 @@ class AgentManager(AgentManagerCompatibilityMixin):
         )
 
     def _resolve_tool_policy(self, agent_id: str) -> tuple[list[str], list[str]]:
-        return self._tool_registry.resolve_policy(agent_id)
+        return self._turn_preparation_adapter.resolve_tool_policy(agent_id)
 
     def _filter_tools_by_policy(self, agent_id: str, tools: list) -> list:
-        return self._tool_registry.filter_tools(
+        return self._turn_preparation_adapter.filter_tools_by_policy(
             agent_id,
             tools,
             resolve_policy=self._resolve_tool_policy,
@@ -544,7 +584,7 @@ class AgentManager(AgentManagerCompatibilityMixin):
     def _build_messages(
         self, history: list[dict[str, Any]], new_message: str
     ) -> list:
-        return self._turn_preparation.build_messages(
+        return self._turn_preparation_adapter.build_messages(
             history,
             new_message,
             human_message=HumanMessage,
@@ -554,14 +594,12 @@ class AgentManager(AgentManagerCompatibilityMixin):
 
     @staticmethod
     def _safe_mtime(path: Path) -> float | None:
-        return TurnContext.safe_mtime(path)
+        return TurnPreparation.safe_mtime(path)
 
     def _project_context_signature(self, agent_id: str, prompt_mode: str) -> tuple[Any, ...]:
-        return self._turn_preparation.project_context_signature(
+        return self._turn_preparation_adapter.project_context_signature(
             agent_id,
             prompt_mode,
-            resolve_workspace=resolve_agent_workspace,
-            resolve_agent_dir=resolve_agent_dir,
             safe_mtime=self._safe_mtime,
         )
 
@@ -569,28 +607,19 @@ class AgentManager(AgentManagerCompatibilityMixin):
         self,
         agent_id: str,
     ) -> tuple[Any, ...]:
-        return self._turn_preparation.prompt_runtime_signature(
-            agent_id,
-            resolve_agent_config=resolve_agent_config,
-            get_heartbeat_config=get_heartbeat_config,
-            get_current_model=self.get_current_model_ref,
-        )
+        return self._turn_preparation_adapter.prompt_runtime_signature(agent_id)
 
     def _pruning_signature(self, agent_id: str) -> str:
-        return self._turn_preparation.pruning_signature(
-            agent_id,
-            resolve_agent_config=resolve_agent_config,
-        )
+        return self._turn_preparation_adapter.pruning_signature(agent_id)
 
     def _tool_policy_signature(self, agent_id: str) -> tuple[Any, ...]:
-        return self._tool_registry.policy_signature(
+        return self._turn_preparation_adapter.tool_policy_signature(
             agent_id,
             resolve_policy=self._resolve_tool_policy,
         )
 
     def _get_or_build_tool_names(self, agent_id: str) -> tuple[str, ...]:
-        return self._turn_preparation.get_or_build_tool_names(
-            self._tool_registry,
+        return self._turn_preparation_adapter.get_or_build_tool_names(
             agent_id,
             collect_tools=self._collect_tools,
             filter_tools=self._filter_tools_by_policy,
@@ -606,7 +635,7 @@ class AgentManager(AgentManagerCompatibilityMixin):
         extra_system_prompt: str | None,
         locale: str,
     ) -> tuple[str, Any, int]:
-        return self._turn_preparation.get_or_build_prompt(
+        return self._turn_preparation_adapter.get_or_build_prompt(
             agent_id=agent_id,
             prompt_mode=prompt_mode,
             available_tool_names=available_tool_names,
@@ -617,8 +646,6 @@ class AgentManager(AgentManagerCompatibilityMixin):
                 prompt_mode,
             ),
             runtime_signature=self._prompt_runtime_signature(agent_id),
-            build_prompt=prompt_builder.build_system_prompt_with_report,
-            count_tokens=count_tokens,
         )
 
     @staticmethod
@@ -631,18 +658,9 @@ class AgentManager(AgentManagerCompatibilityMixin):
         agent_id: str,
         session_id: str,
     ) -> SessionContextCacheEntry:
-        session_path = resolve_agent_dir(agent_id) / "sessions" / f"{session_id}.json"
-        store = self.mem_stores.get(agent_id)
-        return self._turn_preparation.get_or_build_session_context(
+        return self._turn_preparation_adapter.get_or_build_session_context(
             agent_id=agent_id,
             session_id=session_id,
-            session_path=session_path,
-            store=store,
-            load_history=session_manager.load_session_for_agent,
-            format_summary=prompt_builder.format_session_summary,
-            prune_history=prune_messages,
-            count_tokens=count_tokens,
-            count_messages_tokens=count_messages_tokens,
             pruning_signature=self._pruning_signature(agent_id),
         )
 
