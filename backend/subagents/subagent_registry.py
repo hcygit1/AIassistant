@@ -9,6 +9,7 @@ from typing import Any, Callable, Literal
 
 from subagents.subagent_relationships import SubagentRelationshipService
 from subagents.subagent_run_lifecycle import SubagentRunLifecycleService
+from subagents.subagent_run_queries import SubagentRunQueryService
 from subagents.subagent_run_state import SubagentRunStateService
 from subagents.subagent_run_store import SubagentRunStore
 
@@ -69,7 +70,13 @@ class SubagentRegistry:
             store=self._store,
             persist=lambda: self._persist_to_disk(),
         )
-        self._relationships = SubagentRelationshipService(self.list_runs)
+        self._queries = SubagentRunQueryService(
+            store=self._store,
+            snapshot=self._snapshot_record,
+        )
+        self._relationships = SubagentRelationshipService(
+            self._queries.list_runs
+        )
         self._lifecycle = SubagentRunLifecycleService(
             store=self._store,
             state=self._state,
@@ -160,49 +167,28 @@ class SubagentRegistry:
     def list_runs_for_requester(
         self, requester_key: str, include_recent_minutes: int = 30
     ) -> list[SubagentRunRecord]:
-        cutoff = time.time() - include_recent_minutes * 60
-        results = []
-        for r in self.list_runs():
-            if r.requester_session_key != requester_key:
-                continue
-            if r.ended_at is not None and r.ended_at < cutoff:
-                continue
-            results.append(r)
-        results.sort(key=lambda r: r.created_at, reverse=True)
-        return results
+        return self._queries.list_runs_for_requester(
+            requester_key,
+            include_recent_minutes,
+        )
 
     def count_active_for_requester(self, requester_key: str) -> int:
-        return sum(
-            1 for r in self.list_runs()
-            if r.requester_session_key == requester_key and r.ended_at is None
+        return self._queries.count_active_for_requester(
+            requester_key
         )
 
     def get_run(self, run_id: str) -> SubagentRunRecord | None:
-        with self._store.locked_records() as runs:
-            record = runs.get(run_id)
-            return (
-                self._snapshot_record(record)
-                if record is not None
-                else None
-            )
+        return self._queries.get_run(run_id)
 
     def list_runs(self) -> list[SubagentRunRecord]:
         """Return a snapshot of all run records."""
-        with self._store.locked_records() as runs:
-            return [
-                self._snapshot_record(record)
-                for record in runs.values()
-            ]
+        return self._queries.list_runs()
 
     def list_run_entries(
         self,
     ) -> list[tuple[str, SubagentRunRecord]]:
         """Return canonical registry keys with their records."""
-        with self._store.locked_records() as runs:
-            return [
-                (run_id, self._snapshot_record(record))
-                for run_id, record in runs.items()
-            ]
+        return self._queries.list_run_entries()
 
     def remove_run(self, run_id: str) -> bool:
         """Remove one run and persist the registry change."""
