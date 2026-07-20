@@ -397,6 +397,11 @@ class DispatcherManager:
         self._user_stream = user_stream
         self._turn_coordinator = turn_coordinator
 
+    @property
+    def work_store(self) -> "SessionWorkStore":
+        """Return the store shared by all dispatchers managed here."""
+        return self._work_store
+
     def get(self, agent_id: str, session_id: str, lock: asyncio.Lock) -> SessionDispatcher:
         key = f"{agent_id}:{session_id}"
         if key not in self._dispatchers:

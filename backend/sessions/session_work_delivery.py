@@ -39,9 +39,16 @@ class SessionWorkDelivery:
         dispatcher_manager: DispatcherManager | None = None,
         lock_manager: SessionLockManager | None = None,
     ) -> None:
-        resolved_work_store = (
-            work_store if work_store is not None else session_work_store
-        )
+        if work_store is not None:
+            resolved_work_store = work_store
+        elif dispatcher_manager is not None:
+            resolved_work_store = getattr(
+                dispatcher_manager,
+                "work_store",
+                session_work_store,
+            )
+        else:
+            resolved_work_store = session_work_store
         if dispatcher_manager is not None:
             resolved_dispatcher_manager = dispatcher_manager
         elif work_store is not None:

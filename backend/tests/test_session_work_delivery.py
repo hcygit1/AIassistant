@@ -43,6 +43,12 @@ class _FakeDispatcherManager:
         return self.dispatcher
 
 
+class _FakeDispatcherManagerWithStore(_FakeDispatcherManager):
+    def __init__(self, dispatcher, work_store) -> None:
+        super().__init__(dispatcher)
+        self.work_store = work_store
+
+
 class _FakeLockManager:
     def __init__(self) -> None:
         self.session_lock = _FakeLock()
@@ -221,6 +227,22 @@ class SessionWorkDeliveryTests(unittest.TestCase):
             self.assertIs(delivery.work_store, store)
             self.assertIs(delivery.dispatcher_manager, dispatcher_manager)
             self.assertIs(delivery.lock_manager, lock_manager)
+
+    def test_delivery_uses_dispatcher_store_when_store_is_omitted(self) -> None:
+        dispatcher = _FakeDispatcher()
+        lock_manager = _FakeLockManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionWorkStore(Path(tmpdir) / "session_work.db")
+            dispatcher_manager = _FakeDispatcherManagerWithStore(
+                dispatcher,
+                store,
+            )
+            delivery = SessionWorkDelivery(
+                dispatcher_manager=dispatcher_manager,
+                lock_manager=lock_manager,
+            )
+
+            self.assertIs(delivery.work_store, store)
 
     def test_store_fails_only_unrecoverable_pending_work_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
