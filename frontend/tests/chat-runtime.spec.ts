@@ -115,6 +115,7 @@ test("keeps active turn runtime isolated by agent", () => {
 test("routes active turn refs and local queue operations through agent scope", () => {
   const source = readFileSync("src/lib/hooks/useChat.ts", "utf8");
   const submission = readFileSync("src/lib/chatTurnSubmission.ts", "utf8");
+  const finalization = readFileSync("src/lib/chatTurnFinalization.ts", "utf8");
 
   for (const legacyRef of [
     "abortRef",
@@ -128,7 +129,7 @@ test("routes active turn refs and local queue operations through agent scope", (
   }
   expect(source).toContain("getAgentChatRuntime(runtimeRegistryRef.current, agentId)");
   expect(submission).toContain("enqueue(agentId, normalized, messageId)");
-  expect(source).toContain("dequeue(agentId)");
+  expect(finalization).toContain("dequeueMessage(agentId)");
   expect(submission).toContain("appendTurnMessages(");
 });
 
@@ -139,6 +140,14 @@ test("keeps turn submission transport outside useChat", () => {
   expect(source).not.toContain("api.submitChat(");
   expect(source).not.toContain("api.waitUntilTurnRunning(");
   expect(source).not.toContain("api.streamTurn(");
+});
+
+test("keeps turn finalization side effects outside useChat", () => {
+  const source = readFileSync("src/lib/hooks/useChat.ts", "utf8");
+
+  expect(source).toContain("finalizeChatTurn(");
+  expect(source).not.toContain("const stoppedByUser = runtime.userStopped");
+  expect(source).not.toContain("const next = dequeue(agentId)");
 });
 
 test("inserts a queued assistant directly after its displayed user message", () => {

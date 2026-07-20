@@ -4,6 +4,7 @@ import { useCallback, useRef, useEffect, useReducer } from "react";
 import * as api from "../api";
 import type { SSEEvent } from "../api";
 import { createChatStreamEventHandler } from "../chatStreamEvents";
+import { finalizeChatTurn } from "../chatTurnFinalization";
 import { submitChatTurn } from "../chatTurnSubmission";
 import { startPendingTurnRecovery } from "../chatTurnRecovery";
 import {
@@ -13,7 +14,7 @@ import {
   getAgentChatRuntime,
   selectAgentChatState,
 } from "../chatState";
-import { clear as clearQueuedMessages, dequeue } from "../messageQueue";
+import { clear as clearQueuedMessages } from "../messageQueue";
 import type {
   AgentChatState,
   ChatMessage,
@@ -135,7 +136,7 @@ export function useChat(
   );
 
   const finalizeStreamTurn = useCallback(
-    async (
+    (
       agentId: string,
       assistantMsgId: string,
       sessionId: string | null,
@@ -143,49 +144,19 @@ export function useChat(
       dequeueLocal: boolean,
     ) => {
       const runtime = getAgentChatRuntime(runtimeRegistryRef.current, agentId);
-      runtime.turnId = null;
-      const stoppedByUser = runtime.userStopped;
-      if (runtime.assistantMessageId === assistantMsgId) {
-        runtime.assistantMessageId = null;
-      }
-      patchAgentState(agentId, { isStreaming: false });
-      runtime.controller = null;
-      runtime.userStopped = false;
-      if (!streamState.doneReceived) {
-        if (!stoppedByUser && !streamState.terminalErrorReceived) {
-          try {
-            if (sessionId) await loadMessages(agentId, sessionId);
-          } catch { /* best-effort reload */ }
-        }
-      } else {
-        setMessagesForAgent(agentId, prev => {
-          const targetId = runtime.assistantMessageId || assistantMsgId;
-          const idx = prev.findIndex(m => m.id === targetId);
-          const last = idx >= 0 ? prev[idx] : null;
-          if (idx >= 0 && last?.role === "assistant" && last.isStreaming) {
-            const updated = prev.slice();
-            updated[idx] = { ...last, isStreaming: false, finishedAt: Date.now() };
-            return updated;
-          }
-          return prev;
-        });
-      }
-      options?.onTurnComplete?.(agentId);
-      if (dequeueLocal) {
-        try {
-          const next = dequeue(agentId);
-          if (next) {
-            setTimeout(() => {
-              void queuedSenderRef.current(
-                agentId,
-                next.text,
-                runtime.sessionId,
-                next.messageId,
-              );
-            }, 50);
-          }
-        } catch { /* ignore */ }
-      }
+      return finalizeChatTurn({
+        agentId,
+        assistantMessageId: assistantMsgId,
+        sessionId,
+        streamState,
+        runtime,
+        dequeueLocal,
+        updateMessages: (updater) => setMessagesForAgent(agentId, updater),
+        patchState: (patch) => patchAgentState(agentId, patch),
+        loadMessages,
+        onTurnComplete: options?.onTurnComplete,
+        sendQueuedMessage: (...args) => queuedSenderRef.current(...args),
+      });
     },
     [loadMessages, options, patchAgentState, setMessagesForAgent],
   );
