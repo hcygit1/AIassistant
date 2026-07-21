@@ -10,6 +10,7 @@ from sessions.session_history_archive import SessionHistoryArchive
 from sessions.session_lifecycle import SessionLifecycleService
 from sessions.session_maintenance import SessionMaintenanceService
 from sessions.session_message_writer import SessionMessageWriter
+from sessions.session_persistence import SessionPersistenceService
 from sessions.session_reader import SessionReader
 from sessions.session_repository import SessionRepository
 from sessions.session_title import SessionTitleService
@@ -22,6 +23,7 @@ class SessionManagerComponents:
     reader: Any
     history_archive: Any
     catalog: Any
+    persistence: Any
     message_writer: Any
     lifecycle: Any
 
@@ -31,6 +33,7 @@ class SessionManagerComponents:
         manager._reader = self.reader
         manager._history_archive = self.history_archive
         manager._catalog = self.catalog
+        manager._persistence = self.persistence
         manager._message_writer = self.message_writer
         manager._lifecycle = self.lifecycle
 
@@ -44,6 +47,7 @@ class SessionManagerAssembler:
         maintenance: SessionMaintenanceService | None = None,
         title_service: SessionTitleService | None = None,
         reader: SessionReader | None = None,
+        persistence: SessionPersistenceService | None = None,
         cleanup_runtime: Callable[[str, str], None] | None = None,
         resolve_requester: Callable[
             [str], tuple[str, str] | None
@@ -54,6 +58,7 @@ class SessionManagerAssembler:
         self._maintenance = maintenance
         self._title_service = title_service
         self._reader = reader
+        self._persistence = persistence
         self._cleanup_runtime = cleanup_runtime
         self._resolve_requester = resolve_requester
 
@@ -67,16 +72,6 @@ class SessionManagerAssembler:
         reader = self._reader or SessionReader(
             repository=self._repository,
             is_bootstrap_text=lambda text: manager._is_bootstrap_text(text),
-        )
-        history_archive = SessionHistoryArchive(
-            repository=self._repository,
-            load_session=lambda session_id, agent_id: manager.load_session(
-                session_id,
-                agent_id,
-            ),
-            save_session=lambda session_id, agent_id, data: (
-                manager._save_session_data(session_id, agent_id, data)
-            ),
         )
         catalog = SessionCatalog(
             repository=self._repository,
@@ -99,6 +94,25 @@ class SessionManagerAssembler:
             run_maintenance=lambda agent_id, **kwargs: manager.run_maintenance(
                 agent_id,
                 **kwargs,
+            ),
+        )
+        persistence = self._persistence or SessionPersistenceService(
+            repository=self._repository,
+            update_index_entry=lambda *args, **kwargs: (
+                manager._update_session_store_entry(*args, **kwargs)
+            ),
+            session_key_from_id=lambda agent_id, session_id: (
+                manager.session_key_from_session_id(agent_id, session_id)
+            ),
+        )
+        history_archive = SessionHistoryArchive(
+            repository=self._repository,
+            load_session=lambda session_id, agent_id: manager.load_session(
+                session_id,
+                agent_id,
+            ),
+            save_session=lambda session_id, agent_id, data: (
+                manager._save_session_data(session_id, agent_id, data)
             ),
         )
         message_writer = SessionMessageWriter(
@@ -139,6 +153,7 @@ class SessionManagerAssembler:
             reader=reader,
             history_archive=history_archive,
             catalog=catalog,
+            persistence=persistence,
             message_writer=message_writer,
             lifecycle=lifecycle,
         )

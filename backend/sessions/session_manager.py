@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from contextlib import contextmanager
 from typing import Any, Callable
 
@@ -22,6 +21,7 @@ from sessions.session_identity import (
 from sessions.session_lifecycle import SessionLifecycleService
 from sessions.session_manager_assembly import SessionManagerAssembler
 from sessions.session_message_writer import SessionMessageWriter
+from sessions.session_persistence import SessionPersistenceService
 from sessions.session_reader import SessionReader
 from sessions.session_requester_resolver import (
     RequesterProvider,
@@ -39,6 +39,7 @@ class SessionManager:
         title_service: SessionTitleService | None = None,
         cleanup_runtime: Callable[[str, str], None] | None = None,
         reader: SessionReader | None = None,
+        persistence: SessionPersistenceService | None = None,
         resolve_requester: RequesterProvider | None = None,
     ) -> None:
         self._repository = repository or SessionRepository(
@@ -55,6 +56,7 @@ class SessionManager:
             maintenance=maintenance,
             title_service=title_service,
             reader=reader,
+            persistence=persistence,
             cleanup_runtime=cleanup_runtime,
             resolve_requester=requester_resolver,
         ).build(self)
@@ -215,21 +217,7 @@ class SessionManager:
     def _save_session_data(
         self, session_id: str, agent_id: str, data: dict[str, Any]
     ) -> None:
-        with self._repository.get_agent_lock(agent_id):
-            with self._repository.get_session_lock(session_id, agent_id):
-                self._repository.save_session(session_id, agent_id, data)
-                session_key = self.session_key_from_session_id(
-                    agent_id,
-                    session_id,
-                )
-                self._update_session_store_entry(
-                    agent_id,
-                    session_key,
-                    session_id,
-                    data.get("updated_at", time.time()),
-                    label=data.get("label", ""),
-                    spawned_by=data.get("spawned_by"),
-                )
+        self._persistence.persist_session(session_id, agent_id, data)
 
     # ------------------------------------------------------------------
     # 会话管理

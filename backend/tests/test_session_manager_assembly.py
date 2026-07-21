@@ -17,7 +17,7 @@ from sessions.session_manager_assembly import SessionManagerComponents
 
 class SessionManagerComponentsTests(unittest.TestCase):
     def test_install_on_preserves_manager_compatibility_fields(self) -> None:
-        owned = [object() for _ in range(7)]
+        owned = [object() for _ in range(8)]
         components = SessionManagerComponents(*owned)
         manager = SimpleNamespace()
 
@@ -30,6 +30,7 @@ class SessionManagerComponentsTests(unittest.TestCase):
                 manager._reader,
                 manager._history_archive,
                 manager._catalog,
+                manager._persistence,
                 manager._message_writer,
                 manager._lifecycle,
             ],
