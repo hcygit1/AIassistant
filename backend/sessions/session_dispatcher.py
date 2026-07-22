@@ -34,6 +34,7 @@ from sessions.session_work_policy import (
     PRIORITY_CRON,
     PRIORITY_HEARTBEAT,
 )
+from sessions.session_system_work_executor import SessionSystemWorkExecutor
 from turns.events import TurnEvent
 
 if TYPE_CHECKING:
@@ -141,6 +142,7 @@ class SessionDispatcher:
         system_stream: SystemStream | None = None,
         user_stream: UserStream | None = None,
         turn_coordinator: Any | None = None,
+        system_executor: SessionSystemWorkExecutor | None = None,
     ):
         self._lock = lock
         self._work_store = (
@@ -159,6 +161,18 @@ class SessionDispatcher:
         self._accepting = True
         self._stopping = False
         self._current_executing_turn_id: str | None = None
+        self._system_executor = system_executor or SessionSystemWorkExecutor(
+            lock=self._lock,
+            work_store=self._work_store,
+            system_stream=self._system_stream,
+            is_stopping=lambda: self._stopping,
+            timeout_for_kind=lambda kind: (
+                ANNOUNCE_TIMEOUT_SEC
+                if kind == "announce"
+                else SYSTEM_TIMEOUT_SEC
+            ),
+            safe_call=_safe_call,
+        )
 
     @property
     def current_executing_turn_id(self) -> str | None:
@@ -259,17 +273,7 @@ class SessionDispatcher:
                 _safe_call(task.on_cancel)
 
     def _cancel_running_system_item(self, task: SessionWorkItem) -> None:
-        if task.work_id:
-            try:
-                self._work_store.mark_cancelled(task.work_id)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to cancel running session work %s: %s",
-                    task.work_id,
-                    exc,
-                )
-        if task.on_cancel:
-            _safe_call(task.on_cancel)
+        self._system_executor.cancel_running(task)
 
     async def _consume_loop(self) -> None:
         while not self._stopping:
@@ -363,103 +367,7 @@ class SessionDispatcher:
                     pass
 
     async def _execute_system(self, task: SessionWorkItem) -> None:
-        work_store = self._work_store
-
-        timeout = ANNOUNCE_TIMEOUT_SEC if task.kind == "announce" else SYSTEM_TIMEOUT_SEC
-        lock_acquired = False
-        if (
-            task.work_id
-            and not work_store.mark_running(task.work_id)
-        ):
-            return
-
-        try:
-            await asyncio.wait_for(self._lock.acquire(), timeout=timeout)
-            lock_acquired = True
-        except asyncio.CancelledError:
-            self._cancel_running_system_item(task)
-            raise
-        except asyncio.TimeoutError as te:
-            logger.warning(
-                "Dispatcher timeout acquiring lock for %s (priority=%d, timeout=%ds)",
-                task.kind, task.priority, timeout,
-            )
-            if task.work_id:
-                work_store.mark_failed(task.work_id, str(te))
-            if task.on_failure_async:
-                try:
-                    await task.on_failure_async(te)
-                except Exception as e2:
-                    logger.warning("on_failure_async (lock timeout): %s", e2)
-            elif task.on_failure:
-                _safe_call(task.on_failure)
-            return
-
-        try:
-            response_parts: list[str] = []
-            done_content: str | None = None
-            async for event in self._system_stream(
-                message=task.content,
-                session_id=task.session_id,
-                agent_id=task.agent_id,
-                prompt_mode=task.prompt_mode,
-                persist_input_role=task.persist_role,
-            ):
-                et = event.get("type")
-                if et == "token":
-                    response_parts.append(event.get("content", ""))
-                elif et == "done":
-                    c = event.get("content")
-                    if isinstance(c, str) and c.strip():
-                        done_content = c
-                elif et == "error":
-                    error = event.get("error")
-                    message = (
-                        error.strip()
-                        if isinstance(error, str) and error.strip()
-                        else "agent stream failed"
-                    )
-                    raise RuntimeError(message)
-
-            if self._stopping:
-                self._cancel_running_system_item(task)
-                return
-
-            response = "".join(response_parts).strip()
-            if done_content is not None and done_content.strip():
-                response = done_content.strip()
-
-            if task.result_handler:
-                await task.result_handler(response)
-
-            if task.work_id:
-                work_store.mark_done(task.work_id)
-            if task.on_success:
-                _safe_call(task.on_success)
-
-        except asyncio.CancelledError:
-            self._cancel_running_system_item(task)
-            raise
-        except Exception as e:
-            if self._stopping:
-                self._cancel_running_system_item(task)
-                return
-            logger.error("Dispatcher execution failed for %s: %s", task.kind, e)
-            if task.work_id:
-                work_store.mark_failed(task.work_id, str(e))
-            if task.on_failure_async:
-                try:
-                    await task.on_failure_async(e)
-                except Exception as e2:
-                    logger.warning("on_failure_async failed: %s", e2)
-            elif task.on_failure:
-                _safe_call(task.on_failure)
-        finally:
-            if lock_acquired:
-                try:
-                    self._lock.release()
-                except RuntimeError:
-                    pass
+        await self._system_executor.execute(task)
 
 
 def _safe_call(fn: Callable[[], Any]) -> None:

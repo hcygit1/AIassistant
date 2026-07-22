@@ -6,7 +6,7 @@ import sys
 import unittest
 import weakref
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -512,6 +512,62 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cancelled, ["work-running"])
         self.assertEqual(succeeded, [])
 
+    async def test_aclose_stops_stream_that_keeps_yielding_after_cancel(self) -> None:
+        started = asyncio.Event()
+        yielded_after_cancel = asyncio.Event()
+        stream_closed = asyncio.Event()
+        work_store = Mock()
+        work_store.mark_running.return_value = True
+
+        async def cancellation_suppressing_stream(**_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+            try:
+                while True:
+                    yielded_after_cancel.set()
+                    yield {"type": "token", "content": "unexpected"}
+                    await asyncio.sleep(0)
+            finally:
+                stream_closed.set()
+
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            work_store=work_store,
+            system_stream=cancellation_suppressing_stream,
+        )
+        dispatcher.start()
+        dispatcher.submit(
+            SessionWorkItem(
+                kind="cron",
+                priority=PRIORITY_CRON,
+                content="running",
+                agent_id="main",
+                session_id="main-main",
+                work_id="work-running",
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        close_task = asyncio.create_task(dispatcher.aclose())
+        await asyncio.wait_for(yielded_after_cancel.wait(), timeout=1)
+        await asyncio.sleep(0)
+
+        try:
+            self.assertTrue(close_task.done())
+        finally:
+            if not close_task.done():
+                close_task.cancel()
+            try:
+                await close_task
+            except asyncio.CancelledError:
+                pass
+
+        work_store.mark_cancelled.assert_called_once_with("work-running")
+        self.assertTrue(stream_closed.is_set())
+
     async def test_aclose_cancels_stream_error_after_swallowed_cancel(self) -> None:
         started = asyncio.Event()
         cancelled: list[str] = []
@@ -606,6 +662,28 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 ("callback", "success"),
             ],
         )
+
+    async def test_dispatcher_delegates_to_injected_system_executor(self) -> None:
+        executor = Mock()
+        executor.execute = AsyncMock()
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            system_executor=executor,
+        )
+        task = SessionWorkItem(
+            kind="cron",
+            priority=PRIORITY_CRON,
+            content="run delegated work",
+            agent_id="main",
+            session_id="main-main",
+            work_id="work-delegated",
+        )
+
+        await dispatcher._execute_system(task)
+        dispatcher._cancel_running_system_item(task)
+
+        executor.execute.assert_awaited_once_with(task)
+        executor.cancel_running.assert_called_once_with(task)
 
     async def test_dispatcher_manager_passes_store_to_session_dispatcher(self) -> None:
         work_store = _RecordingWorkStore()
