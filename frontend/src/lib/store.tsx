@@ -1,11 +1,12 @@
 "use client";
 
-import React, { createContext, useContext, useCallback, useMemo } from "react";
+import React, { useCallback } from "react";
 import { useAppWorkspace } from "./hooks/useAppWorkspace";
 import { AgentProvider } from "./agentContext";
 import { ApprovalProvider, useApproval } from "./approvalContext";
 import { ChatProvider } from "./chatContext";
 import { InspectorProvider } from "./inspectorContext";
+import { SkillsRefreshProvider } from "./skillsRefreshContext";
 import { SubagentProvider } from "./subagentContext";
 import { UiProvider, useUi } from "./uiContext";
 import { formatCommandResponse as formatLocalizedCommandResponse } from "./commandResponses";
@@ -15,19 +16,7 @@ export type { ThemeMode, EffectiveTheme } from "./hooks/useTheme";
 export type { Locale, Messages } from "./i18n/locales";
 export type { UiNotice } from "./hooks/useAppUiState";
 
-interface AppState {
-  // Config
-  ragMode: boolean;
-  setRagMode: (enabled: boolean) => Promise<void>;
-
-  // Actions
-  skillsRefreshTrigger: number;
-  triggerSkillsRefresh: () => void;
-}
-
-const AppContext = createContext<AppState | null>(null);
-
-function AppStateProvider({ children }: { children: React.ReactNode }) {
+function WorkspaceProviders({ children }: { children: React.ReactNode }) {
   const { t } = useUi();
   const { setPendingApproval } = useApproval();
   const formatCommandResponse = useCallback(
@@ -44,27 +33,11 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
     inspector,
     chat,
     subagents,
-    ragMode,
-    setRagMode,
     skillsRefreshTrigger,
-    triggerSkillsRefresh,
   } = workspace;
 
-  const value = useMemo<AppState>(() => ({
-    ragMode,
-    setRagMode,
-
-    skillsRefreshTrigger,
-    triggerSkillsRefresh,
-  }), [
-    ragMode,
-    setRagMode,
-    skillsRefreshTrigger,
-    triggerSkillsRefresh,
-  ]);
-
   return (
-    <AppContext.Provider value={value}>
+    <SkillsRefreshProvider version={skillsRefreshTrigger}>
       <InspectorProvider inspector={inspector}>
         <ChatProvider chat={chat}>
           <SubagentProvider subagents={subagents}>
@@ -72,7 +45,7 @@ function AppStateProvider({ children }: { children: React.ReactNode }) {
           </SubagentProvider>
         </ChatProvider>
       </InspectorProvider>
-    </AppContext.Provider>
+    </SkillsRefreshProvider>
   );
 }
 
@@ -80,14 +53,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return (
     <UiProvider>
       <ApprovalProvider>
-        <AppStateProvider>{children}</AppStateProvider>
+        <WorkspaceProviders>{children}</WorkspaceProviders>
       </ApprovalProvider>
     </UiProvider>
   );
-}
-
-export function useApp(): AppState {
-  const ctx = useContext(AppContext);
-  if (!ctx) throw new Error("useApp must be used inside AppProvider");
-  return ctx;
 }

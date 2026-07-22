@@ -2,7 +2,6 @@
 
 import { useCallback, useState } from "react";
 
-import * as api from "../api";
 import type { PendingApproval } from "../approvalContext";
 import { useAgentEvents } from "./useAgentEvents";
 import { useAgentWorkspace } from "./useAgentWorkspace";
@@ -18,7 +17,6 @@ export function useAppWorkspace({
   onApprovalRequired,
 }: AppWorkspaceOptions) {
   const [currentAgentId, setCurrentAgentId] = useState("main");
-  const [ragMode, setRagModeState] = useState(false);
   const [skillsRefreshTrigger, setSkillsRefreshTrigger] = useState(0);
   const inspector = useInspectorState(currentAgentId);
 
@@ -41,17 +39,9 @@ export function useAppWorkspace({
     onApprovalRequired,
   });
 
-  const setRagMode = useCallback(async (enabled: boolean) => {
-    await api.updateRagMode(enabled);
-    setRagModeState(enabled);
-  }, []);
-
   return {
     ...workspace,
     inspector,
-    ragMode,
-    setRagMode,
     skillsRefreshTrigger,
-    triggerSkillsRefresh,
   };
 }

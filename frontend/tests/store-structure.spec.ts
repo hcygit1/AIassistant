@@ -69,7 +69,7 @@ test("keeps agent event subscription outside AppProvider", () => {
   expect(hook).toContain("approval_required");
 });
 
-test("keeps approval state outside AppStateProvider", () => {
+test("keeps approval state outside the workspace composition", () => {
   const contextPath = "src/lib/approvalContext.tsx";
   expect(existsSync(contextPath)).toBe(true);
   if (!existsSync(contextPath)) return;
@@ -86,7 +86,7 @@ test("keeps approval state outside AppStateProvider", () => {
   expect(modal).not.toContain("pendingApproval } = useApp()");
 });
 
-test("keeps Agent workspace orchestration outside AppStateProvider", () => {
+test("keeps Agent workspace orchestration outside the provider composition", () => {
   const hookPath = "src/lib/hooks/useAgentWorkspace.ts";
   expect(existsSync(hookPath)).toBe(true);
   if (!existsSync(hookPath)) return;
@@ -101,7 +101,7 @@ test("keeps Agent workspace orchestration outside AppStateProvider", () => {
   expect(store).toContain("useAppWorkspace(");
 });
 
-test("keeps workspace runtime composition outside AppStateProvider", () => {
+test("keeps workspace runtime composition outside the provider composition", () => {
   const hookPath = "src/lib/hooks/useAppWorkspace.ts";
   expect(existsSync(hookPath)).toBe(true);
   if (!existsSync(hookPath)) return;
@@ -112,13 +112,12 @@ test("keeps workspace runtime composition outside AppStateProvider", () => {
   expect(hook).toContain("useAgentWorkspace(");
   expect(hook).toContain("useInspectorState(");
   expect(hook).toContain("useAgentEvents(");
-  expect(hook).toContain("updateRagMode");
   expect(store).toContain("useAppWorkspace(");
   expect(store).not.toContain("useInspectorState(");
   expect(store).not.toContain("useAgentEvents(");
 });
 
-test("keeps lifecycle notice side effects outside AppStateProvider", () => {
+test("keeps lifecycle notice side effects outside the provider composition", () => {
   const hookPath = "src/lib/hooks/useLifecycleNotices.ts";
   expect(existsSync(hookPath)).toBe(true);
   if (!existsSync(hookPath)) return;
@@ -153,21 +152,16 @@ test("isolates Chat state in a dedicated context broadcast domain", () => {
     "sendMessage",
     "stopStreaming",
   ];
-  const interfaceStart = store.indexOf("interface AppState {");
-  const interfaceEnd = store.indexOf("\n}\n\nconst AppContext", interfaceStart);
-  const valueStart = store.indexOf("const value = useMemo<AppState>");
-  const providerStart = store.indexOf("<AppContext.Provider");
-  const appState = store.slice(interfaceStart, interfaceEnd);
+  const providerStart = store.indexOf("<ChatProvider chat={chat}>");
 
   expect(context).toContain("ChatProvider");
   expect(context).toContain("useChatState");
   expect(context).toContain("useMemo<ChatState>");
   expect(context).toContain("useLifecycleNotices(");
   expect(store).toContain("<ChatProvider chat={chat}>");
-  expect(valueStart).toBeGreaterThanOrEqual(0);
-  expect(providerStart).toBeGreaterThan(valueStart);
+  expect(providerStart).toBeGreaterThanOrEqual(0);
   for (const field of chatFields) {
-    expect(appState, `${field} should not be in AppState`).not.toMatch(
+    expect(store, `${field} should not be in store composition`).not.toMatch(
       new RegExp(`\\b${field}\\b`),
     );
   }
@@ -205,9 +199,6 @@ test("isolates Inspector state in a dedicated context broadcast domain", () => {
     "openFile",
     "saveInspectorFile",
   ];
-  const interfaceStart = store.indexOf("interface AppState {");
-  const interfaceEnd = store.indexOf("\n}\n\nconst AppContext", interfaceStart);
-  const appState = store.slice(interfaceStart, interfaceEnd);
 
   expect(context).toContain("InspectorProvider");
   expect(context).toContain("useInspectorContext");
@@ -215,7 +206,7 @@ test("isolates Inspector state in a dedicated context broadcast domain", () => {
   expect(store).toContain("<InspectorProvider inspector={inspector}>");
   expect(workspace).toContain("inspector,");
   for (const field of inspectorFields) {
-    expect(appState, `${field} should not be in AppState`).not.toMatch(
+    expect(store, `${field} should not be in store composition`).not.toMatch(
       new RegExp(`\\b${field}\\b`),
     );
   }
@@ -239,9 +230,6 @@ test("isolates Subagent state in a dedicated context broadcast domain", () => {
   const context = readFileSync(contextPath, "utf8");
   const store = readFileSync("src/lib/store.tsx", "utf8");
   const workspace = readFileSync("src/lib/hooks/useAgentWorkspace.ts", "utf8");
-  const appStateStart = store.indexOf("interface AppState {");
-  const appStateEnd = store.indexOf("\n}\n\nconst AppContext", appStateStart);
-  const appState = store.slice(appStateStart, appStateEnd);
   const subagentFields = [
     "subagentTree",
     "subagents",
@@ -256,8 +244,8 @@ test("isolates Subagent state in a dedicated context broadcast domain", () => {
   expect(context).toContain("useMemo<SubagentContextState>");
   expect(store).toContain("<SubagentProvider subagents={subagents}>");
   expect(workspace).toContain("    subagents,");
-  for (const field of subagentFields) {
-    expect(appState, `${field} should not be in AppState`).not.toMatch(
+  for (const field of subagentFields.filter((field) => field !== "subagents")) {
+    expect(store, `${field} should not be in store composition`).not.toMatch(
       new RegExp(`\\b${field}\\b`),
     );
   }
@@ -281,9 +269,6 @@ test("isolates Agent state in a dedicated context broadcast domain", () => {
   const context = readFileSync(contextPath, "utf8");
   const store = readFileSync("src/lib/store.tsx", "utf8");
   const workspace = readFileSync("src/lib/hooks/useAgentWorkspace.ts", "utf8");
-  const appStateStart = store.indexOf("interface AppState {");
-  const appStateEnd = store.indexOf("\n}\n\nconst AppContext", appStateStart);
-  const appState = store.slice(appStateStart, appStateEnd);
   const agentFields = [
     "agents",
     "currentAgentId",
@@ -300,7 +285,7 @@ test("isolates Agent state in a dedicated context broadcast domain", () => {
   expect(store).toContain("<AgentProvider agent={agent}>");
   expect(workspace).toContain("    agent,");
   for (const field of agentFields) {
-    expect(appState, `${field} should not be in AppState`).not.toMatch(
+    expect(store, `${field} should not be in store composition`).not.toMatch(
       new RegExp(`\\b${field}\\b`),
     );
   }
@@ -321,22 +306,34 @@ test("isolates Agent state in a dedicated context broadcast domain", () => {
   }
 });
 
-test("keeps UI-only fields out of useApp consumers", () => {
-  const uiFields = new Set([
-    "showConfigModal",
-    "setShowConfigModal",
-    "showMemoryModal",
-    "setShowMemoryModal",
-    "theme",
-    "effectiveTheme",
-    "setTheme",
-    "uiNotice",
-    "showNotice",
-    "clearNotice",
-    "locale",
-    "setLocale",
-    "t",
-  ]);
+test("removes the generic AppContext and isolates skills refresh", () => {
+  const contextPath = "src/lib/skillsRefreshContext.tsx";
+  expect(existsSync(contextPath)).toBe(true);
+  if (!existsSync(contextPath)) return;
+
+  const context = readFileSync(contextPath, "utf8");
+  const store = readFileSync("src/lib/store.tsx", "utf8");
+  const workspace = readFileSync("src/lib/hooks/useAppWorkspace.ts", "utf8");
+  const skillsPanel = readFileSync(
+    "src/components/skills/SkillsPanel.tsx",
+    "utf8",
+  );
+
+  expect(context).toContain("SkillsRefreshProvider");
+  expect(context).toContain("useSkillsRefresh");
+  expect(store).toContain(
+    "<SkillsRefreshProvider version={skillsRefreshTrigger}>",
+  );
+  expect(store).not.toContain("AppContext");
+  expect(store).not.toContain("interface AppState");
+  expect(store).not.toContain("function useApp");
+  expect(workspace).not.toContain("ragMode");
+  expect(workspace).not.toContain("updateRagMode");
+  expect(skillsPanel).toContain("useSkillsRefresh()");
+  expect(skillsPanel).not.toContain("useApp()");
+});
+
+test("removes generic useApp consumers", () => {
   const files = [
     ...listTsxFiles("src/app"),
     ...listTsxFiles("src/components"),
@@ -344,58 +341,26 @@ test("keeps UI-only fields out of useApp consumers", () => {
 
   for (const file of files) {
     const source = readFileSync(file, "utf8");
-    const appSelections = source.matchAll(
-      /const\s*\{((?:(?!useUi\(\);)[\s\S])*?)\}\s*=\s*useApp\(\);/g,
+    expect(source, `${file} should use a dedicated context`).not.toContain(
+      "useApp()",
     );
-    for (const selection of appSelections) {
-      const selectedNames = selection[1]
-        .split(",")
-        .map((name) => name.trim().split(":")[0].trim())
-        .filter(Boolean);
-      expect(
-        selectedNames.filter((name) => uiFields.has(name)),
-        `${file} should read UI-only fields from useUi()`,
-      ).toEqual([]);
-    }
   }
 });
 
-test("keeps UI and i18n fields out of the AppContext contract", () => {
+test("keeps AppProvider limited to provider composition", () => {
   const store = readFileSync("src/lib/store.tsx", "utf8");
-  const interfaceStart = store.indexOf("interface AppState {");
-  const interfaceEnd = store.indexOf("\n}\n\nconst AppContext", interfaceStart);
-  const valueStart = store.indexOf("const value = useMemo<AppState>");
-  const valueEnd = store.indexOf("\n  }), [", valueStart);
-  const appState = store.slice(interfaceStart, interfaceEnd);
-  const appValue = store.slice(valueStart, valueEnd);
-  const uiFields = [
-    "showConfigModal",
-    "setShowConfigModal",
-    "showMemoryModal",
-    "setShowMemoryModal",
-    "theme",
-    "effectiveTheme",
-    "setTheme",
-    "uiNotice",
-    "showNotice",
-    "clearNotice",
-    "locale",
-    "setLocale",
-    "t",
-  ];
 
-  expect(interfaceStart).toBeGreaterThanOrEqual(0);
-  expect(interfaceEnd).toBeGreaterThan(interfaceStart);
-  expect(valueStart).toBeGreaterThanOrEqual(0);
-  expect(valueEnd).toBeGreaterThan(valueStart);
-  for (const field of uiFields) {
-    expect(appState, `${field} should not be in AppState`).not.toMatch(
-      new RegExp(`\\b${field}\\b`),
-    );
-    expect(appValue, `${field} should not be in AppContext value`).not.toMatch(
-      new RegExp(`\\b${field}\\b`),
-    );
-  }
+  expect(store).not.toContain("createContext");
+  expect(store).not.toContain("useContext");
+  expect(store).not.toContain("useMemo");
+  expect(store).toContain("<UiProvider>");
+  expect(store).toContain("<ApprovalProvider>");
+  expect(store).toContain("<WorkspaceProviders>");
+  expect(store).toContain("<SkillsRefreshProvider");
+  expect(store).toContain("<InspectorProvider");
+  expect(store).toContain("<ChatProvider");
+  expect(store).toContain("<SubagentProvider");
+  expect(store).toContain("<AgentProvider");
 });
 
 test("keeps toast notifications clear of the workspace rail", () => {
