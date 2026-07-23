@@ -382,6 +382,27 @@ class UserTurnDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await stream_queue.get()).type, "token")
         self.assertIsNone(await stream_queue.get())
 
+    async def test_dispatcher_delegates_to_injected_user_executor(self) -> None:
+        executor = Mock()
+        executor.execute = AsyncMock()
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            user_executor=executor,
+        )
+        task = SessionWorkItem(
+            kind="user",
+            priority=PRIORITY_USER,
+            content="run delegated user turn",
+            agent_id="main",
+            session_id="main-main",
+            turn_id="turn-delegated",
+            stream_queue=asyncio.Queue(),
+        )
+
+        await dispatcher._execute_user(task)
+
+        executor.execute.assert_awaited_once_with(task)
+
     async def test_aclose_cancels_user_turn_waiting_for_session_lock(self) -> None:
         coordinator = Mock()
         stream_queue: asyncio.Queue[TurnEvent | None] = asyncio.Queue()

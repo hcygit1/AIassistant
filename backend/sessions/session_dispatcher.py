@@ -35,6 +35,7 @@ from sessions.session_work_policy import (
     PRIORITY_HEARTBEAT,
 )
 from sessions.session_system_work_executor import SessionSystemWorkExecutor
+from sessions.session_user_turn_executor import SessionUserTurnExecutor
 from turns.events import TurnEvent
 
 if TYPE_CHECKING:
@@ -143,6 +144,7 @@ class SessionDispatcher:
         user_stream: UserStream | None = None,
         turn_coordinator: Any | None = None,
         system_executor: SessionSystemWorkExecutor | None = None,
+        user_executor: SessionUserTurnExecutor | None = None,
     ):
         self._lock = lock
         self._work_store = (
@@ -172,6 +174,16 @@ class SessionDispatcher:
                 else SYSTEM_TIMEOUT_SEC
             ),
             safe_call=_safe_call,
+        )
+        self._user_executor = user_executor or SessionUserTurnExecutor(
+            lock=self._lock,
+            user_stream=self._user_stream,
+            turn_coordinator=self._turn_coordinator,
+            set_current_turn=lambda turn_id: setattr(
+                self,
+                "_current_executing_turn_id",
+                turn_id,
+            ),
         )
 
     @property
@@ -298,73 +310,7 @@ class SessionDispatcher:
             await self._execute_system(task)
 
     async def _execute_user(self, task: SessionWorkItem) -> None:
-        if not task.turn_id or not task.stream_queue:
-            logger.error("user task missing turn_id or stream_queue")
-            return
-
-        lock_acquired = False
-
-        try:
-            await self._lock.acquire()
-            lock_acquired = True
-        except asyncio.CancelledError:
-            self._turn_coordinator.set_cancelled(task.turn_id)
-            await task.stream_queue.put(None)
-            return
-
-        self._current_executing_turn_id = task.turn_id
-        self._turn_coordinator.set_running(task.turn_id)
-
-        async def _run_user_inner() -> tuple[str, str | None]:
-            terminal_status = "done"
-            terminal_error: str | None = None
-            async for event in self._user_stream(
-                task.content,
-                task.session_id,
-                task.agent_id,
-                task.turn_id,
-            ):
-                await task.stream_queue.put(event)
-                if terminal_status == "done" and event.type == "error":
-                    terminal_status = "error"
-                    terminal_error = event.error_message or "user turn failed"
-                elif terminal_status == "done" and event.type == "aborted":
-                    terminal_status = "cancelled"
-            return terminal_status, terminal_error
-
-        inner = asyncio.create_task(_run_user_inner())
-        self._turn_coordinator.bind_execution_task(task.turn_id, inner)
-
-        try:
-            terminal_status, terminal_error = await inner
-        except asyncio.CancelledError:
-            self._turn_coordinator.set_cancelled(task.turn_id)
-        except Exception as e:
-            logger.error("User turn execution failed: %s", e)
-            await task.stream_queue.put(TurnEvent.error(str(e)))
-            self._turn_coordinator.set_error(task.turn_id, str(e))
-        else:
-            if terminal_status == "error":
-                self._turn_coordinator.set_error(
-                    task.turn_id,
-                    terminal_error or "user turn failed",
-                )
-            elif terminal_status == "cancelled":
-                self._turn_coordinator.set_cancelled(task.turn_id)
-            else:
-                self._turn_coordinator.set_done(task.turn_id)
-        finally:
-            self._current_executing_turn_id = None
-            self._turn_coordinator.bind_execution_task(task.turn_id, None)
-            try:
-                await task.stream_queue.put(None)
-            except Exception:
-                pass
-            if lock_acquired:
-                try:
-                    self._lock.release()
-                except RuntimeError:
-                    pass
+        await self._user_executor.execute(task)
 
     async def _execute_system(self, task: SessionWorkItem) -> None:
         await self._system_executor.execute(task)
