@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.dependencies import get_agent_manager, get_heartbeat_runner
 from config import (
     list_agents,
     resolve_agent_config,
@@ -82,7 +85,11 @@ async def get_agent_tools(agent_id: str):
 
 
 @router.post("/agents")
-async def create_agent(req: AgentCreateRequest):
+async def create_agent(
+    req: AgentCreateRequest,
+    agent_manager: Any = Depends(get_agent_manager),
+    heartbeat_runner: Any = Depends(get_heartbeat_runner),
+):
     existing = [a["id"] for a in list_agents()]
     if req.id in existing:
         raise HTTPException(400, f"Agent '{req.id}' 已存在")
@@ -114,10 +121,8 @@ async def create_agent(req: AgentCreateRequest):
     from tools.skills_scanner import write_skills_snapshot
     write_skills_snapshot(req.id)
 
-    from runtime.agent import agent_manager
     await agent_manager.register_agent(req.id)
 
-    from system_messages.heartbeat import heartbeat_runner
     await heartbeat_runner.add_agent(req.id)
 
     return {"status": "ok", "agent_id": req.id}
@@ -168,7 +173,11 @@ async def get_heartbeat_history(agent_id: str, limit: int = 30):
 
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str, delete_files: bool = True):
+async def delete_agent(
+    agent_id: str,
+    delete_files: bool = True,
+    heartbeat_runner: Any = Depends(get_heartbeat_runner),
+):
     import shutil
     import time as _time
     from config import DATA_DIR
@@ -202,11 +211,8 @@ async def delete_agent(agent_id: str, delete_files: bool = True):
                     files_msg = "文件清理失败"
 
     try:
-        from system_messages.heartbeat import heartbeat_runner
         heartbeat_runner.update_config()
     except Exception:
         pass
 
     return {"status": "ok", "message": f"Agent '{agent_id}' 已删除（{files_msg}）"}
-
-

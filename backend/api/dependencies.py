@@ -11,6 +11,12 @@ def get_agent_manager() -> Any:
     return agent_manager
 
 
+def get_heartbeat_runner() -> Any:
+    from system_messages.heartbeat import heartbeat_runner
+
+    return heartbeat_runner
+
+
 def get_session_manager() -> Any:
     from sessions.session_manager import session_manager
 
