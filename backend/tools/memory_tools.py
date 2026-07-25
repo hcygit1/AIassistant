@@ -12,6 +12,10 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 from runtime.source_sink_guard import wrap_untrusted_content
+from tools.runtime_dependencies import (
+    ToolRuntimeDependencies,
+    default_tool_runtime_dependencies,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +39,19 @@ class MemSearchTool(BaseTool):
     )
     args_schema: type[BaseModel] = MemSearchInput
     agent_id: str = ""
+    _get_memory_recall: Any = None
 
     def _run(self, query: str, max_results: int = 8) -> str:
         raise NotImplementedError("Use _arun for async execution")
 
     async def _arun(self, query: str, max_results: int = 8) -> str:
         try:
-            from runtime.agent import agent_manager
-            recall = agent_manager.mem_recalls.get(self.agent_id)
+            get_memory_recall = self._get_memory_recall
+            if get_memory_recall is None:
+                get_memory_recall = (
+                    default_tool_runtime_dependencies().get_memory_recall
+                )
+            recall = get_memory_recall(self.agent_id)
         except Exception:
             recall = None
 
@@ -92,11 +101,16 @@ class MemGetTool(BaseTool):
     )
     args_schema: type[BaseModel] = MemGetInput
     agent_id: str = ""
+    _get_memory_store: Any = None
 
     def _run(self, chunk_id: str) -> str:
         try:
-            from runtime.agent import agent_manager
-            store = agent_manager.mem_stores.get(self.agent_id)
+            get_memory_store = self._get_memory_store
+            if get_memory_store is None:
+                get_memory_store = (
+                    default_tool_runtime_dependencies().get_memory_store
+                )
+            store = get_memory_store(self.agent_id)
         except Exception:
             store = None
 
@@ -129,8 +143,17 @@ class MemGetTool(BaseTool):
 # Factory
 # ---------------------------------------------------------------------------
 
-def get_memory_tools(agent_id: str = "", **_kwargs: Any) -> list[BaseTool]:
-    return [
-        MemSearchTool(agent_id=agent_id),
-        MemGetTool(agent_id=agent_id),
-    ]
+def get_memory_tools(
+    agent_id: str = "",
+    *,
+    runtime_dependencies: ToolRuntimeDependencies | None = None,
+    **_kwargs: Any,
+) -> list[BaseTool]:
+    dependencies = (
+        runtime_dependencies or default_tool_runtime_dependencies()
+    )
+    search_tool = MemSearchTool(agent_id=agent_id)
+    search_tool._get_memory_recall = dependencies.get_memory_recall
+    get_tool = MemGetTool(agent_id=agent_id)
+    get_tool._get_memory_store = dependencies.get_memory_store
+    return [search_tool, get_tool]

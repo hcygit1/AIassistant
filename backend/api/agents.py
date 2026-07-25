@@ -7,7 +7,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from api.dependencies import get_agent_manager, get_heartbeat_runner
+from api.dependencies import (
+    get_agent_manager,
+    get_heartbeat_runner,
+)
 from config import (
     list_agents,
     resolve_agent_config,
@@ -55,13 +58,15 @@ async def get_agent(agent_id: str):
 
 
 @router.get("/agents/{agent_id}/tools")
-async def get_agent_tools(agent_id: str):
+async def get_agent_tools(
+    agent_id: str,
+    agent_manager: Any = Depends(get_agent_manager),
+):
     """列出指定 Agent 的 function call 工具（含 allowed 状态，供侧边栏 toggle 使用）"""
     if not any(a["id"] == agent_id for a in list_agents()):
         raise HTTPException(404, f"Agent '{agent_id}' 不存在")
-    from tools import get_all_tools
     from config import is_tool_allowed_by_policy
-    tools = get_all_tools(agent_id)
+    tools = agent_manager.collect_tools(agent_id)
     categories = {
         "file": ["read", "write", "edit", "apply_patch", "grep", "find", "ls"],
         "runtime": ["exec", "python_repl", "process_list", "process_kill"],

@@ -14,6 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
 from config import is_tool_allowed_by_policy, resolve_tool_policy
 from runtime.agent import AgentManager
 from runtime.tool_registry import ToolRegistry
+from tools.runtime_dependencies import ToolRuntimeDependencies
 
 
 class ToolPolicyTests(unittest.TestCase):
@@ -73,6 +74,31 @@ class ToolPolicyTests(unittest.TestCase):
 
 
 class ToolRegistryTests(unittest.TestCase):
+    def test_registry_delegates_to_shared_tool_collection(self) -> None:
+        service = object()
+        dependencies = ToolRuntimeDependencies(
+            get_session_manager=Mock(),
+            get_memory_recall=Mock(),
+            get_memory_store=Mock(),
+            count_active_for_requester=Mock(),
+        )
+        registry = ToolRegistry(
+            subagent_service=service,
+            runtime_dependencies=dependencies,
+        )
+        expected = [SimpleNamespace(name="read")]
+
+        with patch("tools.get_all_tools", return_value=expected) as collect:
+            result = registry.collect_tools("main", "session-1")
+
+        self.assertIs(result, expected)
+        collect.assert_called_once_with(
+            "main",
+            subagent_service=service,
+            session_id="session-1",
+            runtime_dependencies=dependencies,
+        )
+
     def test_registry_filters_tools_with_shared_policy(self) -> None:
         registry = ToolRegistry(subagent_service=object())
         tools = [
@@ -135,6 +161,32 @@ class ToolRegistryTests(unittest.TestCase):
         manager = AgentManager()
 
         self.assertIs(manager._tool_name_cache, manager._tool_registry.name_cache)
+
+    def test_agent_manager_collection_uses_injected_session_manager(
+        self,
+    ) -> None:
+        session_manager = Mock()
+        session_manager.list_sessions.return_value = []
+        session_manager.session_key_from_session_id.return_value = (
+            "agent:main:session-1"
+        )
+        manager = AgentManager(session_manager=session_manager)
+
+        tools = {
+            tool.name: tool
+            for tool in manager.collect_tools("main", "session-1")
+        }
+        tools["sessions_list"]._run()
+        tools["session_status"]._run()
+
+        session_manager.list_sessions.assert_called_once_with(
+            "main",
+            spawned_by_session_key=None,
+        )
+        session_manager.session_key_from_session_id.assert_called_once_with(
+            "main",
+            "session-1",
+        )
 
     def test_agent_manager_policy_override_remains_effective(self) -> None:
         manager = AgentManager()

@@ -23,6 +23,7 @@ from runtime.agent_turn_preparation import AgentTurnPreparationAdapter
 from runtime.command_parser import CommandExecutionDependencies
 from subagents.subagent_runner import SubagentRunner
 from subagents.subagent_service import SubagentService
+from tools.runtime_dependencies import ToolRuntimeDependencies
 
 
 @dataclass
@@ -130,7 +131,21 @@ class AgentRuntimeAssembler:
                 requester_agent_id=requester_agent_id,
             )
         )
-        tool_registry = ToolRegistry(subagent_service)
+        tool_registry = ToolRegistry(
+            subagent_service,
+            runtime_dependencies=ToolRuntimeDependencies(
+                get_session_manager=self._get_session_manager,
+                get_memory_recall=lambda agent_id: memory_runtime.recalls.get(
+                    agent_id
+                ),
+                get_memory_store=lambda agent_id: memory_runtime.stores.get(
+                    agent_id
+                ),
+                count_active_for_requester=(
+                    subagent_service.count_active_for_requester
+                ),
+            ),
+        )
         turn_context = TurnContext()
         turn_preparation = TurnPreparation(turn_context)
         turn_preparation_adapter = AgentTurnPreparationAdapter(

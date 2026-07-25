@@ -7,10 +7,12 @@ from typing import Any, Callable
 
 from config import (
     is_tool_name_allowed,
-    resolve_agent_dir,
-    resolve_agent_workspace,
     resolve_tool_catalog_signature,
     resolve_tool_policy,
+)
+from tools.runtime_dependencies import (
+    ToolRuntimeDependencies,
+    default_tool_runtime_dependencies,
 )
 
 
@@ -28,39 +30,26 @@ class ToolNameCacheEntry:
 
 
 class ToolRegistry:
-    def __init__(self, subagent_service: Any) -> None:
+    def __init__(
+        self,
+        subagent_service: Any,
+        runtime_dependencies: ToolRuntimeDependencies | None = None,
+    ) -> None:
         self._subagent_service = subagent_service
+        self._runtime_dependencies = (
+            runtime_dependencies or default_tool_runtime_dependencies()
+        )
         self.name_cache: dict[tuple[Any, ...], ToolNameCacheEntry] = {}
 
     def collect_tools(self, agent_id: str, session_id: str = "") -> list:
-        workspace = str(resolve_agent_workspace(agent_id))
-        agent_dir = str(resolve_agent_dir(agent_id))
+        from tools import get_all_tools
 
-        from tools.agent_tools import get_agent_tools
-        from tools.cron_tools import get_cron_tools
-        from tools.exec_tools import get_exec_tools
-        from tools.file_tools import get_file_tools
-        from tools.knowledge_tool import get_knowledge_tools
-        from tools.memory_tools import get_memory_tools
-        from tools.status_tool import get_status_tools
-        from tools.web_tools import get_web_tools
-
-        tools = []
-        tools.extend(get_file_tools(workspace, agent_id=agent_id))
-        tools.extend(get_exec_tools(workspace, agent_id))
-        tools.extend(get_web_tools())
-        tools.extend(get_memory_tools(agent_id=agent_id))
-        tools.extend(get_knowledge_tools(agent_dir))
-        tools.extend(
-            get_agent_tools(
-                agent_id,
-                self._subagent_service,
-                session_id,
-            )
+        return get_all_tools(
+            agent_id,
+            subagent_service=self._subagent_service,
+            session_id=session_id,
+            runtime_dependencies=self._runtime_dependencies,
         )
-        tools.extend(get_cron_tools(agent_id))
-        tools.extend(get_status_tools(agent_id, session_id))
-        return tools
 
     @staticmethod
     def wrap_tools(

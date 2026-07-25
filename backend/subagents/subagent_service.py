@@ -149,3 +149,6 @@ class SubagentService:
         return self._registry.session_key_from_child_session_key(
             record.child_session_key
         )
+
+    def count_active_for_requester(self, requester_key: str) -> int:
+        return self._registry.count_active_for_requester(requester_key)

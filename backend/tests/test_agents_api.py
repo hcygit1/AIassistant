@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
@@ -21,6 +22,8 @@ class AgentsApiDependencyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.agent_manager = Mock()
         self.agent_manager.register_agent = AsyncMock()
+        self.agent_manager.mem_recalls = {}
+        self.agent_manager.mem_stores = {}
         self.heartbeat_runner = Mock()
         self.heartbeat_runner.add_agent = AsyncMock()
         app = FastAPI()
@@ -63,8 +66,37 @@ class AgentsApiDependencyTests(unittest.TestCase):
 
     def test_dependencies_do_not_add_openapi_parameters(self) -> None:
         operation = self.app.openapi()["paths"]["/api/agents"]["post"]
+        tools_operation = self.app.openapi()["paths"][
+            "/api/agents/{agent_id}/tools"
+        ]["get"]
 
         self.assertEqual(operation.get("parameters", []), [])
+        self.assertEqual(
+            {
+                item["name"]
+                for item in tools_operation.get("parameters", [])
+            },
+            {"agent_id"},
+        )
+
+    def test_tools_use_overridden_agent_manager_collection(self) -> None:
+        self.agent_manager.collect_tools.return_value = [
+            SimpleNamespace(
+                name="read",
+                description="Read a file",
+            )
+        ]
+        with (
+            patch("api.agents.list_agents", return_value=[{"id": "main"}]),
+            patch(
+                "config.is_tool_allowed_by_policy",
+                return_value=True,
+            ),
+        ):
+            response = self.client.get("/api/agents/main/tools")
+
+        self.assertEqual(response.status_code, 200)
+        self.agent_manager.collect_tools.assert_called_once_with("main")
 
     def test_delete_uses_overridden_heartbeat_runner(self) -> None:
         config = {

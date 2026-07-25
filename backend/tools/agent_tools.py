@@ -12,9 +12,22 @@ from config import (
     list_agents,
     resolve_agent_config,
 )
+from tools.runtime_dependencies import (
+    ToolRuntimeDependencies,
+    default_tool_runtime_dependencies,
+)
 
 ANNOUNCE_ACQUIRE_TIMEOUT_SEC = 10
 ANNOUNCE_RUN_TIMEOUT_SEC = 30
+
+
+def _resolve_session_manager(provider: Any) -> Any:
+    get_session_manager = provider
+    if get_session_manager is None:
+        get_session_manager = (
+            default_tool_runtime_dependencies().get_session_manager
+        )
+    return get_session_manager()
 
 
 # ---------------------------------------------------------------------------
@@ -90,10 +103,13 @@ class SessionsListTool(BaseTool):
     args_schema: type[BaseModel] = SessionsListInput
     current_agent_id: str = "main"
     current_session_id: str = ""
+    _get_session_manager: Any = None
 
     def _run(self, agent_id: str = "", spawned_by: str = "") -> str:
         target_id = agent_id or self.current_agent_id
-        from sessions.session_manager import session_manager
+        session_manager = _resolve_session_manager(
+            self._get_session_manager
+        )
 
         spawned_by_key: str | None = None
         if spawned_by and (spawned_by or "").strip():
@@ -132,10 +148,13 @@ class SessionsHistoryTool(BaseTool):
     args_schema: type[BaseModel] = SessionsHistoryInput
     current_agent_id: str = "main"
     current_session_id: str = ""
+    _get_session_manager: Any = None
 
     def _run(self, session_id: str = "", agent_id: str = "", limit: int = 20) -> str:
         target_id = agent_id or self.current_agent_id
-        from sessions.session_manager import session_manager
+        session_manager = _resolve_session_manager(
+            self._get_session_manager
+        )
         effective_sid = (session_id or "").strip() or self.current_session_id
         if not effective_sid:
             effective_sid = session_manager.resolve_main_session_id(target_id)
@@ -173,10 +192,13 @@ class SessionsSendTool(BaseTool):
     args_schema: type[BaseModel] = SessionsSendInput
     current_agent_id: str = "main"
     current_session_id: str = ""
+    _get_session_manager: Any = None
 
     def _run(self, session_id: str = "", message: str = "", agent_id: str = "") -> str:
         target_id = agent_id or self.current_agent_id
-        from sessions.session_manager import session_manager
+        session_manager = _resolve_session_manager(
+            self._get_session_manager
+        )
         effective_sid = (session_id or "").strip() or self.current_session_id
         if not effective_sid:
             effective_sid = session_manager.resolve_main_session_id(target_id)
@@ -384,7 +406,12 @@ def get_agent_tools(
     agent_id: str,
     subagent_service: Any = None,
     session_id: str = "",
+    *,
+    runtime_dependencies: ToolRuntimeDependencies | None = None,
 ) -> list[BaseTool]:
+    dependencies = (
+        runtime_dependencies or default_tool_runtime_dependencies()
+    )
     spawn_tool = SessionsSpawnTool(
         current_agent_id=agent_id,
         current_session_id=session_id,
@@ -394,15 +421,29 @@ def get_agent_tools(
     # 注入 agentSessionKey/current_session_id，工具从上下文获取当前会话
     effective_session_id = session_id or ""
     if not effective_session_id:
-        from sessions.session_manager import session_manager
+        session_manager = dependencies.get_session_manager()
         effective_session_id = session_manager.resolve_main_session_id(agent_id)
     subagents_tool = SubagentsTool(current_agent_id=agent_id, current_session_id=effective_session_id)
     subagents_tool._subagent_service = subagent_service
+    sessions_list_tool = SessionsListTool(current_agent_id=agent_id)
+    sessions_list_tool._get_session_manager = dependencies.get_session_manager
+    sessions_history_tool = SessionsHistoryTool(
+        current_agent_id=agent_id,
+        current_session_id=effective_session_id,
+    )
+    sessions_history_tool._get_session_manager = (
+        dependencies.get_session_manager
+    )
+    sessions_send_tool = SessionsSendTool(
+        current_agent_id=agent_id,
+        current_session_id=effective_session_id,
+    )
+    sessions_send_tool._get_session_manager = dependencies.get_session_manager
     return [
         AgentsListTool(current_agent_id=agent_id),
-        SessionsListTool(current_agent_id=agent_id),
-        SessionsHistoryTool(current_agent_id=agent_id, current_session_id=effective_session_id),
-        SessionsSendTool(current_agent_id=agent_id, current_session_id=effective_session_id),
+        sessions_list_tool,
+        sessions_history_tool,
+        sessions_send_tool,
         spawn_tool,
         subagents_tool,
     ]

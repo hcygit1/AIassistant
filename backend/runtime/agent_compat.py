@@ -91,3 +91,10 @@ class AgentManagerCompatibilityMixin:
     @mem_recalls.setter
     def mem_recalls(self, value: dict[str, Any]) -> None:
         self._memory_runtime.recalls = value
+
+    def collect_tools(
+        self,
+        agent_id: str,
+        session_id: str = "",
+    ) -> list[Any]:
+        return self._tool_registry.collect_tools(agent_id, session_id)
