@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -39,6 +38,9 @@ from llm.llm_factory import create_llm, llm_cache
 from llm.models_config import models_config
 from runtime.agent_state import AgentState
 from runtime.agent_compat import AgentManagerCompatibilityMixin
+from runtime.agent_environment_compat import (
+    AgentManagerEnvironmentCompatibilityMixin,
+)
 from runtime.agent_session_compat import (
     AgentManagerSessionCompatibilityMixin,
 )
@@ -107,66 +109,11 @@ from infra.event_bus import event_bus
 # ---------------------------------------------------------------------------
 
 class AgentManager(
+    AgentManagerEnvironmentCompatibilityMixin,
     AgentManagerSessionCompatibilityMixin,
     AgentManagerTurnPreparationCompatibilityMixin,
     AgentManagerCompatibilityMixin,
 ):
-
-    @staticmethod
-    def _log_compress(
-        agent_id: str,
-        session_id: str,
-        archived_count: int,
-        remaining_count: int,
-    ) -> None:
-        audit_logger.log_compress(
-            agent_id,
-            session_id,
-            archived_count,
-            remaining_count,
-        )
-
-    @staticmethod
-    def _emit_runtime_event(
-        agent_id: str,
-        event: dict[str, Any],
-    ) -> None:
-        event_bus.emit(agent_id, event)
-
-    @staticmethod
-    def _audit_runtime_event(
-        agent_id: str,
-        event_type: str,
-        data: dict[str, Any],
-    ) -> None:
-        audit_logger.log(agent_id, event_type, data)
-
-    @staticmethod
-    def _write_skills_snapshot(agent_id: str) -> None:
-        from tools.skills_scanner import write_skills_snapshot
-
-        write_skills_snapshot(agent_id)
-
-    @staticmethod
-    def _has_bootstrap(agent_id: str) -> bool:
-        from runtime.workspace import has_bootstrap
-
-        return has_bootstrap(agent_id)
-
-    @staticmethod
-    def _get_locale() -> str:
-        from config import get_config
-
-        return get_config().get(
-            "app",
-            {},
-        ).get("locale", "zh-CN")
-
-    @staticmethod
-    def _resolve_context_budget(agent_id: str) -> Any:
-        from runtime.context_budget import resolve_budget
-
-        return resolve_budget(agent_id)
 
     def __init__(
         self,
@@ -192,38 +139,8 @@ class AgentManager(
             return self._session_manager_override
         return globals()["session_manager"]
 
-    def _get_state_persist_config(self, agent_id: str) -> tuple[bool, int]:
-        """获取状态持久化配置 (enabled, interval_minutes)"""
-        try:
-            from config import resolve_agent_config
-            cfg = resolve_agent_config(agent_id)
-            persist_cfg = cfg.get("statePersist", {})
-            return (
-                persist_cfg.get("enabled", True),
-                persist_cfg.get("autoSaveIntervalMinutes", 5),
-            )
-        except Exception:
-            return True, 5
-
-    def _get_state_path(self, agent_id: str) -> Path:
-        """获取状态文件路径"""
-        agent_dir = resolve_agent_dir(agent_id)
-        return agent_dir / "agent_state.json"
-
-    @staticmethod
-    def _resolve_think_level(agent_id: str) -> Any:
-        from llm.thinking import resolve_agent_think_default
-
-        return resolve_agent_think_default(agent_id)
-
     def _init_mem_system(self, agent_id: str) -> None:
         self._memory_runtime.initialize_agent(agent_id)
-
-    @staticmethod
-    def _ensure_agent_workspace(agent_id: str) -> None:
-        from runtime.workspace import ensure_agent_workspace
-
-        ensure_agent_workspace(agent_id)
 
     async def initialize(self, data_dir: str) -> None:
         await self._lifecycle.initialize(data_dir)
