@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from sessions.session_runtime_cleanup import SessionRuntimeCleanupService
+
 
 class SessionLock:
     """每个 session 一个实例，提供串行锁。
@@ -105,21 +107,8 @@ def cleanup_session_runtime(
 
         turn_coordinator = default_coordinator
 
-    def finalize_cleanup() -> None:
-        lock_manager.cleanup(agent_id, session_id)
-        turn_coordinator.clear_session(agent_id, session_id)
-
-    cleanup_when_closed = getattr(
-        dispatcher_manager,
-        "cleanup_when_closed",
-        None,
-    )
-    if callable(cleanup_when_closed):
-        cleanup_when_closed(
-            agent_id,
-            session_id,
-            on_closed=finalize_cleanup,
-        )
-    else:
-        dispatcher_manager.cleanup(agent_id, session_id)
-        finalize_cleanup()
+    SessionRuntimeCleanupService(
+        dispatcher_manager=dispatcher_manager,
+        lock_manager=lock_manager,
+        turn_coordinator=turn_coordinator,
+    ).cleanup(agent_id, session_id)

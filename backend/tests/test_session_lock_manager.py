@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 import asyncio
+import importlib
+import importlib.util
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,6 +55,58 @@ class _TurnCoordinator:
 
 
 class SessionRuntimeCleanupTests(unittest.TestCase):
+    def test_cleanup_service_waits_for_dispatcher_close_callback(self) -> None:
+        self.assertIsNotNone(
+            importlib.util.find_spec("sessions.session_runtime_cleanup"),
+            "SessionRuntimeCleanupService should own runtime cleanup orchestration",
+        )
+        cleanup_module = importlib.import_module(
+            "sessions.session_runtime_cleanup"
+        )
+        calls: list[tuple] = []
+        lock_manager = _LockManager(calls)
+        coordinator = _TurnCoordinator(calls)
+
+        class DeferredDispatcherManager:
+            def __init__(self) -> None:
+                self.on_closed = None
+
+            def cleanup_when_closed(
+                self,
+                agent_id: str,
+                session_id: str,
+                *,
+                on_closed,
+            ) -> None:
+                calls.append(("dispatcher", agent_id, session_id))
+                self.on_closed = on_closed
+
+        dispatcher_manager = DeferredDispatcherManager()
+        service = cleanup_module.SessionRuntimeCleanupService(
+            dispatcher_manager=dispatcher_manager,
+            lock_manager=lock_manager,
+            turn_coordinator=coordinator,
+        )
+
+        service.cleanup("main", "main-main")
+
+        self.assertEqual(
+            calls,
+            [("dispatcher", "main", "main-main")],
+        )
+        self.assertIsNotNone(dispatcher_manager.on_closed)
+
+        dispatcher_manager.on_closed()
+
+        self.assertEqual(
+            calls,
+            [
+                ("dispatcher", "main", "main-main"),
+                ("lock", "main", "main-main"),
+                ("turn", "main", "main-main"),
+            ],
+        )
+
     def test_default_cleanup_uses_shared_session_work_runtime(self) -> None:
         calls: list[tuple] = []
         lock_manager = _LockManager(calls)
