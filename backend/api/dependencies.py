@@ -17,6 +17,12 @@ def get_heartbeat_runner() -> Any:
     return heartbeat_runner
 
 
+def get_event_bus() -> Any:
+    from infra.event_bus import event_bus
+
+    return event_bus
+
+
 def get_session_manager() -> Any:
     from sessions.session_manager import session_manager
 

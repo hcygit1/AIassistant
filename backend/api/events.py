@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from api.dependencies import (
     get_agent_manager,
+    get_event_bus,
     get_heartbeat_runner,
     get_session_manager,
 )
@@ -30,10 +31,11 @@ class SubagentSteerRequest(BaseModel):
 
 
 @router.get("/agents/{agent_id}/events")
-async def agent_events(agent_id: str):
+async def agent_events(
+    agent_id: str,
+    event_bus: Any = Depends(get_event_bus),
+):
     """SSE 端点：订阅 Agent 的生命周期事件"""
-    from infra.event_bus import event_bus
-
     queue = event_bus.subscribe(agent_id)
 
     async def event_stream():
