@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sessions.session_work_query import SessionWorkFilter
 from sessions.session_work_record import SessionWorkRecord
+from sessions.session_work_transitions import SessionWorkTransitions
 
 
 _CREATE_TABLE_SQL = """
@@ -44,6 +45,10 @@ class SessionWorkStore:
             db_path = DATA_DIR / "session_work.db"
         self._db_path = str(db_path)
         self._lock = threading.Lock()
+        self._transitions = SessionWorkTransitions(
+            execute_update=self._execute_update,
+            now_ms=lambda: int(time.time() * 1000),
+        )
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -58,6 +63,20 @@ class SessionWorkStore:
             try:
                 conn.executescript(_CREATE_TABLE_SQL)
                 conn.commit()
+            finally:
+                conn.close()
+
+    def _execute_update(
+        self,
+        sql: str,
+        params: tuple[object, ...],
+    ) -> int:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cursor = conn.execute(sql, params)
+                conn.commit()
+                return cursor.rowcount
             finally:
                 conn.close()
 
@@ -134,111 +153,25 @@ class SessionWorkStore:
         return self._record_from_row(row) if row else None
 
     def mark_running(self, work_id: str) -> bool:
-        now_ms = int(time.time() * 1000)
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                cursor = conn.execute(
-                    """UPDATE session_work
-                    SET status='running', started_at_ms=?, last_error=NULL
-                    WHERE id=? AND status IN ('queued', 'running')""",
-                    (now_ms, work_id),
-                )
-                conn.commit()
-                return cursor.rowcount == 1
-            finally:
-                conn.close()
+        return self._transitions.mark_running(work_id)
 
     def cancel_queued(self, work_id: str) -> bool:
-        now_ms = int(time.time() * 1000)
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                cursor = conn.execute(
-                    """UPDATE session_work
-                    SET status='cancelled', finished_at_ms=?
-                    WHERE id=? AND status='queued'""",
-                    (now_ms, work_id),
-                )
-                conn.commit()
-                return cursor.rowcount == 1
-            finally:
-                conn.close()
+        return self._transitions.cancel_queued(work_id)
 
     def mark_cancelled(self, work_id: str) -> None:
-        now_ms = int(time.time() * 1000)
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                conn.execute(
-                    """UPDATE session_work
-                    SET status='cancelled', finished_at_ms=?
-                    WHERE id=? AND status IN ('queued', 'running')""",
-                    (now_ms, work_id),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        self._transitions.mark_cancelled(work_id)
 
     def requeue_for_recovery(self, work_id: str) -> bool:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                cursor = conn.execute(
-                    """UPDATE session_work
-                    SET status='queued', started_at_ms=NULL,
-                        finished_at_ms=NULL, last_error=NULL
-                    WHERE id=? AND recover_on_restart=1
-                        AND status IN ('queued', 'running')""",
-                    (work_id,),
-                )
-                conn.commit()
-                return cursor.rowcount == 1
-            finally:
-                conn.close()
+        return self._transitions.requeue_for_recovery(work_id)
 
     def fail_unrecoverable_pending(self, error: str) -> int:
-        now_ms = int(time.time() * 1000)
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                cursor = conn.execute(
-                    """UPDATE session_work
-                    SET status='failed', finished_at_ms=?, last_error=?
-                    WHERE recover_on_restart=0
-                        AND status IN ('queued', 'running')""",
-                    (now_ms, error),
-                )
-                conn.commit()
-                return cursor.rowcount
-            finally:
-                conn.close()
+        return self._transitions.fail_unrecoverable_pending(error)
 
     def mark_done(self, work_id: str) -> None:
-        now_ms = int(time.time() * 1000)
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                conn.execute(
-                    "UPDATE session_work SET status='done', finished_at_ms=?, last_error=NULL WHERE id=?",
-                    (now_ms, work_id),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        self._transitions.mark_done(work_id)
 
     def mark_failed(self, work_id: str, error: str | None = None) -> None:
-        now_ms = int(time.time() * 1000)
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                conn.execute(
-                    "UPDATE session_work SET status='failed', finished_at_ms=?, last_error=? WHERE id=?",
-                    (now_ms, error, work_id),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        self._transitions.mark_failed(work_id, error)
 
     def get_recoverable_pending(self) -> list[SessionWorkRecord]:
         with self._lock:
