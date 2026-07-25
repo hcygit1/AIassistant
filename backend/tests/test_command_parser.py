@@ -12,12 +12,65 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from runtime.agent import _should_persist_input_message
-from runtime.command_parser import execute_command, format_help, parse_command
+from runtime.command_parser import (
+    CommandExecutionDependencies,
+    execute_command,
+    format_help,
+    parse_command,
+)
 from runtime.user_turn_stream import _should_skip_auto_title
 from llm.models_config import ModelRef
 
 
 class CommandParserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_uses_injected_session_manager(self) -> None:
+        parsed = parse_command("/status")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        session_manager = Mock()
+        session_manager.load_session.return_value = {
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        dependencies = CommandExecutionDependencies(
+            session_manager=session_manager,
+            subagent_registry=Mock(),
+        )
+
+        result = await execute_command(
+            parsed,
+            "main",
+            "main-main",
+            dependencies=dependencies,
+        )
+
+        session_manager.load_session.assert_called_once_with(
+            "main-main",
+            "main",
+        )
+        self.assertIn("消息数: 1", result["response"])
+
+    async def test_subagents_uses_injected_command_dependencies(self) -> None:
+        parsed = parse_command("/subagents")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        session_manager = Mock()
+        session_manager.session_key_from_session_id.return_value = "main:main-main"
+        registry = Mock()
+        registry.list_runs_for_requester.return_value = []
+
+        await execute_command(
+            parsed,
+            "main",
+            "main-main",
+            dependencies=CommandExecutionDependencies(
+                session_manager=session_manager,
+                subagent_registry=registry,
+            ),
+        )
+
+        registry.list_runs_for_requester.assert_called_once_with(
+            "main:main-main",
+        )
     def test_parse_known_command(self) -> None:
         parsed = parse_command("  /model openai/gpt-4o  ")
 

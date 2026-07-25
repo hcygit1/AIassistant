@@ -15,6 +15,29 @@ class ParsedCommand:
     is_command: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class CommandExecutionDependencies:
+    session_manager: Any | None = None
+    subagent_registry: Any | None = None
+    session_manager_provider: Callable[[], Any] | None = None
+
+    def resolve_session_manager(self) -> Any:
+        if self.session_manager is not None:
+            return self.session_manager
+        if self.session_manager_provider is not None:
+            return self.session_manager_provider()
+        from sessions.session_manager import session_manager
+
+        return session_manager
+
+    def resolve_subagent_registry(self) -> Any:
+        if self.subagent_registry is not None:
+            return self.subagent_registry
+        from subagents.subagent_registry import registry
+
+        return registry
+
+
 # ── i18n strings ──
 
 _T: dict[str, dict[str, str]] = {
@@ -135,18 +158,31 @@ async def execute_command(
     *,
     switch_model: Callable[[str, str], str] | None = None,
     get_current_model: Callable[[str], Any] | None = None,
+    dependencies: CommandExecutionDependencies | None = None,
 ) -> dict[str, Any]:
     """Execute a command and return result dict."""
     cmd = parsed.command
+    dependencies = dependencies or CommandExecutionDependencies()
 
     if cmd == "/help":
         return {"handled": True, "response": format_help(locale), "action": "info"}
 
     if cmd == "/status":
-        return await _cmd_status(agent_id, session_id, agent_state, locale)
+        return await _cmd_status(
+            agent_id,
+            session_id,
+            agent_state,
+            locale,
+            dependencies,
+        )
 
     if cmd == "/context":
-        return await _cmd_context(agent_id, session_id, locale)
+        return await _cmd_context(
+            agent_id,
+            session_id,
+            locale,
+            dependencies,
+        )
 
     if cmd == "/usage":
         return _cmd_usage(
@@ -176,7 +212,12 @@ async def execute_command(
         )
 
     if cmd == "/subagents":
-        return _cmd_subagents(agent_id, session_id, locale)
+        return _cmd_subagents(
+            agent_id,
+            session_id,
+            locale,
+            dependencies,
+        )
 
     if cmd == "/whoami":
         return _cmd_whoami(
@@ -188,10 +229,16 @@ async def execute_command(
     return {"handled": True, "response": t("unknown_cmd", locale, cmd=cmd), "action": "info"}
 
 
-async def _cmd_status(agent_id: str, session_id: str, agent_state: Any, locale: str) -> dict[str, Any]:
-    from sessions.session_manager import session_manager
+async def _cmd_status(
+    agent_id: str,
+    session_id: str,
+    agent_state: Any,
+    locale: str,
+    dependencies: CommandExecutionDependencies,
+) -> dict[str, Any]:
     from infra.token_counter import count_messages_tokens
 
+    session_manager = dependencies.resolve_session_manager()
     data = session_manager.load_session(session_id, agent_id)
     msg_count = len(data.get("messages", [])) if data else 0
     tokens = count_messages_tokens(data.get("messages", [])) if data else 0
@@ -213,14 +260,21 @@ async def _cmd_status(agent_id: str, session_id: str, agent_state: Any, locale: 
     return {"handled": True, "response": response, "action": "info"}
 
 
-async def _cmd_context(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
-    from sessions.session_manager import session_manager
+async def _cmd_context(
+    agent_id: str,
+    session_id: str,
+    locale: str,
+    dependencies: CommandExecutionDependencies,
+) -> dict[str, Any]:
     from infra.token_counter import count_messages_tokens
     from runtime.context_budget import resolve_budget
 
     budget = resolve_budget(agent_id)
 
-    data = session_manager.load_session(session_id, agent_id)
+    data = dependencies.resolve_session_manager().load_session(
+        session_id,
+        agent_id,
+    )
     if not data:
         return {"handled": True, "response": t("no_session", locale), "action": "info"}
 
@@ -334,10 +388,14 @@ def _cmd_model(
         }
 
 
-def _cmd_subagents(agent_id: str, session_id: str, locale: str) -> dict[str, Any]:
-    from sessions.session_manager import session_manager
-    from subagents.subagent_registry import registry
-
+def _cmd_subagents(
+    agent_id: str,
+    session_id: str,
+    locale: str,
+    dependencies: CommandExecutionDependencies,
+) -> dict[str, Any]:
+    session_manager = dependencies.resolve_session_manager()
+    registry = dependencies.resolve_subagent_registry()
     requester_key = session_manager.session_key_from_session_id(agent_id, session_id)
     runs = registry.list_runs_for_requester(requester_key)
 

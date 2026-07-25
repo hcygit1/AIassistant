@@ -125,7 +125,32 @@ class TurnServiceTests(unittest.IsolatedAsyncioTestCase):
             "s1",
             "state",
             switch_model=switch_model,
+            dependencies=manager._command_dependencies,
         )
+
+    def test_agent_manager_command_dependencies_use_injected_session_manager(
+        self,
+    ) -> None:
+        injected = Mock()
+        manager = AgentManager(session_manager=injected)
+
+        self.assertIs(
+            manager._command_dependencies.resolve_session_manager(),
+            injected,
+        )
+
+    def test_default_command_dependencies_resolve_session_manager_lazily(
+        self,
+    ) -> None:
+        manager = AgentManager()
+        replacement = Mock()
+
+        with patch("runtime.agent.session_manager", replacement):
+            resolved = (
+                manager._command_dependencies.resolve_session_manager()
+            )
+
+        self.assertIs(resolved, replacement)
 
     async def test_stream_prepares_and_executes_normal_turn(
         self,

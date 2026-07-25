@@ -29,6 +29,7 @@ class AgentRuntimeComponentsTests(unittest.TestCase):
                 "turn_recovery",
                 "turn_executor",
                 "turn_service",
+                "command_dependencies",
                 "session_lifecycle",
                 "tool_name_cache",
                 "lifecycle",

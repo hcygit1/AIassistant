@@ -20,6 +20,7 @@ from runtime.turn_preparation import TurnPreparation
 from runtime.turn_recovery import TurnRecovery
 from runtime.turn_service import TurnService, TurnServicePorts
 from runtime.agent_turn_preparation import AgentTurnPreparationAdapter
+from runtime.command_parser import CommandExecutionDependencies
 from subagents.subagent_runner import SubagentRunner
 from subagents.subagent_service import SubagentService
 
@@ -41,6 +42,7 @@ class AgentRuntimeComponents:
     turn_recovery: Any
     turn_executor: Any
     turn_service: Any
+    command_dependencies: Any
     session_lifecycle: Any
     tool_name_cache: Any
     lifecycle: Any
@@ -61,6 +63,7 @@ class AgentRuntimeComponents:
         manager._turn_recovery = self.turn_recovery
         manager._turn_executor = self.turn_executor
         manager._turn_service = self.turn_service
+        manager._command_dependencies = self.command_dependencies
         manager._session_lifecycle = self.session_lifecycle
         manager._tool_name_cache = self.tool_name_cache
         manager._lifecycle = self.lifecycle
@@ -228,15 +231,21 @@ class AgentRuntimeAssembler:
             get_pending_tasks=lambda: pending_tasks,
             maybe_auto_compact=manager._run_auto_compaction,
         )
+        command_dependencies = CommandExecutionDependencies(
+            session_manager_provider=self._get_session_manager,
+        )
+
+        def execute_command(*args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("dependencies", command_dependencies)
+            return self._global("execute_command")(*args, **kwargs)
+
         turn_service = TurnService(
             TurnServicePorts(
                 get_state=lambda agent_id: manager.get_state(agent_id),
                 parse_command=lambda message: self._global(
                     "parse_command"
                 )(message),
-                execute_command=lambda *args, **kwargs: self._global(
-                    "execute_command"
-                )(*args, **kwargs),
+                execute_command=execute_command,
                 switch_model=lambda agent_id, model: manager.switch_model(
                     agent_id,
                     model,
@@ -342,6 +351,7 @@ class AgentRuntimeAssembler:
             turn_recovery=turn_recovery,
             turn_executor=turn_executor,
             turn_service=turn_service,
+            command_dependencies=command_dependencies,
             session_lifecycle=session_lifecycle,
             tool_name_cache=tool_name_cache,
             lifecycle=lifecycle,
