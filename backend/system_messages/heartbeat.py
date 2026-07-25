@@ -10,7 +10,6 @@ from typing import Any, Callable
 
 from config import DEFAULT_HEARTBEAT_PROMPT, get_heartbeat_config, resolve_agent_workspace, list_agents
 from system_messages.heartbeat_utils import (
-    strip_heartbeat_token,
     is_heartbeat_content_effectively_empty,
     is_within_active_hours,
 )
@@ -21,8 +20,21 @@ from system_messages.heartbeat_history import (
     emit_heartbeat_event,
     get_heartbeat_history,
 )
+from system_messages.heartbeat_run_lifecycle import HeartbeatRunLifecycle
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_heartbeat_message(agent_id: str, session_id: str) -> None:
+    from infra.event_bus import Events, event_bus
+
+    event_bus.emit(
+        agent_id,
+        Events.heartbeat_message(
+            session_id=session_id,
+            agent_id=agent_id,
+        ),
+    )
 
 
 class HeartbeatRunner:
@@ -34,10 +46,12 @@ class HeartbeatRunner:
         session_manager: Any | None = None,
         work_delivery: Any | None = None,
         event_sink: Callable[[str, HeartbeatEvent], None] | None = None,
+        run_lifecycle: HeartbeatRunLifecycle | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._work_delivery = work_delivery
         self._event_sink = event_sink
+        self._run_lifecycle = run_lifecycle
         self._tasks: dict[str, asyncio.Task] = {}
         self._running = False
 
@@ -60,6 +74,30 @@ class HeartbeatRunner:
     @property
     def event_sink(self) -> Callable[[str, HeartbeatEvent], None]:
         return self._event_sink if self._event_sink is not None else emit_heartbeat_event
+
+    @property
+    def run_lifecycle(self) -> HeartbeatRunLifecycle:
+        if self._run_lifecycle is not None:
+            return self._run_lifecycle
+        return HeartbeatRunLifecycle(
+            rollback_last_turn=lambda session_id, agent_id: (
+                self.session_manager.rollback_last_turn(
+                    session_id,
+                    agent_id,
+                )
+            ),
+            event_sink=lambda agent_id, event: self.event_sink(
+                agent_id,
+                event,
+            ),
+            audit_event=lambda agent_id, event_type, data: audit_logger.log(
+                agent_id,
+                event_type,
+                data,
+            ),
+            emit_webchat_message=_emit_heartbeat_message,
+            now=lambda: time.time(),
+        )
 
     async def start(self, agent_ids: list[str] | None = None) -> None:
         self._running = True
@@ -206,74 +244,12 @@ class HeartbeatRunner:
 
         audit_logger.log(agent_id, "heartbeat_trigger", {"time": now_str})
 
-        async def _handle_heartbeat_result(response: str) -> None:
-            ack_max = hb.get("ackMaxChars", 300)
-            should_skip, stripped = strip_heartbeat_token(response, max_ack_chars=ack_max)
-
-            if should_skip:
-                self.session_manager.rollback_last_turn(session_id, agent_id)
-                status = "ok-empty" if not response.strip() else "ok-token"
-                self.event_sink(
-                    agent_id,
-                    HeartbeatEvent(
-                        ts=int(time.time() * 1000),
-                        status=status,
-                        duration_ms=int((time.time() - started) * 1000),
-                        agent_id=agent_id,
-                    ),
-                )
-                audit_logger.log(agent_id, "heartbeat_ok", {})
-            else:
-                target = hb.get("target", "webchat")
-                if target == "webchat":
-                    self.event_sink(
-                        agent_id,
-                        HeartbeatEvent(
-                            ts=int(time.time() * 1000),
-                            status="sent",
-                            preview=stripped[:200] if stripped else None,
-                            duration_ms=int((time.time() - started) * 1000),
-                            agent_id=agent_id,
-                        ),
-                    )
-                    from infra.event_bus import Events, event_bus
-                    event_bus.emit(agent_id, Events.heartbeat_message(session_id=session_id, agent_id=agent_id))
-                audit_logger.log(agent_id, "heartbeat_response", {"response": response[:500]})
-
-        async def _handle_heartbeat_failure(error: Exception) -> None:
-            error_text = str(error) or "heartbeat execution failed"
-            if isinstance(error, asyncio.TimeoutError):
-                self.event_sink(
-                    agent_id,
-                    HeartbeatEvent(
-                        ts=int(time.time() * 1000),
-                        status="skipped",
-                        reason="session-busy",
-                        duration_ms=int((time.time() - started) * 1000),
-                        agent_id=agent_id,
-                    ),
-                )
-                audit_logger.log(
-                    agent_id,
-                    "heartbeat_skipped",
-                    {"reason": "session-busy"},
-                )
-                return
-            self.event_sink(
-                agent_id,
-                HeartbeatEvent(
-                    ts=int(time.time() * 1000),
-                    status="failed",
-                    reason=error_text,
-                    duration_ms=int((time.time() - started) * 1000),
-                    agent_id=agent_id,
-                ),
-            )
-            audit_logger.log(
-                agent_id,
-                "heartbeat_failed",
-                {"error": error_text},
-            )
+        callbacks = self.run_lifecycle.callbacks(
+            agent_id=agent_id,
+            session_id=session_id,
+            config=hb,
+            started_at=started,
+        )
 
         deliver_system_work(
             self.work_delivery,
@@ -281,8 +257,7 @@ class HeartbeatRunner:
             content=full_prompt,
             agent_id=agent_id,
             session_id=session_id,
-            result_handler=_handle_heartbeat_result,
-            on_failure_async=_handle_heartbeat_failure,
+            **callbacks,
         )
 
     @property
