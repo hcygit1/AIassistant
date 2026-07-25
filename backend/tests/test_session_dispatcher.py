@@ -21,6 +21,7 @@ from sessions.session_dispatcher import (
     SessionDispatcher,
     SessionWorkItem,
 )
+from sessions.session_work_queue import SessionWorkQueue
 from turns.events import TurnEvent
 from turns.coordinator import user_turn_coordinator
 
@@ -47,6 +48,27 @@ class _RecordingDispatcher(SessionDispatcher):
 
 
 class SessionDispatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatcher_uses_injected_work_queue(self) -> None:
+        work_queue = SessionWorkQueue()
+        dispatcher = SessionDispatcher(
+            lock=asyncio.Lock(),
+            work_queue=work_queue,
+        )
+        task = SessionWorkItem(
+            kind="cron",
+            priority=PRIORITY_CRON,
+            content="cron",
+            agent_id="main",
+            session_id="main-main",
+            work_id="work-1",
+        )
+
+        dispatcher.submit(task)
+
+        self.assertEqual(len(work_queue), 1)
+        self.assertTrue(dispatcher.cancel_work("work-1"))
+        self.assertEqual(len(work_queue), 0)
+
     async def test_stop_cancels_queued_user_and_rejects_new_work(self) -> None:
         coordinator = Mock()
         stream_queue: asyncio.Queue[TurnEvent | None] = asyncio.Queue()

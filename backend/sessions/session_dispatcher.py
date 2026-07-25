@@ -37,6 +37,13 @@ from sessions.session_work_policy import (
 from sessions.session_dispatcher_factory import SessionDispatcherFactory
 from sessions.session_system_work_executor import SessionSystemWorkExecutor
 from sessions.session_user_turn_executor import SessionUserTurnExecutor
+from sessions.session_work_queue import (
+    AGING_INTERVAL_SEC,
+    MAX_AGING_BONUS,
+    PRIORITY_MIN_SYSTEM,
+    PRIORITY_USER,
+    SessionWorkQueue,
+)
 from turns.events import TurnEvent
 
 if TYPE_CHECKING:
@@ -47,13 +54,6 @@ logger = logging.getLogger(__name__)
 
 ANNOUNCE_TIMEOUT_SEC = 60
 SYSTEM_TIMEOUT_SEC = 5
-
-# 用户优先于所有系统任务；系统 aging 不低于 PRIORITY_MIN_SYSTEM（避免压过用户）
-PRIORITY_USER = -10
-PRIORITY_MIN_SYSTEM = -9
-
-AGING_INTERVAL_SEC = 30.0
-MAX_AGING_BONUS = 3.0
 
 SystemStream = Callable[..., AsyncIterator[dict[str, Any]]]
 UserStream = Callable[..., AsyncIterator[TurnEvent]]
@@ -146,6 +146,7 @@ class SessionDispatcher:
         turn_coordinator: Any | None = None,
         system_executor: SessionSystemWorkExecutor | None = None,
         user_executor: SessionUserTurnExecutor | None = None,
+        work_queue: SessionWorkQueue | None = None,
     ):
         self._lock = lock
         self._work_store = (
@@ -158,7 +159,9 @@ class SessionDispatcher:
             if turn_coordinator is not None
             else _default_turn_coordinator()
         )
-        self._queue: list[SessionWorkItem] = []
+        self._work_queue = (
+            work_queue if work_queue is not None else SessionWorkQueue()
+        )
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._accepting = True
@@ -192,46 +195,33 @@ class SessionDispatcher:
         return self._current_executing_turn_id
 
     def _effective_priority(self, task: SessionWorkItem) -> float:
-        now = time.time()
-        if task.kind == "user":
-            return float(PRIORITY_USER)
-        age = now - task.created_at
-        bonus = min(age / AGING_INTERVAL_SEC, MAX_AGING_BONUS)
-        eff = float(task.priority) - bonus
-        return max(eff, float(PRIORITY_MIN_SYSTEM))
+        return self._work_queue.effective_priority(task)
 
     def _sort_key(self, t: SessionWorkItem) -> tuple[float, float]:
-        return (self._effective_priority(t), t.created_at)
+        return self._work_queue.sort_key(t)
 
     def submit(self, task: SessionWorkItem) -> int:
         if not self._accepting:
             raise RuntimeError("session dispatcher is closing")
-        self._queue.append(task)
-        self._queue.sort(key=self._sort_key)
+        position = self._work_queue.submit(task)
         self._wake.set()
-        return len(self._queue)
+        return position
 
     def turn_queue_position(self, turn_id: str) -> int | None:
         """整队列中 1-based 位置；若不在队列中则 None。"""
-        self._queue.sort(key=self._sort_key)
-        for i, t in enumerate(self._queue):
-            if t.turn_id == turn_id:
-                return i + 1
-        return None
+        return self._work_queue.position(turn_id)
 
     def cancel_work(self, work_id: str) -> bool:
-        for index, task in enumerate(self._queue):
-            if task.work_id != work_id:
-                continue
-            removed = self._queue.pop(index)
-            if removed.on_cancel:
-                _safe_call(removed.on_cancel)
-            return True
-        return False
+        removed = self._work_queue.remove(work_id)
+        if removed is None:
+            return False
+        if removed.on_cancel:
+            _safe_call(removed.on_cancel)
+        return True
 
     @property
     def pending_count(self) -> int:
-        return len(self._queue)
+        return len(self._work_queue)
 
     def start(self) -> None:
         if not self._accepting:
@@ -263,8 +253,7 @@ class SessionDispatcher:
                 self._task = None
 
     def _cancel_queued_items(self) -> None:
-        pending = self._queue
-        self._queue = []
+        pending = self._work_queue.drain()
         for task in pending:
             if task.work_id:
                 try:
@@ -290,15 +279,16 @@ class SessionDispatcher:
 
     async def _consume_loop(self) -> None:
         while not self._stopping:
-            if not self._queue:
+            if not self._work_queue:
                 self._wake.clear()
                 await self._wake.wait()
                 if self._stopping:
                     return
 
-            while self._queue and not self._stopping:
-                self._queue.sort(key=self._sort_key)
-                task = self._queue.pop(0)
+            while self._work_queue and not self._stopping:
+                task = self._work_queue.pop_next()
+                if task is None:
+                    break
                 try:
                     await self._execute(task)
                 finally:
