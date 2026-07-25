@@ -40,11 +40,10 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
             payload={"kind": "systemEvent", "text": "report"},
         )
 
-        with patch(
-            "scheduler.cron_service.cron_service",
-            service,
-        ):
-            result = await create_cron_job(body)
+        result = await create_cron_job(
+            body,
+            cron_service=service,
+        )
 
         service.create_job.assert_called_once_with(
             name="daily report",
@@ -158,17 +157,14 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
             offset=0,
         )
 
-        with patch(
-            "scheduler.task_history_service.task_history_service",
-            service,
-        ):
-            result = await get_task_history(
-                agent_id="main",
-                kind="cron",
-                status="pending",
-                limit=10,
-                offset=0,
-            )
+        result = await get_task_history(
+            agent_id="main",
+            kind="cron",
+            status="pending",
+            limit=10,
+            offset=0,
+            task_history_service=service,
+        )
 
         service.query.assert_called_once_with(
             agent_id="main",
@@ -215,19 +211,16 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
             offset=0,
         )
 
-        with patch(
-            "api.cron_api._system_work_history_service",
-            return_value=service,
-        ):
-            result = await get_system_work_history(
-                kind="heartbeat",
-                status="done",
-                agent_id="main",
-                session_id="main-main",
-                run_id=None,
-                limit=10,
-                offset=0,
-            )
+        result = await get_system_work_history(
+            kind="heartbeat",
+            status="done",
+            agent_id="main",
+            session_id="main-main",
+            run_id=None,
+            limit=10,
+            offset=0,
+            session_work_history_service=service,
+        )
 
         expected_filters = {
             "kind": "heartbeat",
@@ -251,14 +244,11 @@ class CronAdapterTests(unittest.IsolatedAsyncioTestCase):
             "Running session work cannot be cancelled",
         )
 
-        with (
-            patch(
-                "scheduler.task_history_service.task_history_service",
-                service,
-            ),
-            self.assertRaises(HTTPException) as raised,
-        ):
-            await cancel_task("work-1")
+        with self.assertRaises(HTTPException) as raised:
+            await cancel_task(
+                "work-1",
+                task_history_service=service,
+            )
 
         self.assertEqual(raised.exception.status_code, 409)
 

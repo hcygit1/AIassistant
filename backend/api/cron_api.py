@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from api.dependencies import (
+    get_cron_service,
+    get_session_work_history_service,
+    get_task_history_service,
+)
+
 router = APIRouter()
-
-
-def _cron_service():
-    from scheduler.cron_service import cron_service
-
-    return cron_service
-
 
 def _raise_cron_error(exc) -> None:
     if exc.code == "disabled":
@@ -24,18 +25,6 @@ def _raise_cron_error(exc) -> None:
     else:
         status = 502
     raise HTTPException(status, str(exc))
-
-
-def _task_history_service():
-    from scheduler.task_history_service import task_history_service
-
-    return task_history_service
-
-
-def _system_work_history_service():
-    from sessions.session_work_history import session_work_history_service
-
-    return session_work_history_service
 
 
 def _raise_task_history_error(exc) -> None:
@@ -73,21 +62,26 @@ class CronJobUpdate(BaseModel):
 
 
 @router.get("/cron/jobs")
-async def list_cron_jobs():
+async def list_cron_jobs(
+    cron_service: Any = Depends(get_cron_service),
+):
     """列出所有 Cron 任务"""
     return [
         job.to_dict()
-        for job in _cron_service().list_jobs()
+        for job in cron_service.list_jobs()
     ]
 
 
 @router.post("/cron/jobs")
-async def create_cron_job(body: CronJobCreate):
+async def create_cron_job(
+    body: CronJobCreate,
+    cron_service: Any = Depends(get_cron_service),
+):
     """创建 Cron 任务"""
     from scheduler.cron_service import CronServiceError
 
     try:
-        job = _cron_service().create_job(
+        job = cron_service.create_job(
             name=body.name,
             description=body.description,
             agent_id=body.agent_id,
@@ -102,23 +96,30 @@ async def create_cron_job(body: CronJobCreate):
 
 
 @router.get("/cron/jobs/{job_id}")
-async def get_cron_job(job_id: str):
+async def get_cron_job(
+    job_id: str,
+    cron_service: Any = Depends(get_cron_service),
+):
     """获取单个 Cron 任务"""
     from scheduler.cron_service import CronServiceError
 
     try:
-        return _cron_service().get_job(job_id).to_dict()
+        return cron_service.get_job(job_id).to_dict()
     except CronServiceError as exc:
         _raise_cron_error(exc)
 
 
 @router.patch("/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate):
+async def update_cron_job(
+    job_id: str,
+    body: CronJobUpdate,
+    cron_service: Any = Depends(get_cron_service),
+):
     """更新 Cron 任务"""
     from scheduler.cron_service import CronServiceError
 
     try:
-        job = _cron_service().update_job(
+        job = cron_service.update_job(
             job_id,
             name=body.name,
             description=body.description,
@@ -134,24 +135,31 @@ async def update_cron_job(job_id: str, body: CronJobUpdate):
 
 
 @router.delete("/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str):
+async def delete_cron_job(
+    job_id: str,
+    cron_service: Any = Depends(get_cron_service),
+):
     """删除 Cron 任务"""
     from scheduler.cron_service import CronServiceError
 
     try:
-        _cron_service().delete_job(job_id)
+        cron_service.delete_job(job_id)
     except CronServiceError as exc:
         _raise_cron_error(exc)
     return {"ok": True}
 
 
 @router.post("/cron/jobs/{job_id}/run")
-async def run_cron_job(job_id: str, mode: str = "force"):
+async def run_cron_job(
+    job_id: str,
+    mode: str = "force",
+    cron_service: Any = Depends(get_cron_service),
+):
     """手动触发 Cron 任务"""
     from scheduler.cron_service import CronServiceError
 
     try:
-        _cron_service().trigger_job(job_id)
+        cron_service.trigger_job(job_id)
     except CronServiceError as exc:
         _raise_cron_error(exc)
     return {"ok": True, "message": "Triggered"}
@@ -168,12 +176,13 @@ async def get_task_history(
     status: str | None = None,
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
+    task_history_service: Any = Depends(get_task_history_service),
 ):
     """查询任务执行历史"""
     from scheduler.task_history_service import TaskHistoryError
 
     try:
-        page = _task_history_service().query(
+        page = task_history_service.query(
             agent_id=agent_id,
             kind=kind,
             status=status,
@@ -199,9 +208,12 @@ async def get_system_work_history(
     run_id: str | None = None,
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
+    session_work_history_service: Any = Depends(
+        get_session_work_history_service
+    ),
 ):
     """查询系统会话工作台账，便于排查 announce / heartbeat / cron 的投递状态。"""
-    page = _system_work_history_service().query(
+    page = session_work_history_service.query(
         kind=kind,
         status=status,
         agent_id=agent_id,
@@ -219,12 +231,15 @@ async def get_system_work_history(
 
 
 @router.post("/tasks/{task_id}/cancel")
-async def cancel_task(task_id: str):
+async def cancel_task(
+    task_id: str,
+    task_history_service: Any = Depends(get_task_history_service),
+):
     """取消任务"""
     from scheduler.task_history_service import TaskHistoryError
 
     try:
-        result = _task_history_service().cancel(task_id)
+        result = task_history_service.cancel(task_id)
     except TaskHistoryError as exc:
         _raise_task_history_error(exc)
     return {"ok": result.ok, "status": result.status}
@@ -243,12 +258,15 @@ class ReminderCreate(BaseModel):
 
 
 @router.post("/reminders")
-async def create_reminder(body: ReminderCreate):
+async def create_reminder(
+    body: ReminderCreate,
+    cron_service: Any = Depends(get_cron_service),
+):
     """创建自然语言提醒 — 底层是一次性 at cron job"""
     from scheduler.cron_service import CronServiceError
 
     try:
-        job = _cron_service().create_reminder(
+        job = cron_service.create_reminder(
             text=body.text,
             at=body.at,
             agent_id=body.agent_id,

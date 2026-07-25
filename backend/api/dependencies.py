@@ -23,6 +23,24 @@ def get_event_bus() -> Any:
     return event_bus
 
 
+def get_cron_service() -> Any:
+    from scheduler.cron_service import cron_service
+
+    return cron_service
+
+
+def get_task_history_service() -> Any:
+    from scheduler.task_history_service import task_history_service
+
+    return task_history_service
+
+
+def get_session_work_history_service() -> Any:
+    from sessions.session_work_history import session_work_history_service
+
+    return session_work_history_service
+
+
 def get_session_manager() -> Any:
     from sessions.session_manager import session_manager
 
