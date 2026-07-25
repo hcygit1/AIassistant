@@ -11,29 +11,22 @@ from typing import Any, AsyncGenerator, Awaitable, Callable
 from infra.event_bus import Events
 from llm.model_selection import ModelCandidateError
 from llm.models_config import ModelRef
-from runtime.security_context import (
-    mark_recent_untrusted_content,
-    runtime_security_context,
-)
-from runtime.source_sink_guard import (
-    contains_untrusted_marker,
-    is_untrusted_source_tool,
-)
+from runtime.source_sink_guard import is_untrusted_source_tool
 from runtime.tool_call_parser import (
     parse_text_tool_calls,
     strip_tool_call_patterns,
 )
 from runtime.tool_execution import invoke_tool_async
+from runtime.turn_event_stream import (
+    TerminalTurnError as _TerminalTurnError,
+    TurnEventStreamProcessor,
+)
 from runtime.turn_models import TurnExecutionRequest
 from sandbox.loop_detection import LoopDetector
 from tools.error_utils import format_tool_error
 
 
 logger = logging.getLogger(__name__)
-
-
-class _TerminalTurnError(RuntimeError):
-    pass
 
 
 def should_persist_input_message(persist_input_role: str) -> bool:
@@ -205,320 +198,48 @@ class TurnExecutor:
         )
         turn_start_emitted = False
 
+        loop_detector = LoopDetector()
+        event_stream = TurnEventStreamProcessor(
+            agent=agent,
+            request=request,
+            messages=messages,
+            turn=turn,
+            turn_start_event=turn_start_event,
+            run_tracker=run_tracker,
+            audit_logger=audit_logger,
+            get_lifecycle_hooks=self._get_lifecycle_hooks,
+            emit_event=self._emit_event,
+            loop_detector=loop_detector,
+            new_tool_call_id=_new_tool_call_id,
+            infer_tool_result_status=_infer_tool_result_status,
+            loop_warning_is_breaker=_loop_warning_is_breaker,
+            parse_text_tool_calls=parse_text_tool_calls,
+            strip_tool_call_patterns=strip_tool_call_patterns,
+        )
         full_response = ""
         tool_calls_log: list[dict[str, Any]] = []
-        tool_input_by_run_id: dict[str, Any] = {}
-        tool_call_id_by_run_id: dict[str, str] = {}
-        streaming_model_run_id: str | None = None
         step_count = 0
         content_refresh_sent = False
-        recent_untrusted_content = any(
-            contains_untrusted_marker(
-                str(message.get("content", ""))
-            )
-            for message in request.history[-4:]
+        recent_untrusted_content = (
+            event_stream.state.recent_untrusted_content
         )
-        loop_detector = LoopDetector()
-
-        async def stream_model_events():
-            iterator = agent.astream_events(
-                {"messages": messages},
-                version="v2",
-                config={
-                    "recursion_limit": request.recursion_limit
-                },
-            ).__aiter__()
-            while True:
-                try:
-                    yield await anext(iterator)
-                except StopAsyncIteration:
-                    return
-                except Exception as error:
-                    raise ModelCandidateError(
-                        str(error)
-                    ) from error
 
         try:
-            with runtime_security_context(
-                request.message,
-                recent_untrusted_content=recent_untrusted_content,
-            ):
-                async for event in stream_model_events():
-                    if not turn_start_emitted:
-                        yield turn_start_event
-                        turn_start_emitted = True
-                    kind = event.get("event", "")
-                    if kind == "on_chat_model_stream":
-                        event_run_id = event.get("run_id", "")
-                        if streaming_model_run_id is None:
-                            streaming_model_run_id = event_run_id
-                        elif event_run_id != streaming_model_run_id:
-                            continue
-
-                        chunk = event.get("data", {}).get("chunk")
-                        if (
-                            chunk
-                            and hasattr(chunk, "content")
-                            and chunk.content
-                        ):
-                            content = chunk.content
-                            if isinstance(content, str):
-                                full_response += content
-                                yield {
-                                    "type": "token",
-                                    "content": content,
-                                }
-                            elif isinstance(content, list):
-                                for block in content:
-                                    if (
-                                        isinstance(block, dict)
-                                        and block.get("type") == "text"
-                                    ):
-                                        text = block.get("text", "")
-                                        if text:
-                                            full_response += text
-                                            yield {
-                                                "type": "token",
-                                                "content": text,
-                                            }
-
-                        if (
-                            chunk
-                            and hasattr(chunk, "usage_metadata")
-                            and chunk.usage_metadata
-                        ):
-                            usage = chunk.usage_metadata
-                            input_details = getattr(
-                                usage,
-                                "input_token_details",
-                                {},
-                            )
-                            run_tracker.record_tokens(
-                                turn.run_id,
-                                input_tokens=getattr(
-                                    usage,
-                                    "input_tokens",
-                                    0,
-                                ),
-                                output_tokens=getattr(
-                                    usage,
-                                    "output_tokens",
-                                    0,
-                                ),
-                                cache_read=(
-                                    input_details.get(
-                                        "cache_read",
-                                        0,
-                                    )
-                                    if hasattr(
-                                        usage,
-                                        "input_token_details",
-                                    )
-                                    else 0
-                                ),
-                            )
-
-                    elif kind == "on_chat_model_end":
-                        if (
-                            event.get("run_id")
-                            == streaming_model_run_id
-                        ):
-                            streaming_model_run_id = None
-
-                    elif kind == "on_tool_start":
-                        if (
-                            not content_refresh_sent
-                            and full_response
-                            and parse_text_tool_calls(full_response)
-                        ):
-                            yield {
-                                "type": "content_refresh",
-                                "content": strip_tool_call_patterns(
-                                    full_response
-                                ),
-                            }
-                            content_refresh_sent = True
-
-                        tool_name = event.get("name", "")
-                        tool_input = (
-                            event.get("data", {}).get("input") or {}
-                        )
-                        if not isinstance(tool_input, dict):
-                            tool_input = {}
-                        lifecycle_hooks = (
-                            self._get_lifecycle_hooks()
-                        )
-                        if lifecycle_hooks:
-                            await lifecycle_hooks.on_before_tool_call(
-                                request.agent_id,
-                                turn.run_id,
-                                tool_name,
-                                tool_input,
-                            )
-                        step_count += 1
-                        event_run_id = str(
-                            event.get("run_id", "")
-                        )
-                        tool_call_id = _new_tool_call_id()
-                        if event_run_id:
-                            tool_input_by_run_id[
-                                event_run_id
-                            ] = tool_input
-                            tool_call_id_by_run_id[
-                                event_run_id
-                            ] = tool_call_id
-                        run_tracker.record_tool_start(
-                            turn.run_id,
-                            tool_name,
-                            tool_input,
-                            tool_call_id=tool_call_id,
-                        )
-                        yield {
-                            "type": "tool_start",
-                            "tool_call_id": tool_call_id,
-                            "tool": tool_name,
-                            "input": tool_input,
-                            "step": step_count,
-                            "max_steps": request.recursion_limit,
-                        }
-
-                    elif kind == "on_tool_end":
-                        tool_output = (
-                            event.get("data", {}).get("output", "")
-                        )
-                        if isinstance(tool_output, str):
-                            output = tool_output
-                        elif (
-                            hasattr(tool_output, "content")
-                            and tool_output.content is not None
-                        ):
-                            output = str(tool_output.content)
-                        else:
-                            output = str(tool_output)
-
-                        event_run_id = str(
-                            event.get("run_id", "")
-                        )
-                        tool_input = tool_input_by_run_id.pop(
-                            event_run_id,
-                            None,
-                        )
-                        tool_call_id = (
-                            tool_call_id_by_run_id.pop(
-                                event_run_id,
-                                None,
-                            )
-                            or _new_tool_call_id()
-                        )
-                        tool_input_for_log = (
-                            tool_input
-                            if tool_input is not None
-                            else ""
-                        )
-                        tool_name = event.get("name", "")
-                        status, error = _infer_tool_result_status(
-                            output
-                        )
-                        run_tracker.record_tool_end(
-                            turn.run_id,
-                            tool_name,
-                            output,
-                            error=error,
-                            tool_call_id=tool_call_id,
-                        )
-                        audit_logger.log_tool_call(
-                            request.agent_id,
-                            turn.run_id,
-                            tool_name,
-                            tool_input_for_log,
-                            output,
-                            tool_call_id=tool_call_id,
-                            status=status,
-                            error=error,
-                        )
-                        tool_calls_log.append(
-                            {
-                                "tool_call_id": tool_call_id,
-                                "tool": tool_name,
-                                "status": status,
-                                "input": tool_input_for_log,
-                                "output": output,
-                                "error": error,
-                            }
-                        )
-                        lifecycle_hooks = (
-                            self._get_lifecycle_hooks()
-                        )
-                        if lifecycle_hooks:
-                            await lifecycle_hooks.on_after_tool_call(
-                                request.agent_id,
-                                turn.run_id,
-                                tool_name,
-                                tool_input_for_log,
-                                output,
-                            )
-                        if is_untrusted_source_tool(tool_name):
-                            recent_untrusted_content = True
-                            mark_recent_untrusted_content(True)
-                        yield {
-                            "type": "tool_end",
-                            "tool_call_id": tool_call_id,
-                            "tool": tool_name,
-                            "status": status,
-                            "error": error,
-                            "output": output[:2000],
-                        }
-
-                        loop_warning = loop_detector.record(
-                            tool_name,
-                            tool_input_for_log,
-                            output,
-                        )
-                        if loop_warning:
-                            audit_logger.log_tool_loop_warning(
-                                request.agent_id,
-                                turn.run_id,
-                                tool_name,
-                                loop_warning,
-                                tool_call_id=tool_call_id,
-                            )
-                            loop_event = Events.tool_loop_warning(
-                                run_id=turn.run_id,
-                                tool=tool_name,
-                                warning=loop_warning,
-                                tool_call_id=tool_call_id,
-                            )
-                            self._emit_event(
-                                request.agent_id,
-                                loop_event,
-                            )
-                            yield loop_event
-                            if _loop_warning_is_breaker(
-                                loop_warning
-                            ):
-                                raise _TerminalTurnError(
-                                    loop_warning
-                                )
-
-                        if tool_name in (
-                            "exec",
-                            "process_kill",
-                        ):
-                            safe_input = (
-                                str(tool_input_for_log)[:200]
-                                if tool_input_for_log
-                                else ""
-                            )
-                            self._emit_event(
-                                request.agent_id,
-                                Events.tool_dangerous_executed(
-                                    tool=tool_name,
-                                    input_preview=safe_input,
-                                ),
-                            )
-            if not turn_start_emitted:
-                yield turn_start_event
-                turn_start_emitted = True
+            async for output_event in event_stream.stream():
+                turn_start_emitted = (
+                    event_stream.state.turn_start_emitted
+                )
+                step_count = event_stream.state.step_count
+                yield output_event
+            stream_state = event_stream.state
+            turn_start_emitted = stream_state.turn_start_emitted
+            full_response = stream_state.full_response
+            tool_calls_log = stream_state.tool_calls_log
+            step_count = stream_state.step_count
+            content_refresh_sent = stream_state.content_refresh_sent
+            recent_untrusted_content = (
+                stream_state.recent_untrusted_content
+            )
         except Exception as error:
             root_error = (
                 error.__cause__
