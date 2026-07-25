@@ -10,7 +10,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from api.dependencies import get_agent_manager, get_session_manager
+from api.dependencies import (
+    get_agent_manager,
+    get_heartbeat_runner,
+    get_session_manager,
+)
 
 router = APIRouter()
 
@@ -301,11 +305,12 @@ async def steer_subagent(
 
 
 @router.get("/agents/{agent_id}/status")
-async def agent_status(agent_id: str):
+async def agent_status(
+    agent_id: str,
+    agent_manager: Any = Depends(get_agent_manager),
+    heartbeat_runner: Any = Depends(get_heartbeat_runner),
+):
     """获取 Agent 运行状态"""
-    from runtime.agent import agent_manager
-    from system_messages.heartbeat import heartbeat_runner
-
     state = agent_manager.get_state(agent_id)
     return {
         "agent_id": agent_id,
