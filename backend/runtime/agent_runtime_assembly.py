@@ -20,6 +20,7 @@ from runtime.turn_preparation import TurnPreparation
 from runtime.turn_recovery import TurnRecovery
 from runtime.turn_service import TurnService, TurnServicePorts
 from runtime.agent_turn_preparation import AgentTurnPreparationAdapter
+from runtime.agent_runtime_bindings import AgentRuntimeBindings
 from runtime.command_parser import CommandExecutionDependencies
 from subagents.subagent_runner import SubagentRunner
 from subagents.subagent_service import SubagentService
@@ -77,18 +78,15 @@ class AgentRuntimeAssembler:
     def __init__(
         self,
         manager: Any,
-        module_globals: dict[str, Any],
+        bindings: AgentRuntimeBindings,
         get_session_manager: Callable[[], Any] | None = None,
     ) -> None:
         self._manager = manager
-        self._module_globals = module_globals
+        self._bindings = bindings
         self._session_manager_provider = (
             get_session_manager
-            or (lambda: self._global("session_manager"))
+            or self._bindings.get_session_manager
         )
-
-    def _global(self, name: str) -> Any:
-        return self._module_globals[name]
 
     def _get_session_manager(self) -> Any:
         return self._session_manager_provider()
@@ -105,25 +103,15 @@ class AgentRuntimeAssembler:
         )
         memory_runtime = MemoryRuntime()
         model_runtime = ModelRuntime(
-            resolve_configured_model=lambda agent_id: self._global(
-                "resolve_agent_model"
-            )(agent_id),
-            resolve_configured_candidates=lambda agent_id: self._global(
-                "resolve_fallback_candidates"
-            )(agent_id),
-            find_model=lambda model_id: self._global(
-                "models_config"
-            ).find_model_by_id(model_id),
-            get_model=lambda ref: self._global("models_config").get_model(ref),
-            invalidate_llm=lambda agent_id: self._global(
-                "llm_cache"
-            ).invalidate(agent_id),
-            get_or_create_llm=lambda agent_id, ref: self._global(
-                "llm_cache"
-            ).get_or_create(agent_id, ref),
-            get_display_name=lambda ref: self._global(
-                "get_model_display_name"
-            )(ref),
+            resolve_configured_model=self._bindings.resolve_agent_model,
+            resolve_configured_candidates=(
+                self._bindings.resolve_fallback_candidates
+            ),
+            find_model=self._bindings.find_model_by_id,
+            get_model=self._bindings.get_model,
+            invalidate_llm=self._bindings.invalidate_llm,
+            get_or_create_llm=self._bindings.get_or_create_llm,
+            get_display_name=self._bindings.get_model_display_name,
         )
         subagent_service = SubagentService(
             runner_factory=lambda requester_agent_id: SubagentRunner(
@@ -153,43 +141,25 @@ class AgentRuntimeAssembler:
             tool_registry=tool_registry,
             get_data_dir=lambda: manager.data_dir,
             get_memory_store=lambda agent_id: manager.mem_stores.get(agent_id),
-            resolve_workspace=lambda agent_id: self._global(
-                "resolve_agent_workspace"
-            )(agent_id),
-            resolve_agent_dir=lambda agent_id: self._global(
-                "resolve_agent_dir"
-            )(agent_id),
-            resolve_agent_config=lambda agent_id: self._global(
-                "resolve_agent_config"
-            )(agent_id),
-            get_heartbeat_config=lambda agent_id: self._global(
-                "get_heartbeat_config"
-            )(agent_id),
+            resolve_workspace=self._bindings.resolve_agent_workspace,
+            resolve_agent_dir=self._bindings.resolve_agent_dir,
+            resolve_agent_config=self._bindings.resolve_agent_config,
+            get_heartbeat_config=self._bindings.get_heartbeat_config,
             get_current_model=lambda agent_id: manager.get_current_model_ref(
                 agent_id
             ),
-            build_prompt=lambda params: self._global(
-                "prompt_builder"
-            ).build_system_prompt_with_report(params),
+            build_prompt=self._bindings.build_system_prompt_with_report,
             load_history=lambda session_id, agent_id: self._get_session_manager().load_session_for_agent(
                 session_id,
                 agent_id,
             ),
-            format_summary=lambda summary: self._global(
-                "prompt_builder"
-            ).format_session_summary(summary),
-            prune_history=lambda history, **kwargs: self._global(
-                "prune_messages"
-            )(history, **kwargs),
-            count_tokens=lambda text: self._global("count_tokens")(text),
-            count_messages_tokens=lambda messages: self._global(
-                "count_messages_tokens"
-            )(messages),
+            format_summary=self._bindings.format_session_summary,
+            prune_history=self._bindings.prune_messages,
+            count_tokens=self._bindings.count_tokens,
+            count_messages_tokens=self._bindings.count_messages_tokens,
         )
         session_compactor = SessionCompactor(
-            resolve_agent_config=lambda agent_id: self._global(
-                "resolve_agent_config"
-            )(agent_id),
+            resolve_agent_config=self._bindings.resolve_agent_config,
             load_session=lambda session_id, agent_id: self._get_session_manager().load_session(
                 session_id,
                 agent_id,
@@ -211,9 +181,7 @@ class AgentRuntimeAssembler:
                 session_id,
                 agent_id,
             ),
-            resolve_agent_config=lambda agent_id: self._global(
-                "resolve_agent_config"
-            )(agent_id),
+            resolve_agent_config=self._bindings.resolve_agent_config,
             emit_event=manager._emit_runtime_event,
             audit_log=manager._audit_runtime_event,
         )
@@ -227,21 +195,21 @@ class AgentRuntimeAssembler:
             sleep=lambda seconds: asyncio.sleep(seconds),
         )
         turn_executor = TurnExecutor(
-            create_llm=lambda ref: self._global("create_llm")(ref),
+            create_llm=self._bindings.create_llm,
             build_messages=lambda history, message: manager._build_messages(
                 history,
                 message,
             ),
             get_lifecycle_hooks=lambda: manager.lifecycle_hooks,
-            get_run_tracker=lambda: self._global("run_tracker"),
-            get_audit_logger=lambda: self._global("audit_logger"),
+            get_run_tracker=self._bindings.get_run_tracker,
+            get_audit_logger=self._bindings.get_audit_logger,
             save_message=lambda *args, **kwargs: self._get_session_manager().save_message(
                 *args,
                 **kwargs,
             ),
             write_skills_snapshot=manager._write_skills_snapshot,
             emit_event=manager._emit_runtime_event,
-            count_tokens=lambda text: self._global("count_tokens")(text),
+            count_tokens=self._bindings.count_tokens,
             incremental_ingest=manager._ingest_completed_turn,
             get_pending_tasks=lambda: pending_tasks,
             maybe_auto_compact=manager._run_auto_compaction,
@@ -252,14 +220,12 @@ class AgentRuntimeAssembler:
 
         def execute_command(*args: Any, **kwargs: Any) -> Any:
             kwargs.setdefault("dependencies", command_dependencies)
-            return self._global("execute_command")(*args, **kwargs)
+            return self._bindings.execute_command(*args, **kwargs)
 
         turn_service = TurnService(
             TurnServicePorts(
                 get_state=lambda agent_id: manager.get_state(agent_id),
-                parse_command=lambda message: self._global(
-                    "parse_command"
-                )(message),
+                parse_command=self._bindings.parse_command,
                 execute_command=execute_command,
                 switch_model=lambda agent_id, model: manager.switch_model(
                     agent_id,
@@ -287,9 +253,7 @@ class AgentRuntimeAssembler:
                     agent_id
                 ),
                 has_bootstrap=lambda agent_id: manager._has_bootstrap(agent_id),
-                resolve_workspace=lambda agent_id: self._global(
-                    "resolve_agent_workspace"
-                )(agent_id),
+                resolve_workspace=self._bindings.resolve_agent_workspace,
                 get_locale=lambda: manager._get_locale(),
                 get_tool_names=lambda agent_id: manager._get_or_build_tool_names(
                     agent_id
@@ -307,18 +271,14 @@ class AgentRuntimeAssembler:
                 resolve_budget=lambda agent_id: manager._resolve_context_budget(
                     agent_id
                 ),
-                resolve_agent_config=lambda agent_id: self._global(
-                    "resolve_agent_config"
-                )(agent_id),
+                resolve_agent_config=self._bindings.resolve_agent_config,
                 resolve_candidates=lambda agent_id: model_runtime.resolve_candidates(
                     agent_id
                 ),
                 execute_turn=lambda request: manager._turn_executor.execute(
                     request
                 ),
-                run_fallback_stream=lambda candidates, run_model, agent_id: self._global(
-                    "run_with_fallback_stream"
-                )(candidates, run_model, agent_id),
+                run_fallback_stream=self._bindings.run_with_fallback_stream,
                 recover_turn=lambda **kwargs: manager._turn_recovery.run(
                     **kwargs
                 ),
@@ -326,14 +286,12 @@ class AgentRuntimeAssembler:
         )
         session_lifecycle = SessionLifecycle(
             compactor=session_compactor,
-            resolve_agent_config=lambda agent_id: self._global(
-                "resolve_agent_config"
-            )(agent_id),
+            resolve_agent_config=self._bindings.resolve_agent_config,
             load_session=lambda session_id, agent_id: self._get_session_manager().load_session(
                 session_id,
                 agent_id,
             ),
-            detect_compaction_level=self._global("detect_compaction_level"),
+            detect_compaction_level=self._bindings.detect_compaction_level,
             audit_log=manager._audit_runtime_event,
             emit_event=manager._emit_runtime_event,
             get_store=lambda agent_id: manager.mem_stores.get(agent_id),
@@ -346,7 +304,7 @@ class AgentRuntimeAssembler:
             state_runtime=state_runtime,
             memory_runtime=memory_runtime,
             model_runtime=model_runtime,
-            list_agents=lambda: self._global("list_agents")(),
+            list_agents=self._bindings.list_agents,
             ensure_workspace=manager._ensure_agent_workspace,
             prompt_cache=turn_context.prompt_cache,
             session_context_cache=turn_context.session_context_cache,

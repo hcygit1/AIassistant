@@ -9,6 +9,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from runtime.agent_runtime_assembly import AgentRuntimeComponents
+from runtime.agent_runtime_bindings import AgentRuntimeBindings
 
 
 class AgentRuntimeComponentsTests(unittest.TestCase):
@@ -61,7 +62,9 @@ class AgentRuntimeAssemblerDependencyTests(unittest.TestCase):
         injected = object()
         assembler = AgentRuntimeAssembler(
             SimpleNamespace(),
-            {},
+            AgentRuntimeBindings.from_module_symbols(
+                {"detect_compaction_level": lambda: None}
+            ),
             get_session_manager=lambda: injected,
         )
 

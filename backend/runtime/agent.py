@@ -46,6 +46,7 @@ from runtime.agent_turn_compat import (
     AgentManagerTurnPreparationCompatibilityMixin,
 )
 from runtime.agent_runtime_assembly import AgentRuntimeAssembler
+from runtime.agent_runtime_bindings import AgentRuntimeBindings
 from runtime.agent_turn_preparation import AgentTurnPreparationAdapter
 from runtime.agent_state_runtime import AgentStateRuntime
 from runtime.agent_lifecycle import AgentLifecycle
@@ -167,13 +168,22 @@ class AgentManager(
 
         return resolve_budget(agent_id)
 
-    def __init__(self, session_manager: Any | None = None):
+    def __init__(
+        self,
+        session_manager: Any | None = None,
+        runtime_bindings: AgentRuntimeBindings | None = None,
+    ):
         self.lifecycle_hooks: LifecycleHooks | None = None
         self._pending_tasks: set[asyncio.Task] = set()
         self._session_manager_override = session_manager
+        bindings = (
+            runtime_bindings
+            if runtime_bindings is not None
+            else AgentRuntimeBindings.from_module_symbols(globals())
+        )
         AgentRuntimeAssembler(
             self,
-            globals(),
+            bindings,
             get_session_manager=self._get_session_manager,
         ).build().install_on(self)
 
