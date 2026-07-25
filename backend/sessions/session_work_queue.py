@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sessions.session_dispatcher import SessionWorkItem
+    from sessions.session_work_item import SessionWorkItem
 
 
 # User work always wins; aging can improve system work only to this boundary.

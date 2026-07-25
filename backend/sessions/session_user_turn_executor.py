@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from turns.events import TurnEvent
 
 if TYPE_CHECKING:
-    from sessions.session_dispatcher import SessionWorkItem
+    from sessions.session_work_item import SessionWorkItem
 
 
 logger = logging.getLogger(__name__)

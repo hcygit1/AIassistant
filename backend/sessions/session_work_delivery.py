@@ -11,11 +11,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
-from sessions.session_dispatcher import (
-    DispatcherManager,
-    SessionWorkItem,
-)
+from sessions.session_dispatcher import DispatcherManager
 from sessions.session_lock_manager import SessionLockManager
+from sessions.session_work_item import SessionWorkItem
 from sessions.session_work_runtime import (
     SessionWorkRuntime,
     session_work_runtime,

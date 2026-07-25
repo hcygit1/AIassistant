@@ -88,7 +88,8 @@ class UserTurnService:
         )
 
     async def submit(self, message: str, agent_id: str, session_id: str) -> dict:
-        from sessions.session_dispatcher import PRIORITY_USER, SessionWorkItem
+        from sessions.session_work_item import SessionWorkItem
+        from sessions.session_work_queue import PRIORITY_USER
 
         cleaned = (message or "").strip()
         if not cleaned:

@@ -25,9 +25,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
+import time  # Compatibility patch path for session-work queue clocks.
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from sessions.session_work_policy import (
     PRIORITY_ANNOUNCE,
@@ -37,6 +36,7 @@ from sessions.session_work_policy import (
 from sessions.session_dispatcher_factory import SessionDispatcherFactory
 from sessions.session_system_work_executor import SessionSystemWorkExecutor
 from sessions.session_user_turn_executor import SessionUserTurnExecutor
+from sessions.session_work_item import SessionWorkItem
 from sessions.session_work_queue import (
     AGING_INTERVAL_SEC,
     MAX_AGING_BONUS,
@@ -102,36 +102,6 @@ def _default_lock_manager() -> "SessionLockManager":
     from sessions.session_lock_manager import session_lock_manager
 
     return session_lock_manager
-
-
-@dataclass(order=False)
-class SessionWorkItem:
-    """会话正式工作项。
-
-    这是调度器内部真正要执行的载体，而不是 API 暴露给前端的 turn 状态。
-    对用户消息来说，它与 user turn runtime/status 指向同一条业务请求的两个侧面：
-
-    - user turn runtime/status：状态与可观测性
-    - SessionWorkItem：调度与执行
-    """
-
-    kind: str
-    priority: int
-    content: str
-    agent_id: str
-    session_id: str
-    prompt_mode: str = "minimal"
-    persist_role: str = "system"
-    run_id: str | None = None
-    work_id: str | None = None
-    created_at: float = field(default_factory=time.time)
-    result_handler: Callable[[str], Awaitable[None]] | None = None
-    on_success: Callable[[], Any] | None = None
-    on_failure: Callable[[], Any] | None = None
-    on_failure_async: Callable[[Exception], Awaitable[None]] | None = None
-    on_cancel: Callable[[], Any] | None = None
-    turn_id: str | None = None
-    stream_queue: asyncio.Queue[TurnEvent | None] | None = None
 
 
 class SessionDispatcher:
