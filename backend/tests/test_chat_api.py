@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -13,6 +13,10 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from api.chat import router as chat_router
+from api.dependencies import (
+    get_session_manager,
+    get_user_turn_service,
+)
 from turns.events import TurnEvent
 
 
@@ -20,7 +24,45 @@ class ChatApiTests(unittest.TestCase):
     def setUp(self) -> None:
         app = FastAPI()
         app.include_router(chat_router, prefix="/api")
+        self.app = app
         self.client = TestClient(app)
+
+    def test_submit_uses_overridden_runtime_dependencies(self) -> None:
+        manager = Mock()
+        manager.resolve_main_session_id.return_value = "override-main"
+        service = Mock()
+        service.submit = AsyncMock(
+            return_value={
+                "turn_id": "turn-override",
+                "position": 1,
+                "status": "queued",
+                "session_id": "override-main",
+            }
+        )
+        self.app.dependency_overrides[get_session_manager] = lambda: manager
+        self.app.dependency_overrides[get_user_turn_service] = lambda: service
+
+        response = self.client.post(
+            "/api/chat/submit",
+            json={"message": "hello", "agent_id": "main"},
+        )
+
+        self.assertEqual(response.status_code, 202)
+        service.submit.assert_awaited_once_with(
+            "hello",
+            "main",
+            "override-main",
+        )
+
+    def test_chat_dependencies_do_not_add_openapi_parameters(self) -> None:
+        operation = self.app.openapi()["paths"][
+            "/api/chat/pending-turn"
+        ]["get"]
+        parameter_names = {
+            parameter["name"] for parameter in operation.get("parameters", [])
+        }
+
+        self.assertEqual(parameter_names, {"session_id", "agent_id"})
 
     def test_submit_resolves_main_session_and_returns_202(self) -> None:
         submit_mock = AsyncMock(

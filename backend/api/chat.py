@@ -21,9 +21,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+
+from api.dependencies import get_session_manager, get_user_turn_service
 
 router = APIRouter()
 
@@ -42,26 +46,30 @@ class ChatAbortRequest(BaseModel):
 
 
 @router.post("/chat/submit")
-async def chat_submit(req: ChatSubmitRequest):
-    from sessions.session_manager import session_manager
-    from turns.service import user_turn_service
-
+async def chat_submit(
+    req: ChatSubmitRequest,
+    session_manager: Any = Depends(get_session_manager),
+    user_turn_service: Any = Depends(get_user_turn_service),
+):
     session_id = req.session_id or session_manager.resolve_main_session_id(req.agent_id)
     result = await user_turn_service.submit(req.message, req.agent_id, session_id)
     return JSONResponse(status_code=202, content=result)
 
 
 @router.get("/chat/turn/{turn_id}/status")
-async def chat_turn_status(turn_id: str):
-    from turns.service import user_turn_service
-
+async def chat_turn_status(
+    turn_id: str,
+    user_turn_service: Any = Depends(get_user_turn_service),
+):
     return await user_turn_service.status(turn_id)
 
 
 @router.get("/chat/turn/{turn_id}/stream")
-async def chat_turn_stream(turn_id: str):
+async def chat_turn_stream(
+    turn_id: str,
+    user_turn_service: Any = Depends(get_user_turn_service),
+):
     from api.sse import encode_turn_event_sse
-    from turns.service import user_turn_service
 
     async def encoded_events() -> AsyncIterator[str]:
         async for event in user_turn_service.stream(turn_id):
@@ -82,19 +90,19 @@ async def chat_turn_stream(turn_id: str):
 async def chat_pending_turn(
     session_id: str = Query(""),
     agent_id: str = Query("main"),
+    session_manager: Any = Depends(get_session_manager),
+    user_turn_service: Any = Depends(get_user_turn_service),
 ):
-    from sessions.session_manager import session_manager
-    from turns.service import user_turn_service
-
     sid = session_id or session_manager.resolve_main_session_id(agent_id)
     return await user_turn_service.pending(agent_id, sid)
 
 
 @router.post("/chat/abort")
-async def abort_chat(req: ChatAbortRequest):
-    from sessions.session_manager import session_manager
-    from turns.service import user_turn_service
-
+async def abort_chat(
+    req: ChatAbortRequest,
+    session_manager: Any = Depends(get_session_manager),
+    user_turn_service: Any = Depends(get_user_turn_service),
+):
     session_id = req.session_id or session_manager.resolve_main_session_id(req.agent_id)
     return await user_turn_service.abort(
         req.agent_id,
