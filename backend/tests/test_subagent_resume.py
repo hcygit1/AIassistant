@@ -11,6 +11,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+import subagents.subagent_resume as subagent_resume_module
 from subagents.subagent_delivery import SubagentAnnounceDelivery
 from subagents.subagent_registry import SubagentRegistry, SubagentRunRecord
 from subagents.subagent_run_store import SubagentRunStore
@@ -21,6 +22,67 @@ from subagents.subagent_resume import (
 
 
 class SubagentResumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resume_service_uses_only_injected_dependencies(self) -> None:
+        self.assertTrue(
+            hasattr(subagent_resume_module, "SubagentRunResumeService"),
+            "SubagentRunResumeService should own restart orchestration",
+        )
+        entry = SubagentRunRecord(
+            run_id="run-injected-resume",
+            child_session_key="agent:main:subagent:child-injected",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+            result_summary="done",
+            outcome="completed",
+            ended_at=100.0,
+        )
+        registry = Mock()
+        registry.list_run_entries.return_value = [(entry.run_id, entry)]
+        resolve_orphan_reason = Mock(return_value=None)
+        deliver_announce = AsyncMock(return_value=True)
+
+        service = subagent_resume_module.SubagentRunResumeService(
+            registry=registry,
+            resolve_orphan_reason=resolve_orphan_reason,
+            deliver_announce=deliver_announce,
+            now=lambda: 101.0,
+        )
+
+        await service.resume()
+
+        resolve_orphan_reason.assert_called_once_with(entry)
+        deliver_announce.assert_awaited_once_with(entry.run_id, entry)
+        registry.remove_run.assert_not_called()
+
+    async def test_zero_ended_at_is_treated_as_terminal(self) -> None:
+        entry = SubagentRunRecord(
+            run_id="run-zero-ended-at",
+            child_session_key="agent:main:subagent:child-zero",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+            result_summary="done",
+            outcome="completed",
+            ended_at=0.0,
+        )
+        registry = Mock()
+        registry.list_run_entries.return_value = [(entry.run_id, entry)]
+        deliver_announce = AsyncMock(return_value=True)
+        service = subagent_resume_module.SubagentRunResumeService(
+            registry=registry,
+            resolve_orphan_reason=Mock(return_value=None),
+            deliver_announce=deliver_announce,
+            now=lambda: 1.0,
+        )
+
+        await service.resume()
+
+        registry.mark_terminated.assert_not_called()
+        deliver_announce.assert_awaited_once_with(entry.run_id, entry)
+
     async def test_orphan_check_uses_public_session_manager_boundary(self) -> None:
         entry = SubagentRunRecord(
             run_id="run-orphan",
@@ -56,6 +118,46 @@ class SubagentResumeTests(unittest.IsolatedAsyncioTestCase):
             "child-1",
             "main",
         )
+
+    async def test_orphan_validation_failure_defers_run(self) -> None:
+        entry = SubagentRunRecord(
+            run_id="run-validation-unavailable",
+            child_session_key="agent:main:subagent:child-unavailable",
+            requester_session_key="agent:main:main",
+            requester_agent_id="main",
+            target_agent_id="worker",
+            task="summarize",
+        )
+        registry = Mock()
+        registry.list_run_entries.return_value = [(entry.run_id, entry)]
+        session_manager = Mock()
+        session_manager.get_session_index_entry.side_effect = OSError(
+            "session index unavailable"
+        )
+        deliver = AsyncMock(return_value=True)
+
+        with self.assertLogs(
+            "subagents.subagent_run_resume",
+            level="WARNING",
+        ) as captured:
+            with (
+                patch("subagents.subagent_resume.registry", registry),
+                patch(
+                    "sessions.session_manager.session_manager",
+                    session_manager,
+                ),
+                patch(
+                    "subagents.subagent_resume._deliver_announce_for_run",
+                    deliver,
+                ),
+            ):
+                await resume_subagent_runs()
+
+        self.assertIn("session index unavailable", captured.output[0])
+        registry.mark_terminated.assert_not_called()
+        registry.remove_run.assert_not_called()
+        registry.set_result_delivery_state.assert_not_called()
+        deliver.assert_not_awaited()
 
     async def test_resume_marks_result_delivery_dropped_when_retry_limit_reached(self) -> None:
         entry = SubagentRunRecord(
