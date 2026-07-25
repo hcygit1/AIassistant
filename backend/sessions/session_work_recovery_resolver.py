@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Iterable
 
-from sessions.session_work_store import SessionWorkRecord
+from sessions.session_work_record import SessionWorkRecord
 
 RecoveryCallbacks = dict[str, Any] | None
 RecoveryCallbackProvider = Callable[[SessionWorkRecord], RecoveryCallbacks]

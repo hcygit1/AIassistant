@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from scheduler.task_store import TaskKind, TaskStatus
-from sessions.session_work_store import SessionWorkRecord
+from sessions.session_work_record import SessionWorkRecord
 
 
 class TaskHistoryError(Exception):

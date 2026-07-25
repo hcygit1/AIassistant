@@ -21,10 +21,8 @@ from sessions.session_work_runtime import (
 from sessions.session_work_recovery_resolver import (
     session_work_recovery_resolver,
 )
-from sessions.session_work_store import (
-    SessionWorkRecord,
-    SessionWorkStore,
-)
+from sessions.session_work_record import SessionWorkRecord
+from sessions.session_work_store import SessionWorkStore
 
 INTERRUPTED_WORK_ERROR = "interrupted by process restart"
 STALE_RECOVERABLE_WORK_ERROR = "stale recoverable work claim"
