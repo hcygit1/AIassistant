@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import copy
 import threading
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterator
 
@@ -17,6 +15,7 @@ from scheduler.cron_due_processor import (
 )
 from scheduler.cron_errors import CronServiceError
 from scheduler.cron_job_catalog import CronJobCatalog
+from scheduler.cron_run_commands import CronRunCommands, RunReceipt
 from scheduler.cron_run_lifecycle import CronRunLifecycle
 from scheduler.cron_schedule import (
     build_payload as build_cron_payload,
@@ -30,13 +29,6 @@ from scheduler.cron_types import (
     CronSchedule,
     CronStore,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class RunReceipt:
-    job_id: str
-    queue_position: int
-
 
 class CronService:
     RETRY_DELAY_MS = 60_000
@@ -58,6 +50,7 @@ class CronService:
         run_lifecycle: CronRunLifecycle | None = None,
         due_processor: CronDueProcessor | None = None,
         job_catalog: CronJobCatalog | None = None,
+        run_commands: CronRunCommands | None = None,
     ) -> None:
         if load_store is None:
             from scheduler.cron_store import load_cron_store
@@ -127,6 +120,15 @@ class CronService:
             list_jobs=lambda: self.list_jobs(),
             deliver=lambda **kwargs: self._deliver(**kwargs),
             retry_delay_ms=self.RETRY_DELAY_MS,
+        )
+        self._run_commands = run_commands or CronRunCommands(
+            transaction=lambda: self._transaction(),
+            save_store=lambda store, path: self._save(store, path),
+            ensure_enabled=lambda: self._ensure_enabled(),
+            now_ms=lambda: self._now_ms(),
+            token_factory=lambda: uuid.uuid4().hex,
+            run_lifecycle=self._run_lifecycle,
+            deliver=lambda **kwargs: self._deliver(**kwargs),
         )
         self._due_processor = due_processor or CronDueProcessor(
             transaction=lambda: self._transaction(),
@@ -286,59 +288,16 @@ class CronService:
         *,
         agent_id: str | None = None,
     ) -> RunReceipt:
-        self._ensure_enabled()
-        now_ms = self._now_ms()
-        token = uuid.uuid4().hex
-        with self._transaction() as (store, path):
-            job = self._find(store, job_id, agent_id=agent_id)
-            if job is None:
-                raise self._not_found(job_id)
-            if job.active_run_token:
-                raise CronServiceError(
-                    "busy",
-                    f"Job {job_id} is already being triggered",
-                )
-            job.active_run_token = token
-            job.active_run_work_id = None
-            job.active_run_due_at_ms = None
-            job.active_run_schedule_revision = job.schedule_revision
-            job.last_run_at_ms = now_ms
-            job.last_run_status = "running"
-            claimed = copy.deepcopy(job)
-            self._save(store, path)
-
-        try:
-            position = self._deliver_job(
-                claimed,
-                token,
-                attempted_at_ms=now_ms,
-            )
-        except Exception as exc:
-            self._finalize_claim(
-                claimed.id,
-                token,
-                status="error",
-            )
-            raise CronServiceError(
-                "delivery_failed",
-                f"Failed to trigger {job_id}: {exc}",
-            ) from exc
-        return RunReceipt(claimed.id, position)
+        return self._run_commands.trigger_job(
+            job_id,
+            agent_id=agent_id,
+        )
 
     def wake(self, *, agent_id: str, text: str) -> RunReceipt:
-        self._ensure_enabled()
-        reminder_text = (text or "").strip()
-        if not reminder_text:
-            raise CronServiceError(
-                "invalid_payload",
-                "reminder text is required",
-            )
-        position = self._deliver(
-            agent_id=agent_id or "main",
-            text=reminder_text,
-            run_id="cron:wake",
+        return self._run_commands.wake(
+            agent_id=agent_id,
+            text=text,
         )
-        return RunReceipt("cron:wake", position)
 
     def process_due_jobs(
         self,

@@ -160,6 +160,44 @@ class CronServiceTests(unittest.TestCase):
             None,
         )
 
+    def test_manual_run_methods_delegate_to_injected_commands(self) -> None:
+        commands = Mock()
+        trigger_receipt = SimpleNamespace(
+            job_id="cron-1",
+            queue_position=2,
+        )
+        wake_receipt = SimpleNamespace(
+            job_id="cron:wake",
+            queue_position=3,
+        )
+        commands.trigger_job.return_value = trigger_receipt
+        commands.wake.return_value = wake_receipt
+        service = CronService(
+            load_store=self.persistence.load,
+            save_store=self.persistence.save,
+            resolve_store_path=lambda: Path("/tmp/cron-test.json"),
+            is_enabled=lambda: True,
+            deliver=lambda **_kwargs: 1,
+            run_commands=commands,
+        )
+
+        self.assertIs(
+            service.trigger_job("cron-1", agent_id="main"),
+            trigger_receipt,
+        )
+        self.assertIs(
+            service.wake(agent_id="main", text="wake"),
+            wake_receipt,
+        )
+        commands.trigger_job.assert_called_once_with(
+            "cron-1",
+            agent_id="main",
+        )
+        commands.wake.assert_called_once_with(
+            agent_id="main",
+            text="wake",
+        )
+
     def test_invalid_schedule_and_empty_payload_are_rejected(self) -> None:
         with self.assertRaises(CronServiceError) as schedule_error:
             self.service.create_job(
