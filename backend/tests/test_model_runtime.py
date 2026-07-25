@@ -303,12 +303,10 @@ class ModelRuntimeApiTests(
             context_window=64000,
             max_tokens=4096,
         )
+        manager = Mock()
+        manager.get_current_model_ref.return_value = current
 
         with (
-            patch(
-                "runtime.agent.agent_manager.get_current_model_ref",
-                return_value=current,
-            ) as get_current,
             patch(
                 "llm.model_selection.get_model_display_name",
                 return_value="Runtime Model",
@@ -322,9 +320,12 @@ class ModelRuntimeApiTests(
                 return_value="openai-completions",
             ),
         ):
-            result = await get_current_model("main")
+            result = await get_current_model(
+                "main",
+                agent_manager=manager,
+            )
 
-        get_current.assert_called_once_with("main")
+        manager.get_current_model_ref.assert_called_once_with("main")
         self.assertEqual(result["ref"], "fake/runtime")
         self.assertEqual(result["name"], "Runtime Model")
 
@@ -335,28 +336,15 @@ class ModelRuntimeApiTests(
             provider="fake",
             model="old",
         )
-        restore = Mock()
+        manager = Mock()
+        manager.get_model_override.return_value = previous
+        manager.switch_model.return_value = "New Model"
+        manager.get_current_model_ref.return_value = ModelRef(
+            provider="fake",
+            model="new",
+        )
 
         with (
-            patch(
-                "runtime.agent.agent_manager.get_model_override",
-                return_value=previous,
-            ),
-            patch(
-                "runtime.agent.agent_manager.switch_model",
-                return_value="New Model",
-            ),
-            patch(
-                "runtime.agent.agent_manager.get_current_model_ref",
-                return_value=ModelRef(
-                    provider="fake",
-                    model="new",
-                ),
-            ),
-            patch(
-                "runtime.agent.agent_manager.restore_model_override",
-                new=restore,
-            ),
             patch(
                 "config.get_raw_config",
                 return_value={
@@ -376,10 +364,14 @@ class ModelRuntimeApiTests(
             result = await switch_model_endpoint(
                 "main",
                 ModelSwitchRequest(model="fake/new"),
+                agent_manager=manager,
             )
 
         self.assertEqual(result["status"], "error")
-        restore.assert_called_once_with("main", previous)
+        manager.restore_model_override.assert_called_once_with(
+            "main",
+            previous,
+        )
 
     async def test_agent_manager_close_clears_model_overrides(
         self,
@@ -400,12 +392,10 @@ class ModelRuntimeApiTests(
         self,
     ) -> None:
         clear = Mock()
+        manager = Mock(clear_model_overrides=clear)
+        heartbeat = Mock()
 
         with (
-            patch(
-                "runtime.agent.agent_manager.clear_model_overrides",
-                new=clear,
-            ),
             patch(
                 "llm.models_config.models_config.reload"
             ),
@@ -417,7 +407,11 @@ class ModelRuntimeApiTests(
                 return_value={"models": {}},
             ),
         ):
-            _reload_subsystems({"models": {}})
+            _reload_subsystems(
+                {"models": {}},
+                agent_manager=manager,
+                heartbeat_runner=heartbeat,
+            )
 
         clear.assert_called_once_with()
 

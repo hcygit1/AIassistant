@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Any
 
@@ -21,6 +21,7 @@ from config import (
     save_config,
 )
 from config_schema import validate_config, sanitize_config_for_client, SENSITIVE_KEYS
+from api.dependencies import get_agent_manager, get_heartbeat_runner
 
 router = APIRouter()
 
@@ -127,7 +128,11 @@ async def get_init_status():
 
 
 @router.put("/config")
-async def update_config(req: ConfigUpdateRequest):
+async def update_config(
+    req: ConfigUpdateRequest,
+    agent_manager: Any = Depends(get_agent_manager),
+    heartbeat_runner: Any = Depends(get_heartbeat_runner),
+):
     """Deep-merge updates into current config and save"""
     cfg = get_raw_config()
     _deep_merge_inplace(cfg, req.updates)
@@ -137,13 +142,20 @@ async def update_config(req: ConfigUpdateRequest):
         raise HTTPException(400, detail=f"配置校验失败: {'; '.join(result.errors)}")
 
     save_config(result.config or cfg)
-    _reload_subsystems(req.updates)
+    _reload_subsystems(
+        req.updates,
+        agent_manager=agent_manager,
+        heartbeat_runner=heartbeat_runner,
+    )
 
     return {"status": "ok", "config": sanitize_config_for_client(get_config())}
 
 
 @router.put("/config/tools-policy")
-async def update_tool_policy(req: ToolPolicyUpdateRequest):
+async def update_tool_policy(
+    req: ToolPolicyUpdateRequest,
+    heartbeat_runner: Any = Depends(get_heartbeat_runner),
+):
     from config import get_raw_config, save_config
     cfg = get_raw_config()
     agents_list = cfg.setdefault("agents", {}).setdefault("list", [])
@@ -188,7 +200,6 @@ async def update_tool_policy(req: ToolPolicyUpdateRequest):
         del agent_entry["tools"]
     save_config(cfg)
     try:
-        from system_messages.heartbeat import heartbeat_runner
         heartbeat_runner.update_config()
     except Exception:
         pass
@@ -196,7 +207,11 @@ async def update_tool_policy(req: ToolPolicyUpdateRequest):
 
 
 @router.put("/config/replace")
-async def replace_config(req: ConfigReplaceRequest):
+async def replace_config(
+    req: ConfigReplaceRequest,
+    agent_manager: Any = Depends(get_agent_manager),
+    heartbeat_runner: Any = Depends(get_heartbeat_runner),
+):
     """完整替换配置（Raw JSON 编辑器使用），带校验。"""
     merged = _restore_masked_secrets(req.config, get_raw_config())
 
@@ -206,12 +221,20 @@ async def replace_config(req: ConfigReplaceRequest):
 
     normalized = result.config or merged
     save_config(normalized)
-    _reload_subsystems(normalized)
+    _reload_subsystems(
+        normalized,
+        agent_manager=agent_manager,
+        heartbeat_runner=heartbeat_runner,
+    )
     return {"status": "ok", "config": sanitize_config_for_client(get_config())}
 
 
 @router.put("/config/secrets")
-async def update_secrets(req: SecretsUpdateRequest):
+async def update_secrets(
+    req: SecretsUpdateRequest,
+    agent_manager: Any = Depends(get_agent_manager),
+    heartbeat_runner: Any = Depends(get_heartbeat_runner),
+):
     """写入敏感字段（如 apiKey），不走脱敏返回"""
     cfg = get_raw_config()
     parts = req.path.split(".")
@@ -227,7 +250,11 @@ async def update_secrets(req: SecretsUpdateRequest):
         raise HTTPException(400, f"Invalid path: {req.path}")
 
     save_config(cfg)
-    _reload_subsystems({"models": True})
+    _reload_subsystems(
+        {"models": True},
+        agent_manager=agent_manager,
+        heartbeat_runner=heartbeat_runner,
+    )
     return {"status": "ok", "path": req.path}
 
 
@@ -270,8 +297,10 @@ async def list_models():
 
 
 @router.get("/models/current/{agent_id}")
-async def get_current_model(agent_id: str):
-    from runtime.agent import agent_manager
+async def get_current_model(
+    agent_id: str,
+    agent_manager: Any = Depends(get_agent_manager),
+):
     from llm.model_selection import get_model_display_name
     from llm.models_config import models_config
 
@@ -300,9 +329,12 @@ class ModelSwitchRequest(BaseModel):
 
 
 @router.post("/models/switch/{agent_id}")
-async def switch_model(agent_id: str, req: ModelSwitchRequest):
+async def switch_model(
+    agent_id: str,
+    req: ModelSwitchRequest,
+    agent_manager: Any = Depends(get_agent_manager),
+):
     """运行时切换模型。scope='agent' 仅改该 agent；scope='default' 改全局默认。"""
-    from runtime.agent import agent_manager
     from config import get_raw_config, save_config
 
     previous_override = agent_manager.get_model_override(agent_id)
@@ -394,12 +426,16 @@ def _deep_merge_inplace(base: dict, override: dict) -> None:
             base[k] = v
 
 
-def _reload_subsystems(updates: dict[str, Any]) -> None:
+def _reload_subsystems(
+    updates: dict[str, Any],
+    *,
+    agent_manager: Any,
+    heartbeat_runner: Any,
+) -> None:
     if "models" in updates:
         try:
             from llm.models_config import models_config
             from llm.llm_factory import llm_cache
-            from runtime.agent import agent_manager
             from config import get_config
             models_config.reload(get_config().get("models"))
             llm_cache.invalidate_all()
@@ -409,7 +445,6 @@ def _reload_subsystems(updates: dict[str, Any]) -> None:
 
     if "agents" in updates:
         try:
-            from system_messages.heartbeat import heartbeat_runner
             heartbeat_runner.update_config()
         except Exception:
             pass
