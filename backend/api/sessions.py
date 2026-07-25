@@ -6,21 +6,22 @@
 
 from __future__ import annotations
 
-import time
-from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
 
-from config import list_agents, resolve_agent_sessions_dir
-from sessions.session_manager import session_manager
+from api.dependencies import get_session_manager
+from config import list_agents
 from runtime.prompt_builder import prompt_builder
 
 router = APIRouter()
 
 
 @router.get("/agents/{agent_id}/session")
-async def get_main_session(agent_id: str):
+async def get_main_session(
+    agent_id: str,
+    session_manager: Any = Depends(get_session_manager),
+):
     """获取 Agent 的主会话信息"""
     session_id = session_manager.resolve_main_session_id(agent_id)
     data = session_manager.load_session(session_id, agent_id)
@@ -42,7 +43,10 @@ async def get_main_session(agent_id: str):
 
 
 @router.get("/agents/{agent_id}/session/messages")
-async def get_main_session_messages(agent_id: str):
+async def get_main_session_messages(
+    agent_id: str,
+    session_manager: Any = Depends(get_session_manager),
+):
     """获取主会话的完整消息"""
     session_id = session_manager.resolve_main_session_id(agent_id)
     data = session_manager.load_session(session_id, agent_id)
@@ -58,7 +62,10 @@ async def get_main_session_messages(agent_id: str):
 
 
 @router.post("/agents/{agent_id}/session/reset")
-async def reset_main_session(agent_id: str):
+async def reset_main_session(
+    agent_id: str,
+    session_manager: Any = Depends(get_session_manager),
+):
     """重置主会话（/new 命令的 API 等价物）。消息已由 mem_worker 实时入库。"""
 
     session_id = session_manager.resolve_main_session_id(agent_id)
@@ -77,7 +84,10 @@ async def reset_main_session(agent_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/agents/{agent_id}/sessions")
-async def list_sessions(agent_id: str):
+async def list_sessions(
+    agent_id: str,
+    session_manager: Any = Depends(get_session_manager),
+):
     """列出会话（单主会话模式下只返回主会话）"""
     session_id = session_manager.resolve_main_session_id(agent_id)
     data = session_manager.load_session(session_id, agent_id)
@@ -98,7 +108,11 @@ async def list_sessions(agent_id: str):
 
 
 @router.get("/agents/{agent_id}/sessions/{session_id}/messages")
-async def get_messages(agent_id: str, session_id: str):
+async def get_messages(
+    agent_id: str,
+    session_id: str,
+    session_manager: Any = Depends(get_session_manager),
+):
     """获取指定会话的完整消息（含 System Prompt）"""
     data = session_manager.load_session(session_id, agent_id)
     if data is None:
@@ -112,7 +126,11 @@ async def get_messages(agent_id: str, session_id: str):
 
 
 @router.get("/agents/{agent_id}/sessions/{session_id}/history")
-async def get_history(agent_id: str, session_id: str):
+async def get_history(
+    agent_id: str,
+    session_id: str,
+    session_manager: Any = Depends(get_session_manager),
+):
     """获取对话历史"""
     data = session_manager.load_session(session_id, agent_id)
     if data is None:
@@ -123,7 +141,11 @@ async def get_history(agent_id: str, session_id: str):
 
 
 @router.post("/agents/{agent_id}/sessions/{session_id}/reset")
-async def reset_session(agent_id: str, session_id: str):
+async def reset_session(
+    agent_id: str,
+    session_id: str,
+    session_manager: Any = Depends(get_session_manager),
+):
     """重置指定会话（兼容旧端点）。消息已由 mem_worker 实时入库。"""
 
     data = session_manager.load_session(session_id, agent_id)
@@ -140,7 +162,12 @@ async def reset_session(agent_id: str, session_id: str):
 
 
 @router.post("/agents/{agent_id}/sessions/cleanup")
-async def sessions_cleanup(agent_id: str, enforce: bool = False, dry_run: bool = False):
+async def sessions_cleanup(
+    agent_id: str,
+    enforce: bool = False,
+    dry_run: bool = False,
+    session_manager: Any = Depends(get_session_manager),
+):
     """sessions cleanup：prune 过期 + cap 超限 + 磁盘预算。enforce=true 时忽略 mode=warn"""
     if not any(a["id"] == agent_id for a in list_agents()):
         raise HTTPException(404, f"Agent '{agent_id}' 不存在")
