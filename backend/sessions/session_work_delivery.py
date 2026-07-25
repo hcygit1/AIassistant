@@ -20,6 +20,9 @@ from sessions.session_work_runtime import (
     SessionWorkRuntime,
     session_work_runtime,
 )
+from sessions.session_work_recovery_resolver import (
+    session_work_recovery_resolver,
+)
 from sessions.session_work_store import (
     SessionWorkRecord,
     SessionWorkStore,
@@ -29,16 +32,6 @@ INTERRUPTED_WORK_ERROR = "interrupted by process restart"
 STALE_RECOVERABLE_WORK_ERROR = "stale recoverable work claim"
 
 logger = logging.getLogger(__name__)
-
-
-def _default_recovery_callback_resolver(
-    record: SessionWorkRecord,
-) -> dict[str, Any] | None:
-    if record.kind != "cron" or not record.run_id:
-        return {}
-    from scheduler.cron_service import cron_service
-
-    return cron_service.recovery_callbacks(record.run_id, record.id)
 
 
 class SessionWorkDelivery:
@@ -82,7 +75,7 @@ class SessionWorkDelivery:
             self._recovery_callback_resolver = recovery_callback_resolver
         elif uses_default_runtime:
             self._recovery_callback_resolver = (
-                _default_recovery_callback_resolver
+                session_work_recovery_resolver.resolve
             )
         else:
             self._recovery_callback_resolver = lambda _record: {}
@@ -102,6 +95,12 @@ class SessionWorkDelivery:
     @property
     def lock_manager(self) -> SessionLockManager:
         return self.runtime.lock_manager
+
+    @property
+    def recovery_callback_resolver(
+        self,
+    ) -> Callable[[SessionWorkRecord], dict[str, Any] | None]:
+        return self._recovery_callback_resolver
 
     def _submit_record(
         self,
@@ -236,5 +235,5 @@ class SessionWorkDelivery:
 
 session_work_delivery = SessionWorkDelivery(
     runtime=session_work_runtime,
-    recovery_callback_resolver=_default_recovery_callback_resolver,
+    recovery_callback_resolver=session_work_recovery_resolver.resolve,
 )

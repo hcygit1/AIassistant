@@ -11,7 +11,13 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from sessions.session_work_delivery import SessionWorkDelivery
+from sessions.session_work_delivery import (
+    SessionWorkDelivery,
+    session_work_delivery,
+)
+from sessions.session_work_recovery_resolver import (
+    session_work_recovery_resolver,
+)
 from sessions.session_work_runtime import SessionWorkRuntime
 from sessions.session_work_store import SessionWorkStore
 
@@ -340,6 +346,12 @@ class SessionWorkDeliveryTests(unittest.TestCase):
         self.assertIs(delivery.work_store, store)
         self.assertIs(delivery.lock_manager, lock_manager)
         self.assertIs(delivery.dispatcher_manager, dispatcher_manager)
+
+    def test_default_delivery_uses_shared_recovery_resolver(self) -> None:
+        self.assertEqual(
+            session_work_delivery.recovery_callback_resolver,
+            session_work_recovery_resolver.resolve,
+        )
 
     def test_delivery_rejects_runtime_mixed_with_legacy_dependencies(self) -> None:
         dispatcher = _FakeDispatcher()

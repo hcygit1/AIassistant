@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import builtins
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -40,6 +41,74 @@ class AppCorsSettingsTests(unittest.TestCase):
 
 
 class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
+    def test_configure_session_work_recovery_defers_cron_import(self) -> None:
+        resolver = Mock()
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "scheduler.cron_service":
+                raise AssertionError("cron service imported during binding")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=guarded_import):
+            backend_app.configure_session_work_recovery(resolver=resolver)
+
+        resolver.bind.assert_called_once()
+
+    def test_configure_session_work_recovery_binds_cron_provider(self) -> None:
+        resolver = Mock()
+        cron_callbacks = Mock()
+
+        backend_app.configure_session_work_recovery(
+            resolver=resolver,
+            cron_recovery_callbacks=cron_callbacks,
+        )
+
+        resolver.bind.assert_called_once()
+        kind, provider = resolver.bind.call_args.args
+        self.assertEqual(kind, "cron")
+        record = Mock(run_id="cron-1", id="work-1")
+        provider(record)
+        cron_callbacks.assert_called_once_with("cron-1", "work-1")
+
+    def test_cron_recovery_provider_ignores_record_without_run_id(self) -> None:
+        resolver = Mock()
+        cron_callbacks = Mock()
+        backend_app.configure_session_work_recovery(
+            resolver=resolver,
+            cron_recovery_callbacks=cron_callbacks,
+        )
+        provider = resolver.bind.call_args.args[1]
+
+        callbacks = provider(Mock(run_id=None, id="work-1"))
+
+        self.assertEqual(callbacks, {})
+        cron_callbacks.assert_not_called()
+
+    async def test_lifespan_configures_recovery_before_recovering_work(
+        self,
+    ) -> None:
+        application = FastAPI()
+        stack, *_ = self._patch_lifespan_dependencies()
+        startup_order: list[str] = []
+
+        with stack:
+            with patch.object(
+                backend_app,
+                "configure_session_work_recovery",
+                side_effect=lambda: startup_order.append("configure"),
+            ), patch(
+                "sessions.session_work_delivery.session_work_delivery.fail_unrecoverable_pending",
+                side_effect=lambda: startup_order.append("fail") or 0,
+            ), patch(
+                "sessions.session_work_delivery.session_work_delivery.recover_pending_work",
+                side_effect=lambda: startup_order.append("recover") or 0,
+            ):
+                async with backend_app.lifespan(application):
+                    pass
+
+        self.assertEqual(startup_order, ["configure", "fail", "recover"])
+
     def _patch_lifespan_dependencies(
         self,
     ) -> tuple[

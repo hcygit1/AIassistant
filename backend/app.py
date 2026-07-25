@@ -25,6 +25,30 @@ DEFAULT_CORS_ORIGINS = (
 )
 
 
+def configure_session_work_recovery(
+    *,
+    resolver=None,
+    cron_recovery_callbacks=None,
+) -> None:
+    if resolver is None:
+        from sessions.session_work_recovery_resolver import (
+            session_work_recovery_resolver,
+        )
+
+        resolver = session_work_recovery_resolver
+    def resolve_cron_callbacks(record):
+        if not record.run_id:
+            return {}
+        callbacks = cron_recovery_callbacks
+        if callbacks is None:
+            from scheduler.cron_service import cron_service
+
+            callbacks = cron_service.recovery_callbacks
+        return callbacks(record.run_id, record.id)
+
+    resolver.bind("cron", resolve_cron_callbacks)
+
+
 def resolve_cors_settings(
     environ: Mapping[str, str],
 ) -> tuple[list[str], str | None]:
@@ -103,6 +127,7 @@ async def lifespan(application: FastAPI):
         skills_watcher.start()
 
         from sessions.session_work_delivery import session_work_delivery
+        configure_session_work_recovery()
         failed_work_count = session_work_delivery.fail_unrecoverable_pending()
         if failed_work_count:
             logger.info(
