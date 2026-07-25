@@ -3,8 +3,10 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -15,7 +17,9 @@ from api.events import (
     SubagentSteerRequest,
     kill_subagents,
     steer_subagent,
+    router,
 )
+from api.dependencies import get_agent_manager, get_session_manager
 from subagents.subagent_service import KillResult, SteerResult
 from subagents.subagent_service import SubagentListResult
 from subagents.subagent_registry import SubagentRunRecord
@@ -48,24 +52,18 @@ class SubagentApiTests(unittest.IsolatedAsyncioTestCase):
             lambda record: record.child_session_key
         )
 
-        with (
-            patch(
-                "runtime.agent.agent_manager.subagent_service",
-                service,
-                create=True,
-            ),
-            patch(
-                "sessions.session_manager.session_manager.resolve_main_session_id",
-                return_value="main-main",
-            ),
-            patch(
-                "sessions.session_manager.session_manager.load_session",
-                return_value=None,
-            ),
-        ):
-            from api.events import list_subagents
+        agent_manager = Mock(subagent_service=service)
+        session_manager = Mock()
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        session_manager.load_session.return_value = None
 
-            result = await list_subagents("main")
+        from api.events import list_subagents
+
+        result = await list_subagents(
+            "main",
+            agent_manager=agent_manager,
+            session_manager=session_manager,
+        )
 
         service.list_runs.assert_called_once_with(
             requester_agent_id="main",
@@ -93,18 +91,15 @@ class SubagentApiTests(unittest.IsolatedAsyncioTestCase):
             run_id="run-1",
         )
 
-        with patch(
-            "runtime.agent.agent_manager.subagent_service",
-            service,
-            create=True,
-        ):
-            result = await kill_subagents(
-                "main",
-                SubagentKillRequest(
-                    target="run-1",
-                    session_id="main-main",
-                ),
-            )
+        result = await kill_subagents(
+            "main",
+            SubagentKillRequest(
+                target="run-1",
+                session_id="main-main",
+            ),
+            agent_manager=Mock(subagent_service=service),
+            session_manager=Mock(),
+        )
 
         service.kill.assert_called_once_with(
             requester_agent_id="main",
@@ -124,18 +119,14 @@ class SubagentApiTests(unittest.IsolatedAsyncioTestCase):
             label="inspection",
         )
 
-        with patch(
-            "runtime.agent.agent_manager.subagent_service",
-            service,
-            create=True,
-        ):
-            result = await steer_subagent(
-                "main",
-                SubagentSteerRequest(
-                    run_id="run-1",
-                    message="inspect tests",
-                ),
-            )
+        result = await steer_subagent(
+            "main",
+            SubagentSteerRequest(
+                run_id="run-1",
+                message="inspect tests",
+            ),
+            agent_manager=Mock(subagent_service=service),
+        )
 
         service.steer.assert_called_once_with(
             requester_agent_id="main",
@@ -150,6 +141,36 @@ class SubagentApiTests(unittest.IsolatedAsyncioTestCase):
                 "run_id": "run-2",
                 "replaced_run_id": "run-1",
             },
+        )
+
+    def test_http_list_uses_overridden_dependencies_without_schema_changes(
+        self,
+    ) -> None:
+        service = Mock()
+        service.list_runs.return_value = SubagentListResult(
+            records=[],
+            recent_minutes=30,
+            requester_key="agent:main:main-main",
+        )
+        manager = Mock(subagent_service=service)
+        session_manager = Mock()
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        app.dependency_overrides[get_agent_manager] = lambda: manager
+        app.dependency_overrides[get_session_manager] = lambda: session_manager
+        client = TestClient(app)
+
+        response = client.get("/api/agents/main/subagents")
+        operation = app.openapi()["paths"][
+            "/api/agents/{agent_id}/subagents"
+        ]["get"]
+
+        self.assertEqual(response.status_code, 200)
+        service.list_runs.assert_called_once()
+        self.assertEqual(
+            {item["name"] for item in operation.get("parameters", [])},
+            {"agent_id", "session_id", "include_recent_minutes"},
         )
 
     @staticmethod

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from api.dependencies import get_agent_manager, get_session_manager
 
 router = APIRouter()
 
@@ -197,6 +200,8 @@ async def list_subagents(
     agent_id: str,
     session_id: str | None = None,
     include_recent_minutes: int | None = None,
+    agent_manager: Any = Depends(get_agent_manager),
+    session_manager: Any = Depends(get_session_manager),
 ):
     """获取子 Agent 列表及状态，返回树结构 + 扁平列表（按 requester_session_key 建树）
 
@@ -204,8 +209,6 @@ async def list_subagents(
     默认从 config.agents.defaults.subagents.recent_minutes 读取（30），API 参数可覆盖。
     """
     import time as time_module
-    from runtime.agent import agent_manager
-    from sessions.session_manager import session_manager
 
     main_sid = session_manager.resolve_main_session_id(agent_id)
     effective_session_id = (
@@ -246,9 +249,12 @@ async def list_subagents(
 
 
 @router.post("/agents/{agent_id}/subagents/kill")
-async def kill_subagents(agent_id: str, req: SubagentKillRequest):
-    from runtime.agent import agent_manager
-    from sessions.session_manager import session_manager
+async def kill_subagents(
+    agent_id: str,
+    req: SubagentKillRequest,
+    agent_manager: Any = Depends(get_agent_manager),
+    session_manager: Any = Depends(get_session_manager),
+):
     from subagents.subagent_service import SubagentServiceError
 
     session_id = (req.session_id or "").strip() or session_manager.resolve_main_session_id(agent_id)
@@ -271,8 +277,11 @@ async def kill_subagents(agent_id: str, req: SubagentKillRequest):
 
 
 @router.post("/agents/{agent_id}/subagents/steer")
-async def steer_subagent(agent_id: str, req: SubagentSteerRequest):
-    from runtime.agent import agent_manager
+async def steer_subagent(
+    agent_id: str,
+    req: SubagentSteerRequest,
+    agent_manager: Any = Depends(get_agent_manager),
+):
     from subagents.subagent_service import SubagentServiceError
 
     try:
