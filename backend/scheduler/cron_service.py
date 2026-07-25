@@ -16,6 +16,7 @@ from scheduler.cron_due_processor import (
     ProcessDueResult,
 )
 from scheduler.cron_errors import CronServiceError
+from scheduler.cron_job_catalog import CronJobCatalog
 from scheduler.cron_run_lifecycle import CronRunLifecycle
 from scheduler.cron_schedule import (
     build_payload as build_cron_payload,
@@ -56,6 +57,7 @@ class CronService:
         default_timezone: Callable[[], str] | None = None,
         run_lifecycle: CronRunLifecycle | None = None,
         due_processor: CronDueProcessor | None = None,
+        job_catalog: CronJobCatalog | None = None,
     ) -> None:
         if load_store is None:
             from scheduler.cron_store import load_cron_store
@@ -100,6 +102,25 @@ class CronService:
             default_timezone or self._resolve_default_timezone
         )
         self._lock = threading.RLock()
+        self._job_catalog = job_catalog or CronJobCatalog(
+            transaction=lambda: self._transaction(),
+            save_store=lambda store, path: self._save(store, path),
+            ensure_enabled=lambda: self._ensure_enabled(),
+            now_ms=lambda: self._now_ms(),
+            id_factory=lambda: self._id_factory(),
+            build_schedule=lambda *args, **kwargs: self._build_schedule(
+                *args,
+                **kwargs,
+            ),
+            build_payload=lambda data: self._build_payload(data),
+            next_run=lambda job, now_ms, last_run_ms: compute_next_run(
+                job,
+                now_ms,
+                last_run_ms,
+            ),
+            schedule_state=lambda job: self._schedule_state(job),
+            not_found=lambda job_id: self._not_found(job_id),
+        )
         self._run_lifecycle = run_lifecycle or CronRunLifecycle(
             transaction=lambda: self._transaction(),
             save_store=lambda store, path: self._save(store, path),
@@ -154,14 +175,7 @@ class CronService:
         *,
         agent_id: str | None = None,
     ) -> list[CronJob]:
-        with self._transaction() as (store, _):
-            jobs = store.jobs
-            if agent_id is not None:
-                jobs = [
-                    job for job in jobs
-                    if (job.agent_id or "main") == agent_id
-                ]
-            return copy.deepcopy(jobs)
+        return self._job_catalog.list_jobs(agent_id=agent_id)
 
     def find_job(
         self,
@@ -169,13 +183,10 @@ class CronService:
         *,
         agent_id: str | None = None,
     ) -> CronJob | None:
-        with self._transaction() as (store, _):
-            job = self._find(
-                store,
-                job_id,
-                agent_id=agent_id,
-            )
-            return copy.deepcopy(job) if job is not None else None
+        return self._job_catalog.find_job(
+            job_id,
+            agent_id=agent_id,
+        )
 
     def get_job(
         self,
@@ -183,13 +194,10 @@ class CronService:
         *,
         agent_id: str | None = None,
     ) -> CronJob:
-        job = self.find_job(job_id, agent_id=agent_id)
-        if job is None:
-            raise CronServiceError(
-                "not_found",
-                f"Job {job_id} not found",
-            )
-        return job
+        return self._job_catalog.get_job(
+            job_id,
+            agent_id=agent_id,
+        )
 
     def create_job(
         self,
@@ -203,34 +211,16 @@ class CronService:
         delete_after_run: bool = False,
         id_prefix: str = "cron",
     ) -> CronJob:
-        self._ensure_enabled()
-        now_ms = self._now_ms()
-        cron_schedule = self._build_schedule(
-            schedule,
-            now_ms=now_ms,
+        return self._job_catalog.create_job(
+            name=name,
+            agent_id=agent_id,
+            schedule=schedule,
+            payload=payload,
+            description=description,
+            enabled=enabled,
+            delete_after_run=delete_after_run,
+            id_prefix=id_prefix,
         )
-        cron_payload = self._build_payload(payload)
-        with self._transaction() as (store, path):
-            job = CronJob(
-                id=f"{id_prefix}-{self._id_factory()}",
-                name=(name or "").strip(),
-                description=(description or "").strip(),
-                agent_id=(agent_id or "main").strip() or "main",
-                enabled=bool(enabled),
-                delete_after_run=bool(delete_after_run),
-                schedule=cron_schedule,
-                payload=cron_payload,
-                created_at_ms=now_ms,
-                updated_at_ms=now_ms,
-            )
-            job.next_run_at_ms = compute_next_run(
-                job,
-                now_ms,
-                None,
-            )
-            store.jobs.append(job)
-            self._save(store, path)
-            return copy.deepcopy(job)
 
     def create_reminder(
         self,
@@ -267,45 +257,17 @@ class CronService:
         payload: dict[str, Any] | None = None,
         scope_agent_id: str | None = None,
     ) -> CronJob:
-        self._ensure_enabled()
-        now_ms = self._now_ms()
-        with self._transaction() as (store, path):
-            job = self._find(
-                store,
-                job_id,
-                agent_id=scope_agent_id,
-            )
-            if job is None:
-                raise self._not_found(job_id)
-            schedule_state = self._schedule_state(job)
-            if name is not None:
-                job.name = str(name).strip()
-            if description is not None:
-                job.description = str(description).strip()
-            if agent_id is not None:
-                job.agent_id = str(agent_id).strip() or "main"
-            if enabled is not None:
-                job.enabled = bool(enabled)
-            if delete_after_run is not None:
-                job.delete_after_run = bool(delete_after_run)
-            if schedule is not None:
-                job.schedule = self._build_schedule(
-                    schedule,
-                    current=job.schedule,
-                    now_ms=now_ms,
-                )
-            if payload is not None:
-                job.payload = self._build_payload(payload)
-            if self._schedule_state(job) != schedule_state:
-                job.schedule_revision += 1
-            job.updated_at_ms = now_ms
-            job.next_run_at_ms = compute_next_run(
-                job,
-                now_ms,
-                job.last_run_at_ms,
-            )
-            self._save(store, path)
-            return copy.deepcopy(job)
+        return self._job_catalog.update_job(
+            job_id,
+            name=name,
+            description=description,
+            agent_id=agent_id,
+            enabled=enabled,
+            delete_after_run=delete_after_run,
+            schedule=schedule,
+            payload=payload,
+            scope_agent_id=scope_agent_id,
+        )
 
     def delete_job(
         self,
@@ -313,18 +275,10 @@ class CronService:
         *,
         agent_id: str | None = None,
     ) -> bool:
-        self._ensure_enabled()
-        with self._transaction() as (store, path):
-            job = self._find(store, job_id, agent_id=agent_id)
-            if job is None:
-                raise self._not_found(job_id)
-            store.jobs = [
-                current
-                for current in store.jobs
-                if current.id != job.id
-            ]
-            self._save(store, path)
-            return True
+        return self._job_catalog.delete_job(
+            job_id,
+            agent_id=agent_id,
+        )
 
     def trigger_job(
         self,
@@ -506,17 +460,11 @@ class CronService:
         *,
         agent_id: str | None,
     ) -> CronJob | None:
-        target = (job_id or "").strip()
-        for job in store.jobs:
-            if job.id != target:
-                continue
-            if (
-                agent_id is not None
-                and (job.agent_id or "main") != agent_id
-            ):
-                continue
-            return job
-        return None
+        return CronJobCatalog.find_in_store(
+            store,
+            job_id,
+            agent_id=agent_id,
+        )
 
     def _ensure_enabled(self) -> None:
         if not self._is_enabled():

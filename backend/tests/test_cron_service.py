@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import ANY, Mock, patch
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -74,6 +75,90 @@ class CronServiceTests(unittest.TestCase):
         self.assertEqual(updated.payload.text, "report")
         self.assertTrue(self.service.delete_job(created.id))
         self.assertEqual(self.service.list_jobs(), [])
+
+    def test_crud_methods_delegate_to_injected_catalog(self) -> None:
+        catalog = Mock()
+        expected = SimpleNamespace(id="cron-1")
+        catalog.create_job.return_value = expected
+        service = CronService(
+            load_store=self.persistence.load,
+            save_store=self.persistence.save,
+            resolve_store_path=lambda: Path("/tmp/cron-test.json"),
+            is_enabled=lambda: True,
+            deliver=lambda **_kwargs: 1,
+            job_catalog=catalog,
+        )
+
+        result = service.create_job(
+            name="report",
+            agent_id="main",
+            schedule={"kind": "every", "everyMs": 60_000},
+            payload={"kind": "systemEvent", "text": "report"},
+        )
+
+        self.assertIs(result, expected)
+        catalog.create_job.assert_called_once_with(
+            name="report",
+            agent_id="main",
+            schedule={"kind": "every", "everyMs": 60_000},
+            payload={"kind": "systemEvent", "text": "report"},
+            description="",
+            enabled=True,
+            delete_after_run=False,
+            id_prefix="cron",
+        )
+        catalog.list_jobs.return_value = [expected]
+        catalog.find_job.return_value = expected
+        catalog.get_job.return_value = expected
+        catalog.update_job.return_value = expected
+        catalog.delete_job.return_value = True
+
+        self.assertEqual(service.list_jobs(agent_id="main"), [expected])
+        self.assertIs(service.find_job("cron-1", agent_id="main"), expected)
+        self.assertIs(service.get_job("cron-1", agent_id="main"), expected)
+        self.assertIs(
+            service.update_job("cron-1", name="renamed"),
+            expected,
+        )
+        self.assertTrue(service.delete_job("cron-1", agent_id="main"))
+        catalog.list_jobs.assert_called_once_with(agent_id="main")
+        catalog.find_job.assert_called_once_with(
+            "cron-1",
+            agent_id="main",
+        )
+        catalog.get_job.assert_called_once_with(
+            "cron-1",
+            agent_id="main",
+        )
+        catalog.update_job.assert_called_once_with(
+            "cron-1",
+            name="renamed",
+            description=None,
+            agent_id=None,
+            enabled=None,
+            delete_after_run=None,
+            schedule=None,
+            payload=None,
+            scope_agent_id=None,
+        )
+        catalog.delete_job.assert_called_once_with(
+            "cron-1",
+            agent_id="main",
+        )
+
+    def test_catalog_keeps_dynamic_next_run_entrypoint(self) -> None:
+        with patch(
+            "scheduler.cron_service.compute_next_run",
+            return_value=1_500_000,
+        ) as next_run:
+            job = self._create_job("main", "dynamic")
+
+        self.assertEqual(job.next_run_at_ms, 1_500_000)
+        next_run.assert_called_once_with(
+            ANY,
+            self.now_ms,
+            None,
+        )
 
     def test_invalid_schedule_and_empty_payload_are_rejected(self) -> None:
         with self.assertRaises(CronServiceError) as schedule_error:
