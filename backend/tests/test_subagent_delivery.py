@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 import tempfile
 import unittest
@@ -123,6 +124,47 @@ class SubagentAnnounceDeliveryTests(unittest.IsolatedAsyncioTestCase):
         registry.set_result_delivery_state.assert_called_once_with("run-1", "queued")
         registry.set_delivery_work_id.assert_called_once()
         self.assertTrue(event_bus.emit.called)
+
+    async def test_main_delivery_uses_injected_lifecycle(self) -> None:
+        self.assertIn(
+            "lifecycle",
+            inspect.signature(SubagentAnnounceDelivery).parameters,
+        )
+        session_manager = Mock()
+        session_manager.session_id_from_session_key.return_value = (
+            "main",
+            "main-main",
+        )
+        session_manager.resolve_main_session_id.return_value = "main-main"
+        work_delivery = Mock()
+        lifecycle = Mock()
+        delivery = SubagentAnnounceDelivery(
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+            lifecycle=lifecycle,
+        )
+
+        with patch("config.get_config", return_value={"app": {"locale": "en"}}):
+            await delivery.deliver_to_requester(
+                requester_key="agent:main:main",
+                child_session_key="agent:main:subagent:child-lifecycle",
+                run_id="run-lifecycle",
+                task="check lifecycle",
+                result="done",
+            )
+
+        lifecycle.queued.assert_called_once_with("main", "run-lifecycle")
+        callbacks = work_delivery.deliver.call_args.kwargs
+        record = Mock(id="work-lifecycle")
+        callbacks["on_record_created"](record)
+        callbacks["on_success"]()
+        callbacks["on_cancel"]()
+        lifecycle.bind_work.assert_called_once_with(
+            "run-lifecycle",
+            "work-lifecycle",
+        )
+        lifecycle.delivered.assert_called_once_with("main", "run-lifecycle")
+        lifecycle.dropped.assert_called_once_with("main", "run-lifecycle")
 
     async def test_main_requester_failure_callback_falls_back_to_save_message(self) -> None:
         dispatcher = _FakeDispatcher()

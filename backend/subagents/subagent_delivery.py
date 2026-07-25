@@ -5,76 +5,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from sessions.session_identity import session_key_from_session_id
 from sessions.session_work_policy import deliver_system_work
 
+from subagents.subagent_announce_lifecycle import SubagentAnnounceLifecycle
 from subagents.subagent_run_model import SubagentRunRecord
-
-logger = logging.getLogger(__name__)
-
-
-class _SubagentDeliveryState:
-    def __init__(
-        self,
-        *,
-        registry: Any | None = None,
-        event_bus: Any | None = None,
-    ) -> None:
-        self._registry = registry
-        self._event_bus = event_bus
-
-    @property
-    def registry(self) -> Any:
-        if self._registry is not None:
-            return self._registry
-        from subagents.subagent_registry import registry
-
-        return registry
-
-    @property
-    def event_bus(self) -> Any:
-        if self._event_bus is not None:
-            return self._event_bus
-        from infra.event_bus import event_bus
-
-        return event_bus
-
-    def emit(self, agent_id: str, run_id: str, result_delivery_state: str) -> None:
-        from infra.event_bus import Events
-
-        try:
-            self.event_bus.emit(
-                agent_id,
-                Events.subagent_announce(
-                    run_id=run_id,
-                    result_delivery_state=result_delivery_state,
-                ),
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to emit subagent announce state run=%s: %s",
-                run_id,
-                exc,
-            )
-
-    def queued(self, agent_id: str, run_id: str) -> None:
-        self.registry.set_result_delivery_state(run_id, "queued")
-        self.emit(agent_id, run_id, "queued")
-
-    def delivered(self, agent_id: str, run_id: str) -> None:
-        self.registry.set_result_delivery_state(run_id, "delivering")
-        self.registry.mark_result_delivery_delivered(run_id)
-        self.emit(agent_id, run_id, "delivered")
-
-    def dropped(self, agent_id: str, run_id: str) -> None:
-        self.registry.mark_result_delivery_dropped(run_id)
-        self.emit(agent_id, run_id, "dropped")
-
-    def bind_work(self, run_id: str, work_id: str) -> None:
-        self.registry.set_delivery_work_id(run_id, work_id)
 
 
 class SubagentAnnounceDelivery:
@@ -85,10 +22,11 @@ class SubagentAnnounceDelivery:
         work_delivery: Any | None = None,
         registry: Any | None = None,
         event_bus: Any | None = None,
+        lifecycle: SubagentAnnounceLifecycle | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._work_delivery = work_delivery
-        self._state = _SubagentDeliveryState(
+        self._state = lifecycle or SubagentAnnounceLifecycle(
             registry=registry,
             event_bus=event_bus,
         )
@@ -131,68 +69,6 @@ class SubagentAnnounceDelivery:
             announce_msg,
         )
         self._state.dropped(agent_id, run_id)
-
-    def _emit_subagent_done(self, agent_id: str, run_id: str, result_preview: str) -> None:
-        from infra.event_bus import Events
-
-        try:
-            self.event_bus.emit(
-                agent_id,
-                Events.subagent_done(
-                    run_id=run_id,
-                    result=result_preview,
-                ),
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to emit recovered subagent completion run=%s: %s",
-                run_id,
-                exc,
-            )
-
-    def _complete_recovered_success(
-        self,
-        agent_id: str,
-        run_id: str,
-        result_preview: str,
-    ) -> None:
-        self._state.delivered(agent_id, run_id)
-        self._emit_subagent_done(agent_id, run_id, result_preview)
-        self.registry.remove_run(run_id)
-
-    def _complete_recovered_cancel(
-        self,
-        agent_id: str,
-        run_id: str,
-    ) -> None:
-        self._state.dropped(agent_id, run_id)
-        self.registry.remove_run(run_id)
-
-    def _complete_recovered_failure(
-        self,
-        *,
-        agent_id: str,
-        session_id: str,
-        run_id: str,
-        announce_msg: str,
-        result_preview: str,
-    ) -> None:
-        try:
-            self.session_manager.save_message(
-                session_id,
-                agent_id,
-                "system",
-                announce_msg,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to persist recovered announce fallback run=%s: %s",
-                run_id,
-                exc,
-            )
-        self._state.dropped(agent_id, run_id)
-        self._emit_subagent_done(agent_id, run_id, result_preview)
-        self.registry.remove_run(run_id)
 
     def parse_requester_key(self, requester_key: str) -> tuple[str, str] | None:
         """requester_key (session_key) -> (agent_id, session_id)."""
@@ -406,21 +282,25 @@ class SubagentAnnounceDelivery:
                     run_id,
                     record.id,
                 ),
-                on_success=lambda: self._complete_recovered_success(
+                on_success=lambda: self._state.complete_recovered_success(
                     req_agent,
                     run_id,
                     result_preview,
                 ),
-                on_cancel=lambda: self._complete_recovered_cancel(
+                on_cancel=lambda: self._state.complete_recovered_cancel(
                     req_agent,
                     run_id,
                 ),
-                on_failure=lambda: self._complete_recovered_failure(
+                on_failure=lambda: self._state.complete_recovered_failure(
                     agent_id=req_agent,
-                    session_id=target_sid,
                     run_id=run_id,
-                    announce_msg=announce_msg,
                     result_preview=result_preview,
+                    persist_fallback=lambda: self.session_manager.save_message(
+                        target_sid,
+                        req_agent,
+                        "system",
+                        announce_msg,
+                    ),
                 ),
             )
         except Exception:
