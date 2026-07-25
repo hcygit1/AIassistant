@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from sessions.session_work_query import SessionWorkFilter
+
 
 @dataclass
 class SessionWorkRecord:
@@ -284,35 +286,16 @@ class SessionWorkStore:
         limit: int = 50,
         offset: int = 0,
     ) -> list[SessionWorkRecord]:
-        conditions: list[str] = []
-        params: list[object] = []
-        if kind:
-            conditions.append("kind = ?")
-            params.append(kind)
-        if kinds:
-            placeholders = ", ".join("?" for _ in kinds)
-            conditions.append(f"kind IN ({placeholders})")
-            params.extend(kinds)
-        if status:
-            conditions.append("status = ?")
-            params.append(status)
-        if agent_id:
-            conditions.append("agent_id = ?")
-            params.append(agent_id)
-        if session_id:
-            conditions.append("session_id = ?")
-            params.append(session_id)
-        if run_id:
-            conditions.append("run_id = ?")
-            params.append(run_id)
-        if run_id_prefix:
-            conditions.append("run_id LIKE ?")
-            params.append(f"{run_id_prefix}%")
-        if exclude_run_id_prefix:
-            conditions.append("(run_id IS NULL OR run_id NOT LIKE ?)")
-            params.append(f"{exclude_run_id_prefix}%")
-
-        where = " AND ".join(conditions) if conditions else "1=1"
+        where, params = SessionWorkFilter(
+            kind=kind,
+            kinds=kinds,
+            status=status,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            run_id_prefix=run_id_prefix,
+            exclude_run_id_prefix=exclude_run_id_prefix,
+        ).to_sql()
         sql = (
             f"SELECT * FROM session_work WHERE {where} "
             "ORDER BY created_at_ms DESC, id DESC LIMIT ? OFFSET ?"
@@ -340,35 +323,16 @@ class SessionWorkStore:
         run_id_prefix: str | None = None,
         exclude_run_id_prefix: str | None = None,
     ) -> int:
-        conditions: list[str] = []
-        params: list[object] = []
-        if kind:
-            conditions.append("kind = ?")
-            params.append(kind)
-        if kinds:
-            placeholders = ", ".join("?" for _ in kinds)
-            conditions.append(f"kind IN ({placeholders})")
-            params.extend(kinds)
-        if status:
-            conditions.append("status = ?")
-            params.append(status)
-        if agent_id:
-            conditions.append("agent_id = ?")
-            params.append(agent_id)
-        if session_id:
-            conditions.append("session_id = ?")
-            params.append(session_id)
-        if run_id:
-            conditions.append("run_id = ?")
-            params.append(run_id)
-        if run_id_prefix:
-            conditions.append("run_id LIKE ?")
-            params.append(f"{run_id_prefix}%")
-        if exclude_run_id_prefix:
-            conditions.append("(run_id IS NULL OR run_id NOT LIKE ?)")
-            params.append(f"{exclude_run_id_prefix}%")
-
-        where = " AND ".join(conditions) if conditions else "1=1"
+        where, params = SessionWorkFilter(
+            kind=kind,
+            kinds=kinds,
+            status=status,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            run_id_prefix=run_id_prefix,
+            exclude_run_id_prefix=exclude_run_id_prefix,
+        ).to_sql()
         sql = f"SELECT COUNT(*) as cnt FROM session_work WHERE {where}"
         with self._lock:
             conn = self._get_conn()
