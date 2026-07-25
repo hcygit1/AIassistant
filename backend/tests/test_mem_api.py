@@ -3,14 +3,18 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from api.mem_api import mem_memories, mem_skills, mem_stats, mem_tasks
+from api.dependencies import get_agent_manager
+from api.mem_api import mem_memories, mem_skills, mem_stats, mem_tasks, router
 
 
 class MemoryApiTests(unittest.IsolatedAsyncioTestCase):
@@ -23,8 +27,10 @@ class MemoryApiTests(unittest.IsolatedAsyncioTestCase):
         manager = Mock()
         manager.mem_stores = {"worker": store}
 
-        with patch("runtime.agent.agent_manager", manager):
-            result = await mem_stats(agent_id="worker")
+        result = await mem_stats(
+            agent_id="worker",
+            agent_manager=manager,
+        )
 
         store.get_dashboard_stats.assert_called_once_with()
         self.assertTrue(result["ok"])
@@ -44,25 +50,49 @@ class MemoryApiTests(unittest.IsolatedAsyncioTestCase):
         manager = Mock()
         manager.mem_stores = {"worker": store}
 
-        with patch("runtime.agent.agent_manager", manager):
-            tasks = await mem_tasks(
-                agent_id="worker",
-                status="",
-                limit=10,
-                offset=0,
-            )
-            skills = await mem_skills(agent_id="worker", status="")
-            memories = await mem_memories(
-                agent_id="worker",
-                limit=10,
-                page=1,
-                session="",
-                role="",
-            )
+        tasks = await mem_tasks(
+            agent_id="worker",
+            status="",
+            limit=10,
+            offset=0,
+            agent_manager=manager,
+        )
+        skills = await mem_skills(
+            agent_id="worker",
+            status="",
+            agent_manager=manager,
+        )
+        memories = await mem_memories(
+            agent_id="worker",
+            limit=10,
+            page=1,
+            session="",
+            role="",
+            agent_manager=manager,
+        )
 
         self.assertEqual(tasks["total"], 1)
         self.assertEqual(skills["skills"][0]["id"], "skill-1")
         self.assertEqual(memories["total"], 1)
+
+    def test_http_dependency_override_does_not_change_openapi(self) -> None:
+        store = Mock()
+        store.get_dashboard_stats.return_value = {"source": "override"}
+        manager = Mock(mem_stores={"worker": store})
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        app.dependency_overrides[get_agent_manager] = lambda: manager
+        client = TestClient(app)
+
+        response = client.get("/api/mem/stats?agent_id=worker")
+        operation = app.openapi()["paths"]["/api/mem/stats"]["get"]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["source"], "override")
+        self.assertEqual(
+            {item["name"] for item in operation.get("parameters", [])},
+            {"agent_id"},
+        )
 
 
 if __name__ == "__main__":

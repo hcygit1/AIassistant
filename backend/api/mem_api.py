@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from api.dependencies import get_agent_manager
 
 router = APIRouter(tags=["mem"])
 logger = logging.getLogger(__name__)
 
 
-def _get_store(agent_id: str):
-    from runtime.agent import agent_manager
+def _get_store(agent_id: str, agent_manager: Any):
     return agent_manager.mem_stores.get(agent_id)
 
 
@@ -20,8 +22,11 @@ def _get_store(agent_id: str):
 # ------------------------------------------------------------------
 
 @router.get("/mem/stats")
-async def mem_stats(agent_id: str = Query("main")):
-    store = _get_store(agent_id)
+async def mem_stats(
+    agent_id: str = Query("main"),
+    agent_manager: Any = Depends(get_agent_manager),
+):
+    store = _get_store(agent_id, agent_manager)
     if not store:
         return {"ok": False, "error": "mem system not initialized"}
     try:
@@ -41,8 +46,9 @@ async def mem_tasks(
     status: str = Query("", description="Filter by status"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    agent_manager: Any = Depends(get_agent_manager),
 ):
-    store = _get_store(agent_id)
+    store = _get_store(agent_id, agent_manager)
     if not store:
         return {"ok": False, "tasks": [], "total": 0}
     try:
@@ -60,8 +66,12 @@ async def mem_tasks(
 # ------------------------------------------------------------------
 
 @router.get("/mem/task/{task_id}")
-async def mem_task_detail(task_id: str, agent_id: str = Query("main")):
-    store = _get_store(agent_id)
+async def mem_task_detail(
+    task_id: str,
+    agent_id: str = Query("main"),
+    agent_manager: Any = Depends(get_agent_manager),
+):
+    store = _get_store(agent_id, agent_manager)
     if not store:
         return {"ok": False, "error": "not initialized"}
     try:
@@ -105,8 +115,9 @@ async def mem_task_detail(task_id: str, agent_id: str = Query("main")):
 async def mem_skills(
     agent_id: str = Query("main"),
     status: str = Query("", description="Filter by status"),
+    agent_manager: Any = Depends(get_agent_manager),
 ):
-    store = _get_store(agent_id)
+    store = _get_store(agent_id, agent_manager)
     if not store:
         return {"ok": False, "skills": []}
     try:
@@ -122,8 +133,12 @@ async def mem_skills(
 # ------------------------------------------------------------------
 
 @router.get("/mem/skill/{skill_id}")
-async def mem_skill_detail(skill_id: str, agent_id: str = Query("main")):
-    store = _get_store(agent_id)
+async def mem_skill_detail(
+    skill_id: str,
+    agent_id: str = Query("main"),
+    agent_manager: Any = Depends(get_agent_manager),
+):
+    store = _get_store(agent_id, agent_manager)
     if not store:
         return {"ok": False, "error": "not initialized"}
     try:
@@ -158,8 +173,9 @@ async def mem_memories(
     page: int = Query(1, ge=1),
     session: str = Query("", description="Filter by session_key"),
     role: str = Query("", description="Filter by role"),
+    agent_manager: Any = Depends(get_agent_manager),
 ):
-    store = _get_store(agent_id)
+    store = _get_store(agent_id, agent_manager)
     if not store:
         return {"ok": False, "memories": [], "total": 0}
     try:
@@ -191,8 +207,9 @@ async def mem_search(
     agent_id: str = Query("main"),
     q: str = Query("", description="Search query"),
     limit: int = Query(20, ge=1, le=100),
+    agent_manager: Any = Depends(get_agent_manager),
 ):
-    store = _get_store(agent_id)
+    store = _get_store(agent_id, agent_manager)
     if not store or not q.strip():
         return {"ok": True, "results": [], "query": q}
     try:
