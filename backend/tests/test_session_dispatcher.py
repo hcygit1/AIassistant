@@ -728,6 +728,39 @@ class SystemWorkDispatcherLifecycleTests(unittest.IsolatedAsyncioTestCase):
         lock_manager.get_lock.assert_called_once_with("main", "main-main")
         manager.cleanup("main", "main-main")
 
+    async def test_dispatcher_manager_delegates_creation_to_factory(self) -> None:
+        lock = asyncio.Lock()
+        dispatcher = Mock()
+        dispatcher.start = Mock()
+        factory = Mock()
+        factory.work_store = Mock()
+        factory.create.return_value = dispatcher
+        manager = DispatcherManager(
+            dispatcher_factory=factory,
+            lock_manager=Mock(),
+        )
+
+        created = manager.get("main", "main-main", lock)
+
+        self.assertIs(created, dispatcher)
+        factory.create.assert_called_once_with(lock=lock)
+        dispatcher.start.assert_called_once_with()
+        self.assertIs(manager.work_store, factory.work_store)
+
+    async def test_dispatcher_manager_rejects_factory_with_legacy_dependencies(
+        self,
+    ) -> None:
+        factory = Mock(work_store=Mock())
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "dispatcher_factory cannot be combined",
+        ):
+            DispatcherManager(
+                dispatcher_factory=factory,
+                work_store=Mock(),
+            )
+
     async def test_manager_keeps_closing_dispatcher_until_consumer_exits(self) -> None:
         started = asyncio.Event()
         cancellation_started = asyncio.Event()

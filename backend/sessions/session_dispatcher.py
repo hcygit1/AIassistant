@@ -34,6 +34,7 @@ from sessions.session_work_policy import (
     PRIORITY_CRON,
     PRIORITY_HEARTBEAT,
 )
+from sessions.session_dispatcher_factory import SessionDispatcherFactory
 from sessions.session_system_work_executor import SessionSystemWorkExecutor
 from sessions.session_user_turn_executor import SessionUserTurnExecutor
 from turns.events import TurnEvent
@@ -333,23 +334,42 @@ class DispatcherManager:
         user_stream: UserStream | None = None,
         turn_coordinator: Any | None = None,
         lock_manager: "SessionLockManager | None" = None,
+        dispatcher_factory: SessionDispatcherFactory | None = None,
     ):
         self._dispatchers: dict[str, SessionDispatcher] = {}
-        self._work_store = (
-            work_store if work_store is not None else _default_work_store()
-        )
+        if dispatcher_factory is not None and any(
+            dependency is not None
+            for dependency in (
+                work_store,
+                system_stream,
+                user_stream,
+                turn_coordinator,
+            )
+        ):
+            raise ValueError(
+                "dispatcher_factory cannot be combined with legacy "
+                "dispatcher dependencies"
+            )
         self._lock_manager = (
             lock_manager if lock_manager is not None else _default_lock_manager()
         )
-        self._system_stream = system_stream
-        self._user_stream = user_stream
-        self._turn_coordinator = turn_coordinator
+        if dispatcher_factory is None:
+            resolved_store = (
+                work_store if work_store is not None else _default_work_store()
+            )
+            dispatcher_factory = SessionDispatcherFactory(
+                work_store=resolved_store,
+                system_stream=system_stream,
+                user_stream=user_stream,
+                turn_coordinator=turn_coordinator,
+            )
+        self._dispatcher_factory = dispatcher_factory
         self._closing: dict[str, asyncio.Task | None] = {}
 
     @property
     def work_store(self) -> "SessionWorkStore":
         """Return the store shared by all dispatchers managed here."""
-        return self._work_store
+        return self._dispatcher_factory.work_store
 
     @property
     def lock_manager(self) -> "SessionLockManager":
@@ -366,13 +386,7 @@ class DispatcherManager:
         if key not in self._dispatchers:
             if lock is None:
                 lock = self._lock_manager.get_lock(agent_id, session_id).lock
-            d = SessionDispatcher(
-                lock=lock,
-                work_store=self._work_store,
-                system_stream=self._system_stream,
-                user_stream=self._user_stream,
-                turn_coordinator=self._turn_coordinator,
-            )
+            d = self._dispatcher_factory.create(lock=lock)
             d.start()
             self._dispatchers[key] = d
         return self._dispatchers[key]
