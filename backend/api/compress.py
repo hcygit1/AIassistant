@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from api.dependencies import get_agent_manager, get_session_manager
 
 router = APIRouter()
 
 
 @router.post("/agents/{agent_id}/sessions/{session_id}/compress")
-async def compress_session(agent_id: str, session_id: str):
+async def compress_session(
+    agent_id: str,
+    session_id: str,
+    agent_manager: Any = Depends(get_agent_manager),
+    session_manager: Any = Depends(get_session_manager),
+):
     """
     压缩流程：
     1. Compress — 压缩旧消息为摘要
     2. Post-Compaction Context — 注入上下文提醒 Agent 重新执行启动序列
     """
-    from runtime.agent import agent_manager
-    from sessions.session_manager import session_manager
-
     data = session_manager.load_session(session_id, agent_id)
     if data is None:
         raise HTTPException(404, "会话不存在")

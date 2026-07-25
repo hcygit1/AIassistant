@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 
+def get_agent_manager() -> Any:
+    from runtime.agent import agent_manager
+
+    return agent_manager
+
+
 def get_session_manager() -> Any:
     from sessions.session_manager import session_manager
 
