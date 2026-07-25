@@ -12,6 +12,7 @@ from infra.event_bus import Events
 from llm.model_selection import ModelCandidateError
 from llm.models_config import ModelRef
 from runtime.source_sink_guard import is_untrusted_source_tool
+from runtime.text_tool_call_fallback import TextToolCallFallbackProcessor
 from runtime.tool_call_parser import (
     parse_text_tool_calls,
     strip_tool_call_patterns,
@@ -292,148 +293,36 @@ class TurnExecutor:
             return
 
         try:
-            parsed_calls = parse_text_tool_calls(full_response)
-            if parsed_calls and not tool_calls_log:
-                if not content_refresh_sent:
-                    yield {
-                        "type": "content_refresh",
-                        "content": strip_tool_call_patterns(
-                            full_response
-                        ),
-                    }
-                    content_refresh_sent = True
-                tools_by_name = {
-                    getattr(tool, "name", ""): tool
-                    for tool in request.tools
-                }
-                for tool_name, tool_args in parsed_calls:
-                    matched_tool = tools_by_name.get(tool_name)
-                    if not matched_tool:
-                        continue
-                    step_count += 1
-                    args = (
-                        dict(tool_args)
-                        if tool_args
-                        else {}
-                    )
-                    if (
-                        tool_name == "read"
-                        and not args.get("path")
-                    ):
-                        args["path"] = "IDENTITY.md"
-                        logger.info(
-                            "Fallback read: 无 path 参数，"
-                            "使用默认 IDENTITY.md"
-                        )
-                    tool_call_id = _new_tool_call_id()
-                    run_tracker.record_tool_start(
-                        turn.run_id,
-                        tool_name,
-                        args,
-                        tool_call_id=tool_call_id,
-                    )
-                    logger.info(
-                        "Fallback tool call: %s(%s)",
-                        tool_name,
-                        args,
-                    )
-                    yield {
-                        "type": "tool_start",
-                        "tool_call_id": tool_call_id,
-                        "tool": tool_name,
-                        "input": args,
-                        "step": step_count,
-                        "max_steps": request.recursion_limit,
-                    }
-                    try:
-                        result = (
-                            await invoke_tool_async(
-                                matched_tool,
-                                args,
-                                user_message=request.message,
-                                recent_untrusted_content=(
-                                    recent_untrusted_content
-                                ),
-                            )
-                        )[:2000]
-                    except Exception as error:
-                        result = format_tool_error(
-                            tool_name,
-                            error,
-                        )
-                    if is_untrusted_source_tool(tool_name):
-                        recent_untrusted_content = True
-                    status, tool_error = (
-                        _infer_tool_result_status(result)
-                    )
-                    run_tracker.record_tool_end(
-                        turn.run_id,
-                        tool_name,
-                        result,
-                        error=tool_error,
-                        tool_call_id=tool_call_id,
-                    )
-                    audit_logger.log_tool_call(
-                        request.agent_id,
-                        turn.run_id,
-                        tool_name,
-                        args,
-                        result,
-                        tool_call_id=tool_call_id,
-                        status=status,
-                        error=tool_error,
-                    )
-                    yield {
-                        "type": "tool_end",
-                        "tool_call_id": tool_call_id,
-                        "tool": tool_name,
-                        "status": status,
-                        "error": tool_error,
-                        "output": result,
-                    }
-                    tool_calls_log.append(
-                        {
-                            "tool_call_id": tool_call_id,
-                            "tool": tool_name,
-                            "status": status,
-                            "input": args,
-                            "output": result,
-                            "error": tool_error,
-                        }
-                    )
-                    loop_warning = loop_detector.record(
-                        tool_name,
-                        args,
-                        result,
-                    )
-                    if loop_warning:
-                        audit_logger.log_tool_loop_warning(
-                            request.agent_id,
-                            turn.run_id,
-                            tool_name,
-                            loop_warning,
-                            tool_call_id=tool_call_id,
-                        )
-                        loop_event = Events.tool_loop_warning(
-                            run_id=turn.run_id,
-                            tool=tool_name,
-                            warning=loop_warning,
-                            tool_call_id=tool_call_id,
-                        )
-                        self._emit_event(
-                            request.agent_id,
-                            loop_event,
-                        )
-                        yield loop_event
-                        if _loop_warning_is_breaker(
-                            loop_warning
-                        ):
-                            raise _TerminalTurnError(
-                                loop_warning
-                            )
-                full_response = strip_tool_call_patterns(
-                    full_response
-                )
+            fallback = TextToolCallFallbackProcessor(
+                request=request,
+                turn=turn,
+                state=stream_state,
+                run_tracker=run_tracker,
+                audit_logger=audit_logger,
+                emit_event=self._emit_event,
+                loop_detector=loop_detector,
+                parse_text_tool_calls=parse_text_tool_calls,
+                strip_tool_call_patterns=strip_tool_call_patterns,
+                invoke_tool_async=invoke_tool_async,
+                format_tool_error=format_tool_error,
+                is_untrusted_source_tool=is_untrusted_source_tool,
+                new_tool_call_id=_new_tool_call_id,
+                infer_tool_result_status=_infer_tool_result_status,
+                loop_warning_is_breaker=_loop_warning_is_breaker,
+                log=logger,
+            )
+            async for output_event in fallback.stream():
+                yield output_event
+            fallback_state = fallback.state
+            full_response = fallback_state.full_response
+            tool_calls_log = fallback_state.tool_calls_log
+            step_count = fallback_state.step_count
+            content_refresh_sent = (
+                fallback_state.content_refresh_sent
+            )
+            recent_untrusted_content = (
+                fallback_state.recent_untrusted_content
+            )
 
             done_content = (
                 strip_tool_call_patterns(full_response)
