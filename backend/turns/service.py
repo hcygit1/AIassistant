@@ -74,7 +74,7 @@ class UserTurnService:
         if runtime is not None:
             return runtime.dispatcher_manager
         if self._dispatcher_manager is None:
-            from sessions.session_dispatcher import dispatcher_manager
+            from sessions.session_dispatcher_manager import dispatcher_manager
 
             return dispatcher_manager
         return self._dispatcher_manager

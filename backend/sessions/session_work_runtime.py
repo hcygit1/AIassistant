@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sessions.session_dispatcher import (
+from sessions.session_dispatcher_manager import (
     DispatcherManager,
     dispatcher_manager as default_dispatcher_manager,
 )

@@ -80,7 +80,9 @@ class TaskHistoryService:
 
                 work_store = session_work_store
             if dispatcher_manager is None:
-                from sessions.session_dispatcher import dispatcher_manager
+                from sessions.session_dispatcher_manager import (
+                    dispatcher_manager,
+                )
 
         self._task_store = task_store
         self._work_store = work_store

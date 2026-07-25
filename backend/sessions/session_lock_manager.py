@@ -91,7 +91,9 @@ def cleanup_session_runtime(
         dispatcher_manager = session_work_runtime.dispatcher_manager
         lock_manager = session_work_runtime.lock_manager
     elif dispatcher_manager is None:
-        from sessions.session_dispatcher import dispatcher_manager as default_manager
+        from sessions.session_dispatcher_manager import (
+            dispatcher_manager as default_manager,
+        )
 
         dispatcher_manager = default_manager
     if lock_manager is None:
