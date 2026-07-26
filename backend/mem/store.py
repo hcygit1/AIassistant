@@ -21,6 +21,7 @@ from typing import Any
 import sqlite_vec
 from sqlite_vec import serialize_float32
 
+from mem.chunk_repository import ChunkRepository, row_to_chunk as _row_to_chunk
 from mem.dashboard_queries import MemoryDashboardQueries
 from mem.fts_index import MemoryFtsIndex
 from mem.models import (
@@ -105,6 +106,12 @@ class MemStore:
             self._conn,
             lambda text: _tokenize_for_fts(text),
         )
+        self._chunks = ChunkRepository(
+            self._conn,
+            sync_fts=lambda chunk_id: self._sync_chunk_fts(chunk_id),
+            now_ms=lambda: _now_ms(),
+            content_hash=lambda content: _content_hash(content),
+        )
         self._dashboard_queries = MemoryDashboardQueries(self._conn)
         self._search_queries = MemorySearchQueries(
             self._conn,
@@ -153,47 +160,7 @@ class MemStore:
     # ------------------------------------------------------------------
 
     def insert_chunk(self, chunk: Chunk) -> None:
-        if not chunk.content_hash:
-            chunk.content_hash = _content_hash(chunk.content)
-        now = _now_ms()
-        if not chunk.created_at:
-            chunk.created_at = now
-        if not chunk.updated_at:
-            chunk.updated_at = now
-
-        self._conn.execute(
-            """INSERT OR REPLACE INTO chunks
-               (id, session_key, turn_id, seq, role, content, kind, summary,
-                task_id, skill_id, owner, content_hash,
-                dedup_status, dedup_target, dedup_reason,
-                summary_source, embedding_status, embedding_error,
-                created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                chunk.id,
-                chunk.session_key,
-                chunk.turn_id,
-                chunk.seq,
-                chunk.role,
-                chunk.content,
-                chunk.kind,
-                chunk.summary,
-                chunk.task_id,
-                chunk.skill_id,
-                chunk.owner,
-                chunk.content_hash,
-                chunk.dedup_status,
-                chunk.dedup_target,
-                chunk.dedup_reason,
-                chunk.summary_source,
-                chunk.embedding_status,
-                chunk.embedding_error,
-                chunk.created_at,
-                chunk.updated_at,
-            ),
-        )
-        self._sync_chunk_fts(chunk.id)
-        self._conn.commit()
+        self._chunks.insert(chunk)
 
     def update_chunk_summary(
         self,
@@ -202,18 +169,11 @@ class MemStore:
         *,
         summary_source: SummarySource | None = None,
     ) -> None:
-        if summary_source is None:
-            self._conn.execute(
-                "UPDATE chunks SET summary = ?, updated_at = ? WHERE id = ?",
-                (summary, _now_ms(), chunk_id),
-            )
-        else:
-            self._conn.execute(
-                "UPDATE chunks SET summary = ?, summary_source = ?, updated_at = ? WHERE id = ?",
-                (summary, summary_source, _now_ms(), chunk_id),
-            )
-        self._sync_chunk_fts(chunk_id)
-        self._conn.commit()
+        self._chunks.update_summary(
+            chunk_id,
+            summary,
+            summary_source=summary_source,
+        )
 
     def update_chunk_embedding_status(
         self,
@@ -221,11 +181,7 @@ class MemStore:
         status: EmbeddingStatus,
         error: str | None = None,
     ) -> None:
-        self._conn.execute(
-            "UPDATE chunks SET embedding_status = ?, embedding_error = ?, updated_at = ? WHERE id = ?",
-            (status, error, _now_ms(), chunk_id),
-        )
-        self._conn.commit()
+        self._chunks.update_embedding_status(chunk_id, status, error)
 
     def mark_dedup_status(
         self,
@@ -234,83 +190,42 @@ class MemStore:
         target: str | None = None,
         reason: str | None = None,
     ) -> None:
-        self._conn.execute(
-            "UPDATE chunks SET dedup_status=?, dedup_target=?, dedup_reason=?, updated_at=? WHERE id=?",
-            (status, target, reason, _now_ms(), chunk_id),
+        self._chunks.mark_dedup_status(
+            chunk_id,
+            status,
+            target,
+            reason,
         )
-        self._conn.commit()
 
     def orphan_chunk(self, chunk_id: str, reason: str | None = None) -> None:
-        self._conn.execute(
-            "UPDATE chunks SET dedup_status='orphaned', task_id=NULL, dedup_reason=?, updated_at=? WHERE id=?",
-            (reason, _now_ms(), chunk_id),
-        )
-        self._conn.commit()
+        self._chunks.orphan(chunk_id, reason)
 
     def find_active_chunk_by_hash(self, content: str, owner: str) -> str | None:
-        h = _content_hash(content)
-        row = self._conn.execute(
-            "SELECT id FROM chunks WHERE content_hash=? AND dedup_status='active' AND owner=? LIMIT 1",
-            (h, owner),
-        ).fetchone()
-        return row["id"] if row else None
+        return self._chunks.find_active_by_hash(content, owner)
 
     # ------------------------------------------------------------------
     # Chunks — Read
     # ------------------------------------------------------------------
 
     def get_chunk(self, chunk_id: str) -> Chunk | None:
-        row = self._conn.execute(
-            "SELECT * FROM chunks WHERE id = ?", (chunk_id,)
-        ).fetchone()
-        return _row_to_chunk(row) if row else None
+        return self._chunks.get(chunk_id)
 
     def get_chunks_by_task(self, task_id: str, limit: int | None = None) -> list[Chunk]:
-        sql = "SELECT * FROM chunks WHERE task_id=? AND dedup_status='active' ORDER BY created_at"
-        params: list[Any] = [task_id]
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        rows = self._conn.execute(sql, params).fetchall()
-        return [_row_to_chunk(r) for r in rows]
+        return self._chunks.get_by_task(task_id, limit)
 
     def get_chunks_for_embedding_retry(
         self,
         owner: str | None = None,
         limit: int = 100,
     ) -> list[Chunk]:
-        sql = (
-            "SELECT * FROM chunks WHERE dedup_status='active' AND embedding_status='failed' "
-            "ORDER BY updated_at LIMIT ?"
-        )
-        params: list[Any] = [limit]
-        if owner:
-            sql = (
-                "SELECT * FROM chunks WHERE dedup_status='active' AND embedding_status='failed' "
-                "AND owner=? ORDER BY updated_at LIMIT ?"
-            )
-            params = [owner, limit]
-        rows = self._conn.execute(sql, params).fetchall()
-        return [_row_to_chunk(r) for r in rows]
+        return self._chunks.get_for_embedding_retry(owner, limit)
 
     def get_chunks_for_summary_retry(
         self,
         owner: str | None = None,
         limit: int = 100,
     ) -> list[Chunk]:
-        sql = (
-            "SELECT * FROM chunks WHERE dedup_status='active' AND summary_source='fallback' "
-            "ORDER BY updated_at LIMIT ?"
-        )
-        params: list[Any] = [limit]
-        if owner:
-            sql = (
-                "SELECT * FROM chunks WHERE dedup_status='active' AND summary_source='fallback' "
-                "AND owner=? ORDER BY updated_at LIMIT ?"
-            )
-            params = [owner, limit]
-        rows = self._conn.execute(sql, params).fetchall()
-        return [_row_to_chunk(r) for r in rows]
+        return self._chunks.get_for_summary_retry(owner, limit)
 
     def get_chunks_in_range(
         self,
@@ -321,26 +236,13 @@ class MemStore:
         owner: str | None = None,
     ) -> list[Chunk]:
         """Get neighboring chunks for timeline display."""
-        params: list[Any] = [session_key]
-        sql = "SELECT * FROM chunks WHERE session_key = ?"
-        if owner:
-            sql += " AND owner = ?"
-            params.append(owner)
-        sql += " ORDER BY created_at, seq"
-        rows = self._conn.execute(sql, params).fetchall()
-
-        target_idx = -1
-        for i, r in enumerate(rows):
-            if r["turn_id"] == turn_id and r["seq"] == seq:
-                target_idx = i
-                break
-        if target_idx == -1:
-            return []
-
-        radius = window * 3
-        start = max(0, target_idx - radius)
-        end = min(len(rows), target_idx + radius + 1)
-        return [_row_to_chunk(rows[i]) for i in range(start, end)]
+        return self._chunks.get_in_range(
+            session_key,
+            turn_id,
+            seq,
+            window,
+            owner,
+        )
 
     # ------------------------------------------------------------------
     # Embeddings (sqlite-vec)
@@ -772,31 +674,6 @@ def _sanitize_fts(query: str) -> str:
     if not safe:
         return ""
     return " OR ".join(safe)
-
-
-def _row_to_chunk(row: sqlite3.Row) -> Chunk:
-    return Chunk(
-        id=row["id"],
-        session_key=row["session_key"],
-        turn_id=row["turn_id"],
-        seq=row["seq"],
-        role=row["role"],
-        content=row["content"],
-        kind=row["kind"] or "paragraph",
-        summary=row["summary"] or "",
-        task_id=row["task_id"],
-        skill_id=row["skill_id"],
-        owner=row["owner"] or "agent:main",
-        content_hash=row["content_hash"] or "",
-        dedup_status=row["dedup_status"] or "active",
-        dedup_target=row["dedup_target"],
-        dedup_reason=row["dedup_reason"],
-        summary_source=row["summary_source"] or "llm",
-        embedding_status=row["embedding_status"] or "ok",
-        embedding_error=row["embedding_error"],
-        created_at=row["created_at"] or 0,
-        updated_at=row["updated_at"] or 0,
-    )
 
 
 def _row_to_task(row: sqlite3.Row) -> Task:
