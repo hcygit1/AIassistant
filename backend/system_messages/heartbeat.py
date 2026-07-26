@@ -14,6 +14,10 @@ from system_messages.heartbeat_utils import (
     is_within_active_hours,
 )
 from sessions.session_work_policy import deliver_system_work
+from sessions.system_work_dependencies import (
+    SystemWorkDependencies,
+    system_work_dependencies,
+)
 from infra.audit_log import audit_logger
 from system_messages.heartbeat_history import (
     HeartbeatEvent,
@@ -45,11 +49,15 @@ class HeartbeatRunner:
         *,
         session_manager: Any | None = None,
         work_delivery: Any | None = None,
+        dependencies: SystemWorkDependencies | None = None,
         event_sink: Callable[[str, HeartbeatEvent], None] | None = None,
         run_lifecycle: HeartbeatRunLifecycle | None = None,
     ) -> None:
-        self._session_manager = session_manager
-        self._work_delivery = work_delivery
+        self._dependencies = SystemWorkDependencies.resolve(
+            dependencies=dependencies,
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+        )
         self._event_sink = event_sink
         self._run_lifecycle = run_lifecycle
         self._tasks: dict[str, asyncio.Task] = {}
@@ -57,19 +65,11 @@ class HeartbeatRunner:
 
     @property
     def session_manager(self) -> Any:
-        if self._session_manager is not None:
-            return self._session_manager
-        from sessions.session_manager import session_manager
-
-        return session_manager
+        return self._dependencies.session_manager
 
     @property
     def work_delivery(self) -> Any:
-        if self._work_delivery is not None:
-            return self._work_delivery
-        from sessions.session_work_delivery import session_work_delivery
-
-        return session_work_delivery
+        return self._dependencies.work_delivery
 
     @property
     def event_sink(self) -> Callable[[str, HeartbeatEvent], None]:
@@ -265,4 +265,4 @@ class HeartbeatRunner:
         return list(self._tasks.keys())
 
 
-heartbeat_runner = HeartbeatRunner()
+heartbeat_runner = HeartbeatRunner(dependencies=system_work_dependencies)

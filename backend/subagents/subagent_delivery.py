@@ -9,6 +9,10 @@ from typing import Any
 
 from sessions.session_identity import session_key_from_session_id
 from sessions.session_work_policy import deliver_system_work
+from sessions.system_work_dependencies import (
+    SystemWorkDependencies,
+    system_work_dependencies,
+)
 
 from subagents.subagent_announce_lifecycle import SubagentAnnounceLifecycle
 from subagents.subagent_run_model import SubagentRunRecord
@@ -20,12 +24,16 @@ class SubagentAnnounceDelivery:
         *,
         session_manager: Any | None = None,
         work_delivery: Any | None = None,
+        dependencies: SystemWorkDependencies | None = None,
         registry: Any | None = None,
         event_bus: Any | None = None,
         lifecycle: SubagentAnnounceLifecycle | None = None,
     ) -> None:
-        self._session_manager = session_manager
-        self._work_delivery = work_delivery
+        self._dependencies = SystemWorkDependencies.resolve(
+            dependencies=dependencies,
+            session_manager=session_manager,
+            work_delivery=work_delivery,
+        )
         self._state = lifecycle or SubagentAnnounceLifecycle(
             registry=registry,
             event_bus=event_bus,
@@ -33,19 +41,11 @@ class SubagentAnnounceDelivery:
 
     @property
     def session_manager(self) -> Any:
-        if self._session_manager is not None:
-            return self._session_manager
-        from sessions.session_manager import session_manager
-
-        return session_manager
+        return self._dependencies.session_manager
 
     @property
     def work_delivery(self) -> Any:
-        if self._work_delivery is not None:
-            return self._work_delivery
-        from sessions.session_work_delivery import session_work_delivery
-
-        return session_work_delivery
+        return self._dependencies.work_delivery
 
     @property
     def registry(self) -> Any:
@@ -309,4 +309,6 @@ class SubagentAnnounceDelivery:
         return True
 
 
-subagent_announce_delivery = SubagentAnnounceDelivery()
+subagent_announce_delivery = SubagentAnnounceDelivery(
+    dependencies=system_work_dependencies
+)
