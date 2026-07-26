@@ -40,6 +40,7 @@ from mem.models import (
     TaskStatus,
 )
 from mem.schema import MemorySchema
+from mem.search_queries import MemorySearchQueries
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,10 @@ class MemStore:
             lambda text: _tokenize_for_fts(text),
         )
         self._dashboard_queries = MemoryDashboardQueries(self._conn)
+        self._search_queries = MemorySearchQueries(
+            self._conn,
+            lambda query: _sanitize_fts(query),
+        )
         self._init_schema()
         logger.info("MemStore initialized: %s (dim=%d)", db_path, dimensions)
 
@@ -377,98 +382,31 @@ class MemStore:
         exclude_session: str | None = None,
     ) -> list[SearchHit]:
         """ANN search on vec_chunks, join back to chunks for metadata."""
-        blob = serialize_float32(query_vec)
-        rows = self._conn.execute(
-            """SELECT v.chunk_id, v.distance,
-                      c.summary, c.content, c.role, c.session_key,
-                      c.task_id, c.created_at
-               FROM vec_chunks v
-               JOIN chunks c ON c.id = v.chunk_id
-               WHERE v.embedding MATCH ? AND k = ?
-                 AND c.dedup_status = 'active'
-               ORDER BY v.distance""",
-            (blob, top_k * 2),
-        ).fetchall()
-
-        hits: list[SearchHit] = []
-        for r in rows:
-            if exclude_session and r["session_key"] == exclude_session:
-                continue
-            score = 1.0 - r["distance"] if r["distance"] is not None else 0.0
-            hits.append(
-                SearchHit(
-                    chunk_id=r["chunk_id"],
-                    score=score,
-                    summary=r["summary"] or "",
-                    content_excerpt=r["content"][:300] if r["content"] else "",
-                    role=r["role"] or "",
-                    session_key=r["session_key"] or "",
-                    task_id=r["task_id"],
-                    created_at=r["created_at"] or 0,
-                )
-            )
-            if len(hits) >= top_k:
-                break
-        return hits
+        return self._search_queries.ann_search_chunks(
+            query_vec,
+            top_k=top_k,
+            exclude_session=exclude_session,
+        )
 
     def ann_search_tasks(
         self, query_vec: list[float], top_k: int = 5,
         owner: str | None = None,
     ) -> list[TaskSearchHit]:
-        blob = serialize_float32(query_vec)
-        sql = """SELECT v.task_id, v.distance,
-                        t.title, t.summary, t.status, t.started_at, t.ended_at
-                 FROM vec_tasks v
-                 JOIN tasks t ON t.id = v.task_id
-                 WHERE v.embedding MATCH ? AND k = ?
-                   AND t.status = 'completed'"""
-        params: list[Any] = [blob, top_k]
-        if owner:
-            sql += " AND t.owner = ?"
-            params.append(owner)
-        sql += " ORDER BY v.distance"
-        rows = self._conn.execute(sql, params).fetchall()
-
-        return [
-            TaskSearchHit(
-                task_id=r["task_id"],
-                score=1.0 - (r["distance"] or 0.0),
-                title=r["title"] or "",
-                summary=r["summary"] or "",
-                status=r["status"] or "",
-                started_at=r["started_at"] or 0,
-                ended_at=r["ended_at"],
-            )
-            for r in rows
-        ]
+        return self._search_queries.ann_search_tasks(
+            query_vec,
+            top_k=top_k,
+            owner=owner,
+        )
 
     def ann_search_skills(
         self, query_vec: list[float], top_k: int = 5,
         owner: str | None = None,
     ) -> list[SkillSearchHit]:
-        blob = serialize_float32(query_vec)
-        sql = """SELECT v.skill_id, v.distance,
-                        s.name, s.description
-                 FROM vec_skills v
-                 JOIN skills s ON s.id = v.skill_id
-                 WHERE v.embedding MATCH ? AND k = ?
-                   AND s.status IN ('active', 'draft')"""
-        params: list[Any] = [blob, top_k]
-        if owner:
-            sql += " AND s.owner = ?"
-            params.append(owner)
-        sql += " ORDER BY v.distance"
-        rows = self._conn.execute(sql, params).fetchall()
-
-        return [
-            SkillSearchHit(
-                skill_id=r["skill_id"],
-                score=1.0 - (r["distance"] or 0.0),
-                name=r["name"] or "",
-                description=r["description"] or "",
-            )
-            for r in rows
-        ]
+        return self._search_queries.ann_search_skills(
+            query_vec,
+            top_k=top_k,
+            owner=owner,
+        )
 
     def ann_dedup_candidates(
         self,
@@ -478,41 +416,12 @@ class MemStore:
         owner: str | None = None,
     ) -> list[SearchHit]:
         """Find top-K similar active chunks above threshold for dedup."""
-        blob = serialize_float32(query_vec)
-        sql = """SELECT v.chunk_id, v.distance,
-                        c.summary, c.content, c.role, c.session_key,
-                        c.task_id, c.created_at
-                 FROM vec_chunks v
-                 JOIN chunks c ON c.id = v.chunk_id
-                 WHERE v.embedding MATCH ? AND k = ?
-                   AND c.dedup_status = 'active'"""
-        params: list[Any] = [blob, top_k * 3]
-        if owner:
-            sql += " AND c.owner = ?"
-            params.append(owner)
-        sql += " ORDER BY v.distance"
-
-        rows = self._conn.execute(sql, params).fetchall()
-        hits: list[SearchHit] = []
-        for r in rows:
-            score = 1.0 - (r["distance"] or 0.0)
-            if score < threshold:
-                continue
-            hits.append(
-                SearchHit(
-                    chunk_id=r["chunk_id"],
-                    score=score,
-                    summary=r["summary"] or "",
-                    content_excerpt=r["content"][:300] if r["content"] else "",
-                    role=r["role"] or "",
-                    session_key=r["session_key"] or "",
-                    task_id=r["task_id"],
-                    created_at=r["created_at"] or 0,
-                )
-            )
-            if len(hits) >= top_k:
-                break
-        return hits
+        return self._search_queries.ann_dedup_candidates(
+            query_vec,
+            threshold,
+            top_k=top_k,
+            owner=owner,
+        )
 
     # ------------------------------------------------------------------
     # FTS Search
@@ -524,88 +433,21 @@ class MemStore:
         limit: int = 10,
         exclude_session: str | None = None,
     ) -> list[SearchHit]:
-        sanitized = _sanitize_fts(query)
-        if not sanitized:
-            return []
-        try:
-            sql = """SELECT c.id as chunk_id, rank,
-                            c.summary, c.content, c.role, c.session_key,
-                            c.task_id, c.created_at
-                     FROM chunks_fts f
-                     JOIN chunks c ON c.rowid = f.rowid
-                     WHERE chunks_fts MATCH ?
-                       AND c.dedup_status = 'active'"""
-            params: list[Any] = [sanitized]
-            if exclude_session:
-                sql += " AND c.session_key != ?"
-                params.append(exclude_session)
-            sql += " ORDER BY rank LIMIT ?"
-            params.append(limit * 2)
-
-            rows = self._conn.execute(sql, params).fetchall()
-            if not rows:
-                return []
-
-            max_abs = max(abs(r["rank"]) for r in rows) or 1.0
-            hits: list[SearchHit] = []
-            for r in rows:
-                hits.append(
-                    SearchHit(
-                        chunk_id=r["chunk_id"],
-                        score=abs(r["rank"]) / max_abs,
-                        summary=r["summary"] or "",
-                        content_excerpt=r["content"][:300] if r["content"] else "",
-                        role=r["role"] or "",
-                        session_key=r["session_key"] or "",
-                        task_id=r["task_id"],
-                        created_at=r["created_at"] or 0,
-                    )
-                )
-            return hits[:limit]
-        except sqlite3.OperationalError:
-            logger.warning("FTS query failed for: %s", sanitized)
-            return []
+        return self._search_queries.fts_search_chunks(
+            query,
+            limit=limit,
+            exclude_session=exclude_session,
+        )
 
     def fts_search_tasks(
         self, query: str, limit: int = 10,
         owner: str | None = None,
     ) -> list[TaskSearchHit]:
-        sanitized = _sanitize_fts(query)
-        if not sanitized:
-            return []
-        try:
-            sql = """SELECT t.id as task_id, rank,
-                            t.title, t.summary, t.status, t.started_at, t.ended_at
-                     FROM tasks_fts f
-                     JOIN tasks t ON t.rowid = f.rowid
-                     WHERE tasks_fts MATCH ?
-                       AND t.status = 'completed'"""
-            params: list[Any] = [sanitized]
-            if owner:
-                sql += " AND t.owner = ?"
-                params.append(owner)
-            sql += " ORDER BY rank LIMIT ?"
-            params.append(limit)
-            rows = self._conn.execute(sql, params).fetchall()
-
-            if not rows:
-                return []
-            max_abs = max(abs(r["rank"]) for r in rows) or 1.0
-            return [
-                TaskSearchHit(
-                    task_id=r["task_id"],
-                    score=abs(r["rank"]) / max_abs,
-                    title=r["title"] or "",
-                    summary=r["summary"] or "",
-                    status=r["status"] or "",
-                    started_at=r["started_at"] or 0,
-                    ended_at=r["ended_at"],
-                )
-                for r in rows
-            ]
-        except sqlite3.OperationalError:
-            logger.warning("FTS task query failed for: %s", sanitized)
-            return []
+        return self._search_queries.fts_search_tasks(
+            query,
+            limit=limit,
+            owner=owner,
+        )
 
     # ------------------------------------------------------------------
     # Tasks — CRUD
@@ -777,39 +619,11 @@ class MemStore:
         self, query: str, limit: int = 10,
         owner: str | None = None,
     ) -> list[SkillSearchHit]:
-        sanitized = _sanitize_fts(query)
-        if not sanitized:
-            return []
-        try:
-            sql = """SELECT s.id as skill_id, rank,
-                            s.name, s.description
-                     FROM skills_fts f
-                     JOIN skills s ON s.rowid = f.rowid
-                     WHERE skills_fts MATCH ?
-                       AND s.status IN ('active', 'draft')"""
-            params: list[Any] = [sanitized]
-            if owner:
-                sql += " AND s.owner = ?"
-                params.append(owner)
-            sql += " ORDER BY rank LIMIT ?"
-            params.append(limit)
-            rows = self._conn.execute(sql, params).fetchall()
-
-            if not rows:
-                return []
-            max_abs = max(abs(r["rank"]) for r in rows) or 1.0
-            return [
-                SkillSearchHit(
-                    skill_id=r["skill_id"],
-                    score=abs(r["rank"]) / max_abs,
-                    name=r["name"] or "",
-                    description=r["description"] or "",
-                )
-                for r in rows
-            ]
-        except sqlite3.OperationalError:
-            logger.warning("FTS skill query failed for: %s", sanitized)
-            return []
+        return self._search_queries.fts_search_skills(
+            query,
+            limit=limit,
+            owner=owner,
+        )
 
     # ------------------------------------------------------------------
     # Task-scoped Chunk Search (for recall)
@@ -822,42 +636,12 @@ class MemStore:
         top_k: int = 10,
         owner: str | None = None,
     ) -> list[SearchHit]:
-        if not task_ids:
-            return []
-        blob = serialize_float32(query_vec)
-        sql = """SELECT v.chunk_id, v.distance,
-                        c.summary, c.content, c.role, c.session_key,
-                        c.task_id, c.created_at
-                 FROM vec_chunks v
-                 JOIN chunks c ON c.id = v.chunk_id
-                 WHERE v.embedding MATCH ? AND k = ?
-                   AND c.dedup_status = 'active'"""
-        params: list[Any] = [blob, top_k * 3]
-        if owner:
-            sql += " AND c.owner = ?"
-            params.append(owner)
-        sql += " ORDER BY v.distance"
-        rows = self._conn.execute(sql, params).fetchall()
-
-        task_set = set(task_ids)
-        hits: list[SearchHit] = []
-        for r in rows:
-            if r["task_id"] not in task_set:
-                continue
-            score = 1.0 - (r["distance"] or 0.0)
-            hits.append(SearchHit(
-                chunk_id=r["chunk_id"],
-                score=score,
-                summary=r["summary"] or "",
-                content_excerpt=r["content"][:300] if r["content"] else "",
-                role=r["role"] or "",
-                session_key=r["session_key"] or "",
-                task_id=r["task_id"],
-                created_at=r["created_at"] or 0,
-            ))
-            if len(hits) >= top_k:
-                break
-        return hits
+        return self._search_queries.ann_search_chunks_in_tasks(
+            query_vec,
+            task_ids,
+            top_k=top_k,
+            owner=owner,
+        )
 
     def fts_search_chunks_in_tasks(
         self,
@@ -866,47 +650,12 @@ class MemStore:
         limit: int = 10,
         owner: str | None = None,
     ) -> list[SearchHit]:
-        if not task_ids:
-            return []
-        sanitized = _sanitize_fts(query)
-        if not sanitized:
-            return []
-        try:
-            placeholders = ",".join("?" for _ in task_ids)
-            sql = f"""SELECT c.id as chunk_id, rank,
-                            c.summary, c.content, c.role, c.session_key,
-                            c.task_id, c.created_at
-                     FROM chunks_fts f
-                     JOIN chunks c ON c.rowid = f.rowid
-                     WHERE chunks_fts MATCH ?
-                       AND c.dedup_status = 'active'
-                       AND c.task_id IN ({placeholders})"""
-            params: list[Any] = [sanitized, *task_ids]
-            if owner:
-                sql += " AND c.owner = ?"
-                params.append(owner)
-            sql += " ORDER BY rank LIMIT ?"
-            params.append(limit * 2)
-            rows = self._conn.execute(sql, params).fetchall()
-            if not rows:
-                return []
-            max_abs = max(abs(r["rank"]) for r in rows) or 1.0
-            return [
-                SearchHit(
-                    chunk_id=r["chunk_id"],
-                    score=abs(r["rank"]) / max_abs,
-                    summary=r["summary"] or "",
-                    content_excerpt=r["content"][:300] if r["content"] else "",
-                    role=r["role"] or "",
-                    session_key=r["session_key"] or "",
-                    task_id=r["task_id"],
-                    created_at=r["created_at"] or 0,
-                )
-                for r in rows[:limit]
-            ]
-        except sqlite3.OperationalError:
-            logger.warning("FTS chunks_in_tasks query failed for: %s", sanitized)
-            return []
+        return self._search_queries.fts_search_chunks_in_tasks(
+            query,
+            task_ids,
+            limit=limit,
+            owner=owner,
+        )
 
     def ann_search_orphan_chunks(
         self,
@@ -915,41 +664,12 @@ class MemStore:
         exclude_session: str | None = None,
         owner: str | None = None,
     ) -> list[SearchHit]:
-        blob = serialize_float32(query_vec)
-        sql = """SELECT v.chunk_id, v.distance,
-                        c.summary, c.content, c.role, c.session_key,
-                        c.task_id, c.created_at
-                 FROM vec_chunks v
-                 JOIN chunks c ON c.id = v.chunk_id
-                 WHERE v.embedding MATCH ? AND k = ?
-                   AND c.dedup_status IN ('active', 'orphaned')"""
-        params: list[Any] = [blob, top_k * 3]
-        if owner:
-            sql += " AND c.owner = ?"
-            params.append(owner)
-        sql += " ORDER BY v.distance"
-        rows = self._conn.execute(sql, params).fetchall()
-
-        hits: list[SearchHit] = []
-        for r in rows:
-            if r["task_id"] is not None:
-                continue
-            if exclude_session and r["session_key"] == exclude_session:
-                continue
-            score = 1.0 - (r["distance"] or 0.0)
-            hits.append(SearchHit(
-                chunk_id=r["chunk_id"],
-                score=score,
-                summary=r["summary"] or "",
-                content_excerpt=r["content"][:300] if r["content"] else "",
-                role=r["role"] or "",
-                session_key=r["session_key"] or "",
-                task_id=None,
-                created_at=r["created_at"] or 0,
-            ))
-            if len(hits) >= top_k:
-                break
-        return hits
+        return self._search_queries.ann_search_orphan_chunks(
+            query_vec,
+            top_k=top_k,
+            exclude_session=exclude_session,
+            owner=owner,
+        )
 
     def fts_search_orphan_chunks(
         self,
@@ -958,47 +678,12 @@ class MemStore:
         exclude_session: str | None = None,
         owner: str | None = None,
     ) -> list[SearchHit]:
-        sanitized = _sanitize_fts(query)
-        if not sanitized:
-            return []
-        try:
-            sql = """SELECT c.id as chunk_id, rank,
-                            c.summary, c.content, c.role, c.session_key,
-                            c.task_id, c.created_at
-                     FROM chunks_fts f
-                     JOIN chunks c ON c.rowid = f.rowid
-                     WHERE chunks_fts MATCH ?
-                       AND c.dedup_status IN ('active', 'orphaned')
-                       AND c.task_id IS NULL"""
-            params: list[Any] = [sanitized]
-            if exclude_session:
-                sql += " AND c.session_key != ?"
-                params.append(exclude_session)
-            if owner:
-                sql += " AND c.owner = ?"
-                params.append(owner)
-            sql += " ORDER BY rank LIMIT ?"
-            params.append(limit * 2)
-            rows = self._conn.execute(sql, params).fetchall()
-            if not rows:
-                return []
-            max_abs = max(abs(r["rank"]) for r in rows) or 1.0
-            return [
-                SearchHit(
-                    chunk_id=r["chunk_id"],
-                    score=abs(r["rank"]) / max_abs,
-                    summary=r["summary"] or "",
-                    content_excerpt=r["content"][:300] if r["content"] else "",
-                    role=r["role"] or "",
-                    session_key=r["session_key"] or "",
-                    task_id=None,
-                    created_at=r["created_at"] or 0,
-                )
-                for r in rows[:limit]
-            ]
-        except sqlite3.OperationalError:
-            logger.warning("FTS orphan_chunks query failed for: %s", sanitized)
-            return []
+        return self._search_queries.fts_search_orphan_chunks(
+            query,
+            limit=limit,
+            exclude_session=exclude_session,
+            owner=owner,
+        )
 
     # ------------------------------------------------------------------
     # Utility
