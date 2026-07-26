@@ -22,8 +22,9 @@ from typing import Any, Callable, Coroutine, Literal
 
 import httpx
 
-from mem.store import Chunk, MemStore, SearchHit, _content_hash, _now_ms
 from mem.embedder import MemEmbedder
+from mem.models import Chunk, SearchHit
+from mem.store import MemStore, _content_hash, _now_ms
 
 logger = logging.getLogger(__name__)
 

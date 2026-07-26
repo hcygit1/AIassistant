@@ -18,8 +18,9 @@ from typing import Any, Callable, Coroutine
 
 import httpx
 
-from mem.store import MemStore, Task, Chunk
 from mem.embedder import MemEmbedder
+from mem.models import Chunk, Task
+from mem.store import MemStore
 
 logger = logging.getLogger(__name__)
 
