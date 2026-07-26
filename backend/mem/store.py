@@ -9,7 +9,6 @@ Schema 与 docs/memory-system-refactor.md §3.1 一致:
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import re
@@ -41,6 +40,7 @@ from mem.models import (
 )
 from mem.schema import MemorySchema
 from mem.search_queries import MemorySearchQueries
+from mem.session_summary_repository import SessionSummaryRepository
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,11 @@ class MemStore:
         self._search_queries = MemorySearchQueries(
             self._conn,
             lambda query: _sanitize_fts(query),
+        )
+        self._session_summaries = SessionSummaryRepository(
+            self._conn,
+            now=lambda: time.time(),
+            new_id=lambda: str(uuid.uuid4()),
         )
         self._init_schema()
         logger.info("MemStore initialized: %s (dim=%d)", db_path, dimensions)
@@ -737,104 +742,19 @@ class MemStore:
         agent_id: str,
         summary: dict[str, Any],
     ) -> SessionSummary:
-        now = time.time()
-        row = self._conn.execute(
-            "SELECT id, version FROM session_summaries WHERE session_id = ? AND agent_id = ?",
-            (session_id, agent_id),
-        ).fetchone()
-
-        if row:
-            sid, old_version = row["id"], row["version"]
-            new_version = old_version + 1
-            self._conn.execute("""
-                UPDATE session_summaries SET
-                    version = ?, goal = ?, decisions = ?, progress = ?,
-                    open_items = ?, entities = ?, user_preferences = ?,
-                    raw_summary = ?, token_count = ?, updated_at = ?
-                WHERE id = ?
-            """, (
-                new_version,
-                summary.get("goal", ""),
-                json.dumps(summary.get("decisions", []), ensure_ascii=False),
-                summary.get("progress", ""),
-                json.dumps(summary.get("open_items", []), ensure_ascii=False),
-                json.dumps(summary.get("entities", []), ensure_ascii=False),
-                json.dumps(summary.get("user_preferences", []), ensure_ascii=False),
-                summary.get("raw_summary", ""),
-                summary.get("token_count", 0),
-                now,
-                sid,
-            ))
-        else:
-            sid = str(uuid.uuid4())
-            new_version = 1
-            self._conn.execute("""
-                INSERT INTO session_summaries
-                    (id, session_id, agent_id, version, goal, decisions, progress,
-                     open_items, entities, user_preferences, raw_summary, token_count,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                sid, session_id, agent_id, new_version,
-                summary.get("goal", ""),
-                json.dumps(summary.get("decisions", []), ensure_ascii=False),
-                summary.get("progress", ""),
-                json.dumps(summary.get("open_items", []), ensure_ascii=False),
-                json.dumps(summary.get("entities", []), ensure_ascii=False),
-                json.dumps(summary.get("user_preferences", []), ensure_ascii=False),
-                summary.get("raw_summary", ""),
-                summary.get("token_count", 0),
-                now, now,
-            ))
-
-        self._conn.commit()
-        return SessionSummary(
-            id=sid, session_id=session_id, agent_id=agent_id,
-            version=new_version,
-            goal=summary.get("goal", ""),
-            decisions=json.dumps(summary.get("decisions", []), ensure_ascii=False),
-            progress=summary.get("progress", ""),
-            open_items=json.dumps(summary.get("open_items", []), ensure_ascii=False),
-            entities=json.dumps(summary.get("entities", []), ensure_ascii=False),
-            user_preferences=json.dumps(summary.get("user_preferences", []), ensure_ascii=False),
-            raw_summary=summary.get("raw_summary", ""),
-            token_count=summary.get("token_count", 0),
-            created_at=now, updated_at=now,
+        return self._session_summaries.upsert(
+            session_id,
+            agent_id,
+            summary,
         )
 
     def delete_session_summary(self, session_id: str, agent_id: str) -> bool:
-        deleted = self._conn.execute(
-            "DELETE FROM session_summaries WHERE session_id = ? AND agent_id = ?",
-            (session_id, agent_id),
-        ).rowcount
-        self._conn.commit()
-        return deleted > 0
+        return self._session_summaries.delete(session_id, agent_id)
 
     def get_session_summary(
         self, session_id: str, agent_id: str,
     ) -> SessionSummary | None:
-        row = self._conn.execute(
-            "SELECT * FROM session_summaries WHERE session_id = ? AND agent_id = ?",
-            (session_id, agent_id),
-        ).fetchone()
-        if not row:
-            return None
-        return SessionSummary(
-            id=row["id"],
-            session_id=row["session_id"],
-            agent_id=row["agent_id"],
-            version=row["version"] or 1,
-            goal=row["goal"] or "",
-            decisions=row["decisions"] or "[]",
-            progress=row["progress"] or "",
-            open_items=row["open_items"] or "[]",
-            entities=row["entities"] or "[]",
-            user_preferences=row["user_preferences"] or "[]",
-            raw_summary=row["raw_summary"] or "",
-            token_count=row["token_count"] or 0,
-            created_at=row["created_at"] or 0.0,
-            updated_at=row["updated_at"] or 0.0,
-        )
+        return self._session_summaries.get(session_id, agent_id)
 
 
 # ---------------------------------------------------------------------------
