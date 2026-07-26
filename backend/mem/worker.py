@@ -25,7 +25,7 @@ import httpx
 from mem.embedder import MemEmbedder
 from mem.models import Chunk, SearchHit
 from mem.persistence_values import content_hash, now_ms
-from mem.store import MemStore
+from mem.worker_store import MemWorkerStore
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ class MemWorker:
 
     def __init__(
         self,
-        store: MemStore,
+        store: MemWorkerStore,
         embedder: MemEmbedder,
         *,
         llm_base_url: str = "",

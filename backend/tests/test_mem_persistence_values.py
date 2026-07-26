@@ -73,8 +73,7 @@ class MemoryPersistenceValueTests(unittest.IsolatedAsyncioTestCase):
             for node in ast.walk(worker_tree)
             if isinstance(node, ast.ImportFrom) and node.module == "mem.store"
         ]
-        self.assertEqual(len(store_imports), 1)
-        self.assertEqual([alias.name for alias in store_imports[0].names], ["MemStore"])
+        self.assertEqual(store_imports, [])
 
         content_hash, now_ms = _persistence_values()
         from mem.store import _content_hash, _now_ms
