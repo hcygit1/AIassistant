@@ -22,6 +22,7 @@ from typing import Any
 import sqlite_vec
 from sqlite_vec import serialize_float32
 
+from mem.fts_index import MemoryFtsIndex
 from mem.models import (
     Chunk,
     DedupStatus,
@@ -37,6 +38,7 @@ from mem.models import (
     TaskSearchHit,
     TaskStatus,
 )
+from mem.schema import MemorySchema
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,11 @@ class MemStore:
         sqlite_vec.load(self._conn)
         self._conn.enable_load_extension(False)
 
+        self._schema = MemorySchema(self._conn, dimensions)
+        self._fts_index = MemoryFtsIndex(
+            self._conn,
+            lambda text: _tokenize_for_fts(text),
+        )
         self._init_schema()
         logger.info("MemStore initialized: %s (dim=%d)", db_path, dimensions)
 
@@ -104,240 +111,30 @@ class MemStore:
     # ------------------------------------------------------------------
 
     def _init_schema(self) -> None:
-        c = self._conn
-        dim = self.dimensions
-
-        c.executescript(f"""
-            -- Chunks
-            CREATE TABLE IF NOT EXISTS chunks (
-                id           TEXT PRIMARY KEY,
-                session_key  TEXT NOT NULL,
-                turn_id      TEXT NOT NULL,
-                seq          INTEGER NOT NULL,
-                role         TEXT NOT NULL,
-                content      TEXT NOT NULL,
-                kind         TEXT NOT NULL DEFAULT 'paragraph',
-                summary      TEXT NOT NULL DEFAULT '',
-                task_id      TEXT,
-                skill_id     TEXT,
-                owner        TEXT NOT NULL DEFAULT 'agent:main',
-                content_hash TEXT NOT NULL DEFAULT '',
-                dedup_status TEXT NOT NULL DEFAULT 'active',
-                dedup_target TEXT,
-                dedup_reason TEXT,
-                summary_source TEXT NOT NULL DEFAULT 'llm',
-                embedding_status TEXT NOT NULL DEFAULT 'ok',
-                embedding_error TEXT,
-                created_at   INTEGER NOT NULL,
-                updated_at   INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_chunks_session
-                ON chunks(session_key);
-            CREATE INDEX IF NOT EXISTS idx_chunks_turn
-                ON chunks(session_key, turn_id, seq);
-            CREATE INDEX IF NOT EXISTS idx_chunks_created
-                ON chunks(created_at);
-            CREATE INDEX IF NOT EXISTS idx_chunks_dedup
-                ON chunks(session_key, role, content_hash);
-            CREATE INDEX IF NOT EXISTS idx_chunks_dedup_status
-                ON chunks(dedup_status, created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_chunks_owner
-                ON chunks(owner);
-            CREATE INDEX IF NOT EXISTS idx_chunks_task
-                ON chunks(task_id);
-
-            -- Tasks
-            CREATE TABLE IF NOT EXISTS tasks (
-                id          TEXT PRIMARY KEY,
-                session_key TEXT NOT NULL,
-                owner       TEXT NOT NULL DEFAULT 'agent:main',
-                title       TEXT NOT NULL DEFAULT '',
-                summary     TEXT NOT NULL DEFAULT '',
-                boundary_summary TEXT NOT NULL DEFAULT '',
-                boundary_compacted_count INTEGER NOT NULL DEFAULT 0,
-                status      TEXT NOT NULL DEFAULT 'active',
-                started_at  INTEGER NOT NULL,
-                ended_at    INTEGER,
-                updated_at  INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_key);
-            CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-            CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner);
-
-            -- Skills
-            CREATE TABLE IF NOT EXISTS skills (
-                id            TEXT PRIMARY KEY,
-                name          TEXT NOT NULL UNIQUE,
-                description   TEXT NOT NULL DEFAULT '',
-                dir_path      TEXT NOT NULL DEFAULT '',
-                version       INTEGER NOT NULL DEFAULT 1,
-                status        TEXT NOT NULL DEFAULT 'active',
-                installed     INTEGER NOT NULL DEFAULT 0,
-                owner         TEXT NOT NULL DEFAULT 'agent:main',
-                visibility    TEXT NOT NULL DEFAULT 'private',
-                quality_score REAL,
-                created_at    INTEGER NOT NULL,
-                updated_at    INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_skills_status ON skills(status);
-            CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
-            CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner);
-
-            -- Session Summaries (结构化压缩摘要, 每个活跃 session 至多 1 行)
-            CREATE TABLE IF NOT EXISTS session_summaries (
-                id               TEXT PRIMARY KEY,
-                session_id       TEXT NOT NULL,
-                agent_id         TEXT NOT NULL,
-                version          INTEGER DEFAULT 1,
-                goal             TEXT,
-                decisions        TEXT,
-                progress         TEXT,
-                open_items       TEXT,
-                entities         TEXT,
-                user_preferences TEXT,
-                raw_summary      TEXT,
-                token_count      INTEGER,
-                created_at       REAL,
-                updated_at       REAL,
-                UNIQUE(session_id, agent_id)
-            );
-        """)
-
-        self._ensure_chunk_columns()
-        self._ensure_task_columns()
-
-        # FTS5 virtual tables — 独立存储预分词文本，不绑定外部内容表
-        for stmt in [
-            """CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-                summary, content,
-                tokenize='unicode61'
-            )""",
-            """CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
-                title, summary,
-                tokenize='unicode61'
-            )""",
-            """CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(
-                name, description,
-                tokenize='unicode61'
-            )""",
-        ]:
-            try:
-                c.execute(stmt)
-            except sqlite3.OperationalError:
-                pass
-
-        # sqlite-vec virtual tables
-        for stmt in [
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(chunk_id TEXT PRIMARY KEY, embedding float[{dim}])",
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_tasks USING vec0(task_id TEXT PRIMARY KEY, embedding float[{dim}])",
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_skills USING vec0(skill_id TEXT PRIMARY KEY, embedding float[{dim}])",
-        ]:
-            c.execute(stmt)
-
-        c.commit()
+        self._schema.initialize()
 
     # ------------------------------------------------------------------
     # FTS sync helpers — 预分词写入 FTS 索引
     # ------------------------------------------------------------------
 
     def _sync_chunk_fts(self, chunk_id: str) -> None:
-        row = self._conn.execute(
-            "SELECT rowid, summary, content FROM chunks WHERE id = ?",
-            (chunk_id,),
-        ).fetchone()
-        if not row:
-            return
-        rowid = row[0]
-        self._conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (rowid,))
-        self._conn.execute(
-            "INSERT INTO chunks_fts(rowid, summary, content) VALUES (?, ?, ?)",
-            (rowid, _tokenize_for_fts(row[1] or ""), _tokenize_for_fts(row[2] or "")),
-        )
+        self._fts_index.sync_chunk(chunk_id)
 
     def _sync_task_fts(self, task_id: str) -> None:
-        row = self._conn.execute(
-            "SELECT rowid, title, summary FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if not row:
-            return
-        rowid = row[0]
-        self._conn.execute("DELETE FROM tasks_fts WHERE rowid = ?", (rowid,))
-        self._conn.execute(
-            "INSERT INTO tasks_fts(rowid, title, summary) VALUES (?, ?, ?)",
-            (rowid, _tokenize_for_fts(row[1] or ""), _tokenize_for_fts(row[2] or "")),
-        )
+        self._fts_index.sync_task(task_id)
 
     def _sync_skill_fts(self, skill_id: str) -> None:
-        row = self._conn.execute(
-            "SELECT rowid, name, description FROM skills WHERE id = ?",
-            (skill_id,),
-        ).fetchone()
-        if not row:
-            return
-        rowid = row[0]
-        self._conn.execute("DELETE FROM skills_fts WHERE rowid = ?", (rowid,))
-        self._conn.execute(
-            "INSERT INTO skills_fts(rowid, name, description) VALUES (?, ?, ?)",
-            (rowid, _tokenize_for_fts(row[1] or ""), _tokenize_for_fts(row[2] or "")),
-        )
+        self._fts_index.sync_skill(skill_id)
 
     def rebuild_fts_indexes(self) -> None:
         """重建所有 FTS 索引（迁移或修复时使用）。"""
-        self._conn.execute("DELETE FROM chunks_fts")
-        for row in self._conn.execute(
-            "SELECT rowid, summary, content FROM chunks WHERE dedup_status IN ('active', 'orphaned')"
-        ):
-            self._conn.execute(
-                "INSERT INTO chunks_fts(rowid, summary, content) VALUES (?, ?, ?)",
-                (row[0], _tokenize_for_fts(row[1] or ""), _tokenize_for_fts(row[2] or "")),
-            )
-
-        self._conn.execute("DELETE FROM tasks_fts")
-        for row in self._conn.execute("SELECT rowid, title, summary FROM tasks"):
-            self._conn.execute(
-                "INSERT INTO tasks_fts(rowid, title, summary) VALUES (?, ?, ?)",
-                (row[0], _tokenize_for_fts(row[1] or ""), _tokenize_for_fts(row[2] or "")),
-            )
-
-        self._conn.execute("DELETE FROM skills_fts")
-        for row in self._conn.execute("SELECT rowid, name, description FROM skills"):
-            self._conn.execute(
-                "INSERT INTO skills_fts(rowid, name, description) VALUES (?, ?, ?)",
-                (row[0], _tokenize_for_fts(row[1] or ""), _tokenize_for_fts(row[2] or "")),
-            )
-
-        self._conn.commit()
+        self._fts_index.rebuild()
 
     def _ensure_chunk_columns(self) -> None:
-        cols = {
-            row["name"]
-            for row in self._conn.execute("PRAGMA table_info(chunks)").fetchall()
-        }
-        additions = {
-            "summary_source": "ALTER TABLE chunks ADD COLUMN summary_source TEXT NOT NULL DEFAULT 'llm'",
-            "embedding_status": "ALTER TABLE chunks ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'ok'",
-            "embedding_error": "ALTER TABLE chunks ADD COLUMN embedding_error TEXT",
-        }
-        for name, stmt in additions.items():
-            if name not in cols:
-                self._conn.execute(stmt)
-        self._conn.commit()
-        logger.info("FTS indexes rebuilt with pre-tokenized content")
+        self._schema.ensure_chunk_columns()
 
     def _ensure_task_columns(self) -> None:
-        cols = {
-            row["name"]
-            for row in self._conn.execute("PRAGMA table_info(tasks)").fetchall()
-        }
-        additions = {
-            "boundary_summary": "ALTER TABLE tasks ADD COLUMN boundary_summary TEXT NOT NULL DEFAULT ''",
-            "boundary_compacted_count": "ALTER TABLE tasks ADD COLUMN boundary_compacted_count INTEGER NOT NULL DEFAULT 0",
-        }
-        for name, stmt in additions.items():
-            if name not in cols:
-                self._conn.execute(stmt)
-        self._conn.commit()
+        self._schema.ensure_task_columns()
 
     # ------------------------------------------------------------------
     # Chunks — Write
