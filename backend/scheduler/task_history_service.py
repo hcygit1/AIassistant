@@ -85,6 +85,7 @@ class TaskHistoryService:
                 )
 
         self._task_store = task_store
+        self._runtime = runtime
         self._work_store = work_store
         self._dispatcher_manager = dispatcher_manager
 
@@ -276,4 +277,10 @@ class TaskHistoryService:
         }
 
 
-task_history_service = TaskHistoryService()
+def _create_default_task_history_service() -> TaskHistoryService:
+    from sessions.session_work_runtime import session_work_runtime
+
+    return TaskHistoryService(runtime=session_work_runtime)
+
+
+task_history_service = _create_default_task_history_service()

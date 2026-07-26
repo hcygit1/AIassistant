@@ -214,4 +214,10 @@ class UserTurnService:
         return {"aborted": bool(aborted)}
 
 
-user_turn_service = UserTurnService()
+def _create_default_user_turn_service() -> UserTurnService:
+    from sessions.session_work_runtime import session_work_runtime
+
+    return UserTurnService(runtime=session_work_runtime)
+
+
+user_turn_service = _create_default_user_turn_service()

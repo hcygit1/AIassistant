@@ -122,8 +122,9 @@ def _get_config() -> dict:
 
 def _create_cron_scheduler():
     from scheduler.cron_scheduler import CronScheduler
+    from sessions.session_work_runtime import session_work_runtime
 
-    return CronScheduler()
+    return CronScheduler(runtime=session_work_runtime)
 
 
 async def _resume_subagent_runs() -> None:

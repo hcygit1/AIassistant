@@ -123,6 +123,9 @@ class UserTurnServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_default_service_uses_shared_session_work_runtime(self) -> None:
         self.assertIs(user_turn_service.runtime, session_work_runtime)
 
+    async def test_production_service_explicitly_binds_shared_runtime(self) -> None:
+        self.assertIs(user_turn_service._runtime, session_work_runtime)
+
     async def test_submit_inherits_lock_from_dispatcher_manager(self) -> None:
         runtime = SimpleNamespace(
             turn_id="turn-inherited-lock",

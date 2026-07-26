@@ -13,6 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
 from scheduler.task_history_service import (
     TaskHistoryError,
     TaskHistoryService,
+    task_history_service,
 )
 from scheduler.task_store import (
     TaskKind,
@@ -24,7 +25,10 @@ from sessions.session_dispatcher import DispatcherManager
 from sessions.session_dispatcher import dispatcher_manager
 from sessions.session_work_store import SessionWorkStore
 from sessions.session_work_store import session_work_store
-from sessions.session_work_runtime import SessionWorkRuntime
+from sessions.session_work_runtime import (
+    SessionWorkRuntime,
+    session_work_runtime,
+)
 
 
 class _DispatcherManager:
@@ -194,6 +198,9 @@ class TaskHistoryServiceTests(unittest.TestCase):
 
         self.assertIs(service._work_store, session_work_store)
         self.assertIs(service._dispatcher_manager, dispatcher_manager)
+
+    def test_production_service_explicitly_binds_shared_runtime(self) -> None:
+        self.assertIs(task_history_service._runtime, session_work_runtime)
 
     def test_uses_explicit_session_work_runtime(self) -> None:
         dispatcher_manager = DispatcherManager(work_store=self.work_store)

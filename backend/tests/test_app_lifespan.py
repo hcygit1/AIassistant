@@ -16,6 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 import app as backend_app
 from runtime.agent import agent_manager
+from sessions.session_work_runtime import session_work_runtime
 from system_messages.heartbeat import heartbeat_runner
 
 
@@ -41,6 +42,18 @@ class AppCorsSettingsTests(unittest.TestCase):
 
 
 class AppLifespanTests(unittest.IsolatedAsyncioTestCase):
+    def test_cron_factory_explicitly_binds_shared_runtime(self) -> None:
+        scheduler = Mock()
+
+        with patch(
+            "scheduler.cron_scheduler.CronScheduler",
+            return_value=scheduler,
+        ) as factory:
+            result = backend_app._create_cron_scheduler()
+
+        self.assertIs(result, scheduler)
+        factory.assert_called_once_with(runtime=session_work_runtime)
+
     def test_configure_session_work_recovery_defers_cron_import(self) -> None:
         resolver = Mock()
         real_import = builtins.__import__
