@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app_lifecycle import ApplicationLifecycle
 from config import load_config, DATA_DIR, list_agents
 from tools.skills_scanner import scan_all_skills
 from tools.skills_watcher import skills_watcher
@@ -107,6 +108,30 @@ def _setup_logging_from_config() -> None:
             logger.info(f"File logging enabled: {log_file} (maxBytes={max_bytes}, backupCount={backup_count})")
 
 
+def _get_session_work_delivery():
+    from sessions.session_work_delivery import session_work_delivery
+
+    return session_work_delivery
+
+
+def _get_config() -> dict:
+    from config import get_config
+
+    return get_config()
+
+
+def _create_cron_scheduler():
+    from scheduler.cron_scheduler import CronScheduler
+
+    return CronScheduler()
+
+
+async def _resume_subagent_runs() -> None:
+    from subagents.subagent_resume import resume_subagent_runs
+
+    await resume_subagent_runs()
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """启动时初始化：配置、技能扫描、Agent 引擎、Heartbeat、技能热加载"""
@@ -117,79 +142,29 @@ async def lifespan(application: FastAPI):
         stop_subagent_archive,
     )
 
-    application.state.cron_scheduler = None
+    lifecycle = ApplicationLifecycle(
+        load_config=load_config,
+        setup_logging=_setup_logging_from_config,
+        scan_skills=scan_all_skills,
+        agent_manager=agent_manager,
+        skills_watcher=skills_watcher,
+        configure_work_recovery=configure_session_work_recovery,
+        work_delivery_provider=_get_session_work_delivery,
+        list_agents=list_agents,
+        heartbeat_runner=heartbeat_runner,
+        start_subagent_archive=start_subagent_archive,
+        stop_subagent_archive=stop_subagent_archive,
+        get_config=_get_config,
+        cron_scheduler_factory=_create_cron_scheduler,
+        resume_subagent_runs=_resume_subagent_runs,
+        data_dir=DATA_DIR,
+        log=logger,
+    )
     try:
-        load_config()
-        _setup_logging_from_config()
-
-        scan_all_skills()
-        await agent_manager.initialize(str(DATA_DIR))
-        skills_watcher.start()
-
-        from sessions.session_work_delivery import session_work_delivery
-        configure_session_work_recovery()
-        failed_work_count = session_work_delivery.fail_unrecoverable_pending()
-        if failed_work_count:
-            logger.info(
-                "Marked %s interrupted non-recoverable system work items as failed",
-                failed_work_count,
-            )
-
-        agent_ids = [a["id"] for a in list_agents()]
-        await heartbeat_runner.start(agent_ids)
-        logger.info(f"Heartbeat started for agents: {agent_ids}")
-
-        recovered_work_count = session_work_delivery.recover_pending_work()
-        if recovered_work_count:
-            logger.info("Recovered %s pending system work items", recovered_work_count)
-
-        start_subagent_archive()
-
-        from config import get_config
-        cfg = get_config()
-        cron_cfg = cfg.get("cron") or {}
-        if cron_cfg.get("enabled"):
-            from scheduler.cron_scheduler import CronScheduler
-            cron_scheduler = CronScheduler()
-            await cron_scheduler.start()
-            application.state.cron_scheduler = cron_scheduler
-            logger.info("Cron scheduler started")
-
-        from subagents.subagent_resume import resume_subagent_runs
-        try:
-            await resume_subagent_runs()
-        except Exception as e:
-            logger.warning(f"Subagent resume failed: {e}")
-
+        await lifecycle.start(application)
         yield
     finally:
-        try:
-            skills_watcher.stop()
-        except Exception:
-            logger.exception("Failed to stop skills watcher")
-
-        try:
-            stop_subagent_archive()
-        except Exception:
-            logger.exception("Failed to stop subagent archive")
-
-        try:
-            cron_scheduler = getattr(application.state, "cron_scheduler", None)
-            if cron_scheduler:
-                await cron_scheduler.stop()
-        except Exception:
-            logger.exception("Failed to stop cron scheduler")
-
-        try:
-            await heartbeat_runner.stop()
-            logger.info("Heartbeat stopped")
-        except Exception:
-            logger.exception("Failed to stop heartbeat")
-
-        try:
-            await agent_manager.close(timeout=30)
-        except Exception:
-            logger.exception("Failed to close agent manager")
+        await lifecycle.stop(application)
 
 
 app = FastAPI(title="PIPIXIA", version="0.2.0", lifespan=lifespan)
