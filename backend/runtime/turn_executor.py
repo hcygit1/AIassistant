@@ -18,6 +18,7 @@ from runtime.tool_call_parser import (
     strip_tool_call_patterns,
 )
 from runtime.tool_execution import invoke_tool_async
+from runtime.turn_completion import TurnCompletionService
 from runtime.turn_event_stream import (
     TerminalTurnError as _TerminalTurnError,
     TurnEventStreamProcessor,
@@ -324,61 +325,29 @@ class TurnExecutor:
                 fallback_state.recent_untrusted_content
             )
 
-            done_content = (
-                strip_tool_call_patterns(full_response)
-                if parse_text_tool_calls(full_response)
-                else full_response
-            )
-            turn_tokens = (
-                self._count_tokens(request.message)
-                + self._count_tokens(full_response)
-            )
-            for tool_call in tool_calls_log:
-                turn_tokens += self._count_tokens(
-                    str(tool_call.get("output", ""))
-                )
-            total_context = (
-                request.prompt_tokens
-                + request.history_tokens
-                + turn_tokens
-            )
-            context_utilization = (
-                round(
-                    total_context / request.active_tokens,
-                    3,
-                )
-                if request.active_tokens
-                else 0
-            )
-
-            if should_persist_input_message(
-                request.persist_input_role
-            ):
-                self._save_message(
-                    request.session_id,
-                    request.agent_id,
-                    request.persist_input_role,
-                    request.message,
-                )
-            content_to_save = (
-                strip_tool_call_patterns(full_response)
-                if parse_text_tool_calls(full_response)
-                else full_response
-            )
-            self._save_message(
-                request.session_id,
-                request.agent_id,
-                "assistant",
-                content_to_save,
-                tool_calls=(
-                    tool_calls_log
-                    if tool_calls_log
-                    else None
+            completion_service = TurnCompletionService(
+                save_message=self._save_message,
+                write_skills_snapshot=self._write_skills_snapshot,
+                count_tokens=self._count_tokens,
+                parse_text_tool_calls=parse_text_tool_calls,
+                strip_tool_call_patterns=strip_tool_call_patterns,
+                should_persist_input_message=(
+                    should_persist_input_message
                 ),
+                create_task=asyncio.create_task,
+                incremental_ingest=self._incremental_ingest,
+                get_pending_tasks=self._get_pending_tasks,
+                maybe_auto_compact=self._maybe_auto_compact,
+                log=logger,
             )
-            self._write_skills_snapshot(request.agent_id)
-            completed = run_tracker.complete_turn(
-                turn.run_id
+            completion = completion_service.finalize(
+                request=request,
+                turn=turn,
+                model_ref=str(ref),
+                full_response=full_response,
+                tool_calls_log=tool_calls_log,
+                run_tracker=run_tracker,
+                audit_logger=audit_logger,
             )
         except Exception as error:
             error_text = str(error)
@@ -398,84 +367,20 @@ class TurnExecutor:
             }
             return
 
-        if completed:
-            try:
-                request.state.record_turn(
-                    completed.input_tokens,
-                    completed.output_tokens,
-                )
-                audit_logger.log_turn_end(
-                    request.agent_id,
-                    turn.run_id,
-                    request.session_id,
-                    tokens={
-                        "input": completed.input_tokens,
-                        "output": completed.output_tokens,
-                    },
-                    tool_calls=len(tool_calls_log),
-                    duration_ms=completed.duration_ms,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to record completed turn %s",
-                    turn.run_id,
-                )
-
-        usage_info: dict[str, Any] = {}
-        if completed:
-            usage_info = {
-                "input_tokens": completed.input_tokens,
-                "output_tokens": completed.output_tokens,
-                "total_tokens": completed.total_tokens,
-                "duration_ms": completed.duration_ms,
-                "model": str(ref),
-            }
         yield Events.turn_end(
             run_id=turn.run_id,
-            usage=usage_info,
+            usage=completion.usage_info,
         )
         yield {
             "type": "done",
-            "content": done_content,
+            "content": completion.done_content,
             "session_id": request.session_id,
-            "usage": usage_info,
-            "context_utilization": context_utilization,
+            "usage": completion.usage_info,
+            "context_utilization": completion.context_utilization,
         }
 
-        try:
-            ingested_user_content = (
-                request.message
-                if request.persist_input_role == "user"
-                else ""
-            )
-            pending_tasks = self._get_pending_tasks()
-            task = asyncio.create_task(
-                self._incremental_ingest(
-                    request.agent_id,
-                    request.session_id,
-                    ingested_user_content,
-                    done_content,
-                )
-            )
-            pending_tasks.add(task)
-            task.add_done_callback(pending_tasks.discard)
-        except Exception:
-            logger.exception(
-                "Failed to schedule turn ingestion for %s",
-                turn.run_id,
-            )
-
-        try:
-            await self._maybe_auto_compact(
-                request.session_id,
-                request.agent_id,
-                overhead_tokens=(
-                    request.prompt_tokens
-                    + request.summary_tokens
-                ),
-            )
-        except Exception:
-            logger.exception(
-                "Failed to auto-compact after turn %s",
-                turn.run_id,
-            )
+        await completion_service.run_follow_up(
+            request=request,
+            turn=turn,
+            done_content=completion.done_content,
+        )
