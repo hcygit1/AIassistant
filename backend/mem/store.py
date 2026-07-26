@@ -42,6 +42,7 @@ from mem.models import (
 from mem.schema import MemorySchema
 from mem.search_queries import MemorySearchQueries
 from mem.session_summary_repository import SessionSummaryRepository
+from mem.skill_repository import SkillRepository, row_to_skill as _row_to_skill
 from mem.task_repository import TaskRepository, row_to_task as _row_to_task
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,11 @@ class MemStore:
         self._tasks = TaskRepository(
             self._conn,
             sync_fts=lambda task_id: self._sync_task_fts(task_id),
+            now_ms=lambda: _now_ms(),
+        )
+        self._skills = SkillRepository(
+            self._conn,
+            sync_fts=lambda skill_id: self._sync_skill_fts(skill_id),
             now_ms=lambda: _now_ms(),
         )
         self._dashboard_queries = MemoryDashboardQueries(self._conn)
@@ -404,52 +410,13 @@ class MemStore:
     # ------------------------------------------------------------------
 
     def insert_skill(self, skill: Skill) -> None:
-        now = _now_ms()
-        if not skill.created_at:
-            skill.created_at = now
-        if not skill.updated_at:
-            skill.updated_at = now
-        self._conn.execute(
-            """INSERT OR REPLACE INTO skills
-               (id, name, description, dir_path, version, status, installed,
-                owner, visibility, quality_score, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                skill.id,
-                skill.name,
-                skill.description,
-                skill.dir_path,
-                skill.version,
-                skill.status,
-                skill.installed,
-                skill.owner,
-                skill.visibility,
-                skill.quality_score,
-                skill.created_at,
-                skill.updated_at,
-            ),
-        )
-        self._sync_skill_fts(skill.id)
-        self._conn.commit()
+        self._skills.insert(skill)
 
     def get_skill(self, skill_id: str) -> Skill | None:
-        row = self._conn.execute(
-            "SELECT * FROM skills WHERE id = ?", (skill_id,)
-        ).fetchone()
-        return _row_to_skill(row) if row else None
+        return self._skills.get(skill_id)
 
     def update_skill(self, skill_id: str, **fields: Any) -> None:
-        if not fields:
-            return
-        fields["updated_at"] = _now_ms()
-        set_clause = ", ".join(f"{k}=?" for k in fields)
-        vals = list(fields.values()) + [skill_id]
-        self._conn.execute(
-            f"UPDATE skills SET {set_clause} WHERE id=?", vals
-        )
-        if "name" in fields or "description" in fields:
-            self._sync_skill_fts(skill_id)
-        self._conn.commit()
+        self._skills.update(skill_id, **fields)
 
     def fts_search_skills(
         self, query: str, limit: int = 10,
@@ -603,20 +570,3 @@ def _sanitize_fts(query: str) -> str:
     if not safe:
         return ""
     return " OR ".join(safe)
-
-
-def _row_to_skill(row: sqlite3.Row) -> Skill:
-    return Skill(
-        id=row["id"],
-        name=row["name"],
-        description=row["description"] or "",
-        dir_path=row["dir_path"] or "",
-        version=row["version"] or 1,
-        status=row["status"] or "active",
-        installed=row["installed"] or 0,
-        owner=row["owner"] or "agent:main",
-        visibility=row["visibility"] or "private",
-        quality_score=row["quality_score"],
-        created_at=row["created_at"] or 0,
-        updated_at=row["updated_at"] or 0,
-    )

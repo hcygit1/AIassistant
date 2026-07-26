@@ -66,6 +66,10 @@ class MemoryFtsIndex:
             return
         rowid = row[0]
         self._connection.execute(
+            """DELETE FROM skills_fts
+            WHERE rowid NOT IN (SELECT rowid FROM skills)"""
+        )
+        self._connection.execute(
             "DELETE FROM skills_fts WHERE rowid = ?",
             (rowid,),
         )
