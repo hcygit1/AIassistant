@@ -91,8 +91,9 @@ class _FakeStoreForWorker:
         self.inserted: dict[str, Chunk] = {}
 
     def find_active_chunk_by_hash(self, content: str, owner: str) -> str | None:
-        from mem.store import _content_hash
-        return self.active_hashes.get((owner, _content_hash(content)))
+        from mem.persistence_values import content_hash
+
+        return self.active_hashes.get((owner, content_hash(content)))
 
     def ann_dedup_candidates(self, embedding, threshold: float, top_k: int = 5, owner: str | None = None):
         return []

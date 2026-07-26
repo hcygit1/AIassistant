@@ -24,7 +24,8 @@ import httpx
 
 from mem.embedder import MemEmbedder
 from mem.models import Chunk, SearchHit
-from mem.store import MemStore, _content_hash, _now_ms
+from mem.persistence_values import content_hash, now_ms
+from mem.store import MemStore
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +310,7 @@ class MemWorker:
                         logger.debug("Dedup DUPLICATE → %s", dedup_target)
 
         # ⑤ INSERT
-        ts = prepared.msg.timestamp or _now_ms()
+        ts = prepared.msg.timestamp or now_ms()
         chunk = Chunk(
             id=prepared.chunk_id,
             session_key=prepared.msg.session_key,
@@ -320,7 +321,7 @@ class MemWorker:
             kind=prepared.kind,
             summary=prepared.summary,
             owner=prepared.msg.owner,
-            content_hash=_content_hash(prepared.content),
+            content_hash=content_hash(prepared.content),
             dedup_status=dedup_status,
             dedup_target=dedup_target,
             dedup_reason=dedup_reason,

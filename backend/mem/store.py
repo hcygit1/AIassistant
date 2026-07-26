@@ -8,7 +8,6 @@ Schema 与 docs/memory-system-refactor.md §3.1 一致:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re
@@ -39,6 +38,8 @@ from mem.models import (
     TaskSearchHit,
     TaskStatus,
 )
+from mem.persistence_values import content_hash as _content_hash
+from mem.persistence_values import now_ms as _now_ms
 from mem.schema import MemorySchema
 from mem.search_queries import MemorySearchQueries
 from mem.session_summary_repository import SessionSummaryRepository
@@ -70,16 +71,8 @@ def _tokenize_for_fts(text: str) -> str:
     return " ".join(t for t in tokens if len(t) > 1)
 
 
-def _content_hash(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
 def _new_id() -> str:
     return uuid.uuid4().hex[:16]
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 # ---------------------------------------------------------------------------
