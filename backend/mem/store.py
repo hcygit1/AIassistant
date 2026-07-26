@@ -44,6 +44,7 @@ from mem.search_queries import MemorySearchQueries
 from mem.session_summary_repository import SessionSummaryRepository
 from mem.skill_repository import SkillRepository, row_to_skill as _row_to_skill
 from mem.task_repository import TaskRepository, row_to_task as _row_to_task
+from mem.vector_index import MemoryVectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,10 @@ class MemStore:
         self._fts_index = MemoryFtsIndex(
             self._conn,
             lambda text: _tokenize_for_fts(text),
+        )
+        self._vector_index = MemoryVectorIndex(
+            self._conn,
+            serialize_vector=lambda vector: serialize_float32(vector),
         )
         self._chunks = ChunkRepository(
             self._conn,
@@ -261,34 +266,16 @@ class MemStore:
     # ------------------------------------------------------------------
 
     def upsert_chunk_embedding(self, chunk_id: str, vec: list[float]) -> None:
-        blob = serialize_float32(vec)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
-            (chunk_id, blob),
-        )
-        self._conn.commit()
+        self._vector_index.upsert_chunk(chunk_id, vec)
 
     def delete_chunk_embedding(self, chunk_id: str) -> None:
-        self._conn.execute(
-            "DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk_id,)
-        )
-        self._conn.commit()
+        self._vector_index.delete_chunk(chunk_id)
 
     def upsert_task_embedding(self, task_id: str, vec: list[float]) -> None:
-        blob = serialize_float32(vec)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO vec_tasks(task_id, embedding) VALUES (?, ?)",
-            (task_id, blob),
-        )
-        self._conn.commit()
+        self._vector_index.upsert_task(task_id, vec)
 
     def upsert_skill_embedding(self, skill_id: str, vec: list[float]) -> None:
-        blob = serialize_float32(vec)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO vec_skills(skill_id, embedding) VALUES (?, ?)",
-            (skill_id, blob),
-        )
-        self._conn.commit()
+        self._vector_index.upsert_skill(skill_id, vec)
 
     # ------------------------------------------------------------------
     # ANN Search (sqlite-vec)
