@@ -20,7 +20,7 @@ import httpx
 
 from mem.embedder import MemEmbedder
 from mem.models import Chunk, Task
-from mem.store import MemStore
+from mem.task_processor_store import MemTaskProcessorStore
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ class MemTaskProcessor:
 
     def __init__(
         self,
-        store: MemStore,
+        store: MemTaskProcessorStore,
         embedder: MemEmbedder,
         *,
         llm_base_url: str = "",
@@ -521,7 +521,7 @@ class MemTaskProcessor:
         cls,
         config: dict[str, Any],
         *,
-        store: MemStore,
+        store: MemTaskProcessorStore,
         embedder: MemEmbedder,
         on_task_completed: OnTaskCompleted | None = None,
     ) -> MemTaskProcessor:
