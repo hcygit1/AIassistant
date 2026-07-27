@@ -33,6 +33,11 @@ from mem.skill_evidence import (
     extract_original_goal,
 )
 from mem.skill_evolver_store import MemSkillEvolverStore
+from mem.skill_generation import (
+    SKILL_GENERATE_PROMPT,
+    build_skill_generation_prompt,
+    generate_skill_content,
+)
 from mem.skill_quality import score_skill_quality
 from mem.skill_relation import find_related_skill, judge_related_skill
 
@@ -41,59 +46,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
-
-SKILL_GENERATE_PROMPT = """\
-You are a Skill creation expert. Distill the following completed task into a reusable SKILL.md.
-
-Core principles:
-- The skill must capture ONE coherent workflow only
-- Description is the trigger mechanism: it must say what the skill does and when to use it
-- Body < 400 lines, focused
-- Use imperative form, explain WHY not just HOW
-- Generalize from the specific task; keep verified commands/code
-- Include only procedures that were actually validated in the task record
-- Do not add unverified alternatives, speculative advice, or broad background explanation
-- LANGUAGE RULE: Write in the SAME language as the user's messages in the task record.
-  "name" field uses English kebab-case; everything else matches user's language.
-
-Output format:
----
-name: "{NAME}"
-description: "..."
-metadata: {{ "openclaw": {{ "emoji": "..." }} }}
----
-
-# Title
-
-## What this skill does
-(1-2 short paragraphs describing the workflow outcome)
-
-## When to use this skill
-(2-4 bullet points)
-
-## Prerequisites
-(required environment, access, dependencies, assumptions; write "None" if not needed)
-
-## Steps
-(Numbered steps with reasoning)
-
-## Verification
-(how to confirm the workflow succeeded)
-
-## Pitfalls and solutions
-(What went wrong + fix)
-
-Task title: {TITLE}
-Task summary:
-{SUMMARY}
-
-Original goal:
-{ORIGINAL_GOAL}
-
-Key evidence:
-{EVIDENCE}
-
-Output ONLY the complete SKILL.md content."""
 
 SKILL_UPGRADE_PROMPT = """\
 You are upgrading an existing skill based on new task experience.
@@ -310,18 +262,19 @@ class MemSkillEvolver:
     ) -> Skill | None:
         original_goal = self._extract_original_goal(chunks)
         evidence = self._build_skill_evidence(chunks)
-
-        prompt = (
-            SKILL_GENERATE_PROMPT
-            .replace("{NAME}", eval_result.suggested_name)
-            .replace("{TITLE}", task.title or "")
-            .replace("{SUMMARY}", (task.summary or "")[:2000])
-            .replace("{ORIGINAL_GOAL}", original_goal[:1200])
-            .replace("{EVIDENCE}", evidence[:8000])
+        prompt = build_skill_generation_prompt(
+            task,
+            eval_result,
+            original_goal=original_goal,
+            evidence=evidence,
+            prompt_template=SKILL_GENERATE_PROMPT,
         )
 
         try:
-            skill_content = await self._llm_call(prompt, max_tokens=4096, temperature=0.2)
+            skill_content = await generate_skill_content(
+                prompt,
+                llm_call=self._llm_call,
+            )
         except Exception as e:
             logger.error("Skill generation LLM call failed: %s", e)
             return None
