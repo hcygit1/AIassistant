@@ -20,7 +20,7 @@ import httpx
 
 from mem.embedder import MemEmbedder
 from mem.models import Chunk, Skill, Task
-from mem.store import MemStore
+from mem.skill_evolver_store import MemSkillEvolverStore
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +229,7 @@ class MemSkillEvolver:
 
     def __init__(
         self,
-        store: MemStore,
+        store: MemSkillEvolverStore,
         embedder: MemEmbedder,
         *,
         llm_base_url: str = "",
@@ -744,7 +744,7 @@ class MemSkillEvolver:
         cls,
         config: dict[str, Any],
         *,
-        store: MemStore,
+        store: MemSkillEvolverStore,
         embedder: MemEmbedder,
         skill_store_dir: str = "",
     ) -> MemSkillEvolver:
