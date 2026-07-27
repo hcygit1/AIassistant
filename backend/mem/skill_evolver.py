@@ -20,22 +20,14 @@ import httpx
 
 from mem.embedder import MemEmbedder
 from mem.models import Chunk, Skill, Task
+from mem.skill_evidence import (
+    build_skill_evidence,
+    chunk_signal_score,
+    extract_original_goal,
+)
 from mem.skill_evolver_store import MemSkillEvolverStore
 
 logger = logging.getLogger(__name__)
-
-COMMAND_RE = re.compile(r"\b(?:git|python|pip|npm|pnpm|yarn|node|uv|poetry|docker|docker-compose|kubectl|curl|wget|make)\b", re.IGNORECASE)
-PATH_RE = re.compile(r"(?:/[\w./-]+|\b[\w.-]+\.(?:py|json|ya?ml|toml|env|ini|md|sh|ts|tsx|js|jsx)\b)")
-STRUCTURED_SIGNAL_RE = re.compile(r"\b(?:v?\d+\.\d+(?:\.\d+)?|[A-Z]+-\d+|\d{2,5}|0x[a-fA-F0-9]+)\b")
-RESULT_SIGNAL_RE = re.compile(
-    r"(最终|修复|解决|成功|失败|验证|报错|错误|改为|需要|应该|fixed|resolved|success|failed|verify|error|updated|changed|final)",
-    re.IGNORECASE,
-)
-FILLER_RE = re.compile(
-    r"^(?:好的|收到|明白了|谢谢|你好|测试|ok|okay|thanks|thank you|got it|understood|sure)\s*[.!?。！？]*$",
-    re.IGNORECASE,
-)
-
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -532,93 +524,17 @@ class MemSkillEvolver:
 
     @staticmethod
     def _extract_original_goal(chunks: list[Chunk]) -> str:
-        first_user = next((c for c in chunks if c.role == "user" and c.content.strip()), None)
-        if not first_user:
-            return "(no explicit user goal found)"
-        return first_user.content.strip()
+        return extract_original_goal(chunks)
 
     @staticmethod
     def _chunk_signal_score(chunk: Chunk, index: int, total: int) -> int:
-        text = (chunk.content or "").strip()
-        if not text or FILLER_RE.match(text):
-            return -100
-
-        score = 0
-        if COMMAND_RE.search(text):
-            score += 3
-        if PATH_RE.search(text):
-            score += 2
-        if STRUCTURED_SIGNAL_RE.search(text):
-            score += 2
-        if RESULT_SIGNAL_RE.search(text) or RESULT_SIGNAL_RE.search(chunk.summary or ""):
-            score += 3
-        if chunk.summary:
-            score += 1
-        if total > 0 and index >= max(0, total - 6):
-            score += 1
-        if 20 <= len(text) <= 600:
-            score += 1
-        return score
+        return chunk_signal_score(chunk, index, total)
 
     def _build_skill_evidence(self, chunks: list[Chunk]) -> str:
-        conv = [c for c in chunks if c.role in ("user", "assistant")]
-        if not conv:
-            return "(no supporting evidence)"
-
-        def _fmt(chunk: Chunk) -> str:
-            label = "User" if chunk.role == "user" else "Assistant"
-            text = (chunk.summary or chunk.content).strip()
-            if len(text) > 700:
-                text = text[:697] + "..."
-            return f"[{label}] {text}"
-
-        first_user = next((c for c in conv if c.role == "user" and c.content.strip()), None)
-
-        selected: list[Chunk] = []
-        seen_texts: set[str] = set()
-
-        def _add(chunk: Chunk | None) -> None:
-            if not chunk:
-                return
-            key = ((chunk.summary or chunk.content).strip() or chunk.id).lower()
-            if key in seen_texts:
-                return
-            seen_texts.add(key)
-            selected.append(chunk)
-
-        _add(first_user)
-
-        error_candidate = next(
-            (c for c in conv if RESULT_SIGNAL_RE.search(c.content or "") and ("报错" in c.content or "错误" in c.content or "error" in c.content.lower())),
-            None,
+        return build_skill_evidence(
+            chunks,
+            signal_score=self._chunk_signal_score,
         )
-        _add(error_candidate)
-
-        scored = sorted(
-            (
-                (self._chunk_signal_score(chunk, idx, len(conv)), idx, chunk)
-                for idx, chunk in enumerate(conv)
-            ),
-            key=lambda item: (item[0], item[1]),
-            reverse=True,
-        )
-        for score, _idx, chunk in scored:
-            if score <= 0:
-                continue
-            _add(chunk)
-            if len(selected) >= 8:
-                break
-
-        result_candidate = next(
-            (
-                c for c in reversed(conv)
-                if RESULT_SIGNAL_RE.search(c.content or "") or RESULT_SIGNAL_RE.search(c.summary or "")
-            ),
-            None,
-        )
-        _add(result_candidate)
-
-        return "\n".join(f"{i+1}. {_fmt(chunk)}" for i, chunk in enumerate(selected[:8]))
 
     async def _score_quality(self, content: str, task: Task) -> float:
         prompt = (
