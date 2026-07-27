@@ -20,8 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from mem.store import MemStore
 from mem.embedder import MemEmbedder
+from mem.recall_store import MemRecallStore
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ class MemRecall:
 
     def __init__(
         self,
-        store: MemStore,
+        store: MemRecallStore,
         embedder: MemEmbedder,
         config: dict[str, Any] | None = None,
         agent_id: str | None = None,
@@ -462,7 +462,7 @@ class MemRecall:
         cls,
         config: dict[str, Any],
         *,
-        store: MemStore,
+        store: MemRecallStore,
         embedder: MemEmbedder,
         agent_id: str | None = None,
     ) -> MemRecall:
