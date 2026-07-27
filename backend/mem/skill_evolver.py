@@ -26,6 +26,7 @@ from mem.skill_evidence import (
     extract_original_goal,
 )
 from mem.skill_evolver_store import MemSkillEvolverStore
+from mem.skill_relation import find_related_skill, judge_related_skill
 
 logger = logging.getLogger(__name__)
 
@@ -192,26 +193,6 @@ LANGUAGE RULE: Match the language of the existing skill content.
 
 Output ONLY the complete updated SKILL.md."""
 
-RELATED_SKILL_JUDGE_PROMPT = """\
-Decide whether a completed TASK should be merged into an EXISTING SKILL. \
-The task and skill must represent the SAME workflow, not merely the same broad domain/topic.
-
-TASK TITLE: {TASK_TITLE}
-TASK SUMMARY:
-{TASK_SUMMARY}
-
-CANDIDATE SKILLS:
-{SKILL_LIST}
-
-Rules:
-- Output ONE skill index (1 to {N}) ONLY if it is clearly the same workflow/task type
-- Broad domain overlap is NOT enough
-- If the task would make the skill broader or more mixed, output 0
-- Output 0 if none is highly relevant. When in doubt, output 0
-
-Reply JSON only: {{"selectedIndex": 0, "reason": "..."}}"""
-
-
 # ---------------------------------------------------------------------------
 # MemSkillEvolver
 # ---------------------------------------------------------------------------
@@ -318,61 +299,21 @@ class MemSkillEvolver:
     # ------------------------------------------------------------------
 
     async def _find_related_skill(self, task: Task) -> Skill | None:
-        query = (task.summary or "")[:600]
-        if not query.strip():
-            return None
-
-        try:
-            fts_hits = self.store.fts_search_skills(query, limit=10, owner=task.owner)
-        except Exception:
-            fts_hits = []
-
-        vec_hits: list[tuple[str, float]] = []
-        try:
-            q_vec = await self.embedder.embed_query(query)
-            ann = self.store.ann_search_skills(q_vec, top_k=10, owner=task.owner)
-            vec_hits = [(h.skill_id, h.score) for h in ann]
-        except Exception:
-            pass
-
-        candidate_ids: set[str] = set()
-        for h in fts_hits:
-            candidate_ids.add(h.skill_id)
-        for sid, _ in vec_hits:
-            candidate_ids.add(sid)
-
-        if not candidate_ids:
-            return None
-
-        candidates: list[Skill] = []
-        for sid in candidate_ids:
-            skill = self.store.get_skill(sid)
-            if skill and skill.status == "active" and skill.owner == (task.owner or "agent:main"):
-                candidates.append(skill)
-
-        if not candidates:
-            return None
-
-        return await self._judge_related(task, candidates)
+        return await find_related_skill(
+            task,
+            store=self.store,
+            embedder=self.embedder,
+            judge_related=self._judge_related,
+        )
 
     async def _judge_related(self, task: Task, candidates: list[Skill]) -> Skill | None:
-        skill_list = "\n\n".join(
-            f"{i+1}. [{s.name}]\n   {(s.description or '')[:300]}"
-            for i, s in enumerate(candidates)
-        )
-        prompt = (
-            RELATED_SKILL_JUDGE_PROMPT
-            .replace("{TASK_TITLE}", task.title or "(no title)")
-            .replace("{TASK_SUMMARY}", (task.summary or "")[:800])
-            .replace("{SKILL_LIST}", skill_list)
-            .replace("{N}", str(len(candidates)))
-        )
         try:
-            raw = await self._llm_call(prompt, max_tokens=256, temperature=0)
-            parsed = _parse_json(raw, {"selectedIndex": 0, "reason": ""})
-            idx = parsed.get("selectedIndex", 0)
-            if isinstance(idx, (int, float)) and 1 <= int(idx) <= len(candidates):
-                return candidates[int(idx) - 1]
+            return await judge_related_skill(
+                task,
+                candidates,
+                llm_call=self._llm_call,
+                parse_json=_parse_json,
+            )
         except Exception as e:
             logger.warning("Skill relation judge failed: %s", e)
         return None
