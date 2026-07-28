@@ -43,6 +43,7 @@ from mem.skill_generation import (
     build_skill_generation_prompt,
     generate_skill_content,
 )
+from mem.skill_persistence import persist_new_skill
 from mem.skill_quality import score_skill_quality
 from mem.skill_relation import find_related_skill, judge_related_skill
 
@@ -310,13 +311,13 @@ class MemSkillEvolver:
             quality_score=quality_score,
             skill_factory=Skill,
         )
-        self.store.insert_skill(skill)
-
-        try:
-            vec = await self.embedder.embed_query(f"{name} {description}")
-            self.store.upsert_skill_embedding(skill_id, vec)
-        except Exception as e:
-            logger.warning("Skill embedding failed: %s", e)
+        persistence_error = await persist_new_skill(
+            skill,
+            store=self.store,
+            embedder=self.embedder,
+        )
+        if persistence_error is not None:
+            logger.warning("Skill embedding failed: %s", persistence_error)
 
         return skill
 
