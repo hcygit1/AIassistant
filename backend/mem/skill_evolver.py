@@ -146,6 +146,8 @@ class MemSkillEvolver:
     def _rule_filter(self, chunks: list[Chunk], task: Task) -> str | None:
         if task.status == "skipped":
             return "task状态为skipped"
+        if len(chunks) < self.min_chunks_for_eval:
+            return f"chunk数量不足 ({len(chunks)} < {self.min_chunks_for_eval})"
         if len(task.summary or "") < 100:
             return f"summary过短 ({len(task.summary or '')} < 100)"
         if not any(c.role == "user" for c in chunks):
