@@ -19,6 +19,11 @@ import httpx
 
 from mem.embedder import MemEmbedder
 from mem.models import Chunk, Skill, Task
+from mem.skill_artifact import (
+    build_new_skill,
+    extract_skill_description as _extract_description,
+    write_skill_file,
+)
 from mem.skill_evaluation import (
     CREATE_EVAL_PROMPT,
     UPGRADE_EVAL_PROMPT,
@@ -287,25 +292,23 @@ class MemSkillEvolver:
         name = eval_result.suggested_name or f"skill-{skill_id[:8]}"
         description = _extract_description(skill_content) or (task.summary or "")[:200]
 
-        skill_dir = ""
-        if self.skill_store_dir:
-            skill_dir = str(Path(self.skill_store_dir) / name)
-            Path(skill_dir).mkdir(parents=True, exist_ok=True)
-            (Path(skill_dir) / "SKILL.md").write_text(skill_content, encoding="utf-8")
+        skill_dir = write_skill_file(
+            self.skill_store_dir,
+            name,
+            skill_content,
+            path_provider=lambda value: Path(value),
+        )
 
         quality_score = await self._score_quality(skill_content, task)
 
-        skill = Skill(
-            id=skill_id,
+        skill = build_new_skill(
+            skill_id=skill_id,
             name=name,
             description=description,
-            dir_path=skill_dir,
-            version=1,
-            status="active" if quality_score >= 6.0 else "draft",
-            installed=0,
-            owner=task.owner or "agent:main",
-            visibility="private",
+            skill_dir=skill_dir,
+            task=task,
             quality_score=quality_score,
+            skill_factory=Skill,
         )
         self.store.insert_skill(skill)
 
@@ -458,13 +461,3 @@ def _parse_json(raw: str, fallback: dict[str, Any]) -> dict[str, Any]:
         return json.loads(m.group(0))
     except (json.JSONDecodeError, ValueError):
         return fallback
-
-
-def _extract_description(skill_content: str) -> str:
-    m = re.search(r'description:\s*"([^"]+)"', skill_content)
-    if m:
-        return m.group(1).strip()
-    m = re.search(r"description:\s*(.+)", skill_content)
-    if m:
-        return m.group(1).strip().strip('"').strip("'")
-    return ""
