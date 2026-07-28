@@ -46,32 +46,12 @@ from mem.skill_generation import (
 from mem.skill_persistence import persist_new_skill
 from mem.skill_quality import score_skill_quality
 from mem.skill_relation import find_related_skill, judge_related_skill
+from mem.skill_upgrade import (
+    SKILL_UPGRADE_PROMPT,
+    execute_skill_upgrade,
+)
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-SKILL_UPGRADE_PROMPT = """\
-You are upgrading an existing skill based on new task experience.
-
-Current skill:
-Name: {SKILL_NAME}
-Content:
-{SKILL_CONTENT}
-
-New task:
-Title: {TITLE}
-Summary: {SUMMARY}
-Upgrade type: {UPGRADE_TYPE}
-Merge strategy: {MERGE_STRATEGY}
-
-Output the COMPLETE updated SKILL.md. Increment the version. \
-Preserve existing quality while incorporating new insights. \
-LANGUAGE RULE: Match the language of the existing skill content.
-
-Output ONLY the complete updated SKILL.md."""
 
 # ---------------------------------------------------------------------------
 # MemSkillEvolver
@@ -350,50 +330,22 @@ class MemSkillEvolver:
     async def _upgrade_skill(
         self, task: Task, skill: Skill, eval_result: UpgradeEvalResult,
     ) -> None:
-        existing_content = ""
-        if skill.dir_path:
-            skill_file = Path(skill.dir_path) / "SKILL.md"
-            if skill_file.exists():
-                existing_content = skill_file.read_text(encoding="utf-8")
-
-        if not existing_content:
-            existing_content = skill.description or ""
-
-        prompt = (
-            SKILL_UPGRADE_PROMPT
-            .replace("{SKILL_NAME}", skill.name)
-            .replace("{SKILL_CONTENT}", existing_content[:4000])
-            .replace("{TITLE}", task.title or "")
-            .replace("{SUMMARY}", (task.summary or "")[:2000])
-            .replace("{UPGRADE_TYPE}", eval_result.upgrade_type)
-            .replace("{MERGE_STRATEGY}", eval_result.merge_strategy)
+        outcome = await execute_skill_upgrade(
+            task,
+            skill,
+            eval_result,
+            store=self.store,
+            embedder=self.embedder,
+            llm_call=self._llm_call,
+            extract_description=_extract_description,
+            path_provider=lambda value: Path(value),
+            prompt_template=SKILL_UPGRADE_PROMPT,
         )
-
-        try:
-            new_content = await self._llm_call(prompt, max_tokens=4096, temperature=0.2)
-        except Exception as e:
-            logger.error("Skill upgrade LLM call failed: %s", e)
+        if outcome.llm_error is not None:
+            logger.error("Skill upgrade LLM call failed: %s", outcome.llm_error)
             return
-
-        if not new_content or len(new_content.strip()) < 50:
-            return
-
-        new_version = skill.version + 1
-        new_desc = _extract_description(new_content) or skill.description
-
-        if skill.dir_path:
-            Path(skill.dir_path).mkdir(parents=True, exist_ok=True)
-            (Path(skill.dir_path) / "SKILL.md").write_text(new_content, encoding="utf-8")
-
-        self.store.update_skill(skill.id, description=new_desc, version=new_version)
-
-        try:
-            vec = await self.embedder.embed_query(f"{skill.name} {new_desc}")
-            self.store.upsert_skill_embedding(skill.id, vec)
-        except Exception:
-            pass
-
-        logger.info("Skill '%s' upgraded to v%d", skill.name, new_version)
+        if outcome.upgraded:
+            logger.info("Skill '%s' upgraded to v%d", skill.name, outcome.version)
 
     # ------------------------------------------------------------------
     # LLM helper
