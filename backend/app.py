@@ -166,6 +166,8 @@ async def lifespan(application: FastAPI):
         yield
     finally:
         await lifecycle.stop(application)
+        from tools.rag_mcp_client import close_rag_mcp_client
+        await close_rag_mcp_client()
 
 
 app = FastAPI(title="PIPIXIA", version="0.2.0", lifespan=lifespan)

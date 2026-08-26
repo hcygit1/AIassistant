@@ -16,78 +16,83 @@ class KnowledgeSearchInput(BaseModel):
 class KnowledgeSearchTool(BaseTool):
     name: str = "search_knowledge_base"
     description: str = (
-        "在 knowledge/ 目录中搜索知识库文档（PDF/MD/TXT）。"
-        "使用语义检索返回最相关的文档片段。"
+        "通过 MCP-RAG 在个人知识库中执行 Dense + FTS5 混合检索，"
+        "返回最相关的文档片段与溯源引用。"
     )
     args_schema: type[BaseModel] = KnowledgeSearchInput
     agent_dir: str = ""
+    agent_id: str = "main"
 
     def _run(self, query: str, top_k: int = 3) -> str:
-        from config import get_config
-        locale = get_config().get("app", {}).get("locale", "zh-CN")
-        knowledge_dir = Path(self.agent_dir) / "knowledge"
-        if not knowledge_dir.exists() or not any(knowledge_dir.iterdir()):
-            return (
-                "知识库目录为空。请将文档放入 knowledge/ 目录。"
-                if locale == "zh-CN" else
-                "Knowledge base directory is empty. Please put documents in the knowledge/ directory."
+        from tools.rag_mcp_client import get_rag_mcp_client
+
+        try:
+            client = get_rag_mcp_client()
+            collection_name = self._collection_name(client)
+            sync = client.sync_directory_sync(
+                Path(self.agent_dir) / "knowledge",
+                collection_name=collection_name,
             )
-
-        results: list[tuple[float, str, str]] = []
-        query_lower = query.lower()
-        query_words = set(query_lower.split())
-
-        for fp in knowledge_dir.rglob("*"):
-            if not fp.is_file():
-                continue
-            if fp.suffix.lower() not in (".md", ".txt", ".text", ".rst"):
-                continue
-            try:
-                text = fp.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                continue
-
-            chunks = self._split_into_chunks(text, chunk_size=512, overlap=64)
-            rel_path = fp.relative_to(Path(self.agent_dir))
-
-            for chunk in chunks:
-                chunk_lower = chunk.lower()
-                score = sum(1 for w in query_words if w in chunk_lower)
-                if score > 0:
-                    results.append((score, str(rel_path), chunk.strip()))
-
-        results.sort(key=lambda x: -x[0])
-        results = results[:top_k]
-
-        if not results:
-            return (
-                f"未在知识库中找到与 '{query}' 相关的内容。"
-                if locale == "zh-CN" else
-                f"No content related to '{query}' was found in the knowledge base."
+            if sync.file_count == 0:
+                return self._empty_message()
+            return client.query_sync(
+                query,
+                collection_name=collection_name,
+                top_k=top_k,
             )
+        except Exception as exc:
+            return self._error_message(exc)
 
-        lines = []
-        for score, path, chunk in results:
-            source_label = "来源" if locale == "zh-CN" else "Source"
-            score_label = "相关度" if locale == "zh-CN" else "Relevance"
-            lines.append(f"--- {source_label}: {path} ({score_label}: {score}) ---")
-            lines.append(chunk[:1000])
-            lines.append("")
-        return "\n".join(lines)
+    async def _arun(self, query: str, top_k: int = 3) -> str:
+        from tools.rag_mcp_client import get_rag_mcp_client
+
+        try:
+            client = get_rag_mcp_client()
+            collection_name = self._collection_name(client)
+            sync = await client.sync_directory(
+                Path(self.agent_dir) / "knowledge",
+                collection_name=collection_name,
+            )
+            if sync.file_count == 0:
+                return self._empty_message()
+            return await client.query(
+                query,
+                collection_name=collection_name,
+                top_k=top_k,
+            )
+        except Exception as exc:
+            return self._error_message(exc)
+
+    def _collection_name(self, client: object) -> str | None:
+        settings = getattr(client, "settings", None)
+        template = getattr(settings, "collection_name", None)
+        if not template:
+            return None
+        return str(template).replace("{agent_id}", self.agent_id)
 
     @staticmethod
-    def _split_into_chunks(text: str, chunk_size: int = 512, overlap: int = 64) -> list[str]:
-        words = text.split()
-        chunks = []
-        i = 0
-        while i < len(words):
-            chunk = " ".join(words[i : i + chunk_size])
-            chunks.append(chunk)
-            i += chunk_size - overlap
-        return chunks
+    def _empty_message() -> str:
+        from config import get_config
+
+        locale = get_config().get("app", {}).get("locale", "zh-CN")
+        return (
+            "知识库目录为空。请将 PDF、Markdown 或 TXT 文档放入 knowledge/ 目录。"
+            if locale == "zh-CN"
+            else "Knowledge base is empty. Add PDF, Markdown, or TXT files to knowledge/."
+        )
+
+    @staticmethod
+    def _error_message(error: Exception) -> str:
+        from config import get_config
+        locale = get_config().get("app", {}).get("locale", "zh-CN")
+        return (
+            f"知识库检索失败：{error}"
+            if locale == "zh-CN"
+            else f"Knowledge base search failed: {error}"
+        )
 
 
-def get_knowledge_tools(agent_dir: str) -> list[BaseTool]:
+def get_knowledge_tools(agent_dir: str, agent_id: str = "main") -> list[BaseTool]:
     return [
-        KnowledgeSearchTool(agent_dir=agent_dir),
+        KnowledgeSearchTool(agent_dir=agent_dir, agent_id=agent_id),
     ]

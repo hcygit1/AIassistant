@@ -35,7 +35,7 @@ def get_all_tools(
             runtime_dependencies=runtime_dependencies,
         )
     )
-    tools.extend(get_knowledge_tools(agent_dir))
+    tools.extend(get_knowledge_tools(agent_dir, agent_id=agent_id))
     tools.extend(
         get_agent_tools(
             agent_id,
