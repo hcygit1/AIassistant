@@ -1,0 +1,15 @@
+{
+  "dataset": "LoCoMo",
+  "source_url": "https://github.com/snap-research/LoCoMo/blob/cbfbc1dba6bc53d00625212a0f22d55ffee7c1fc/data/locomo10.json",
+  "raw_file": "locomo10.json",
+  "source_commit": "cbfbc1dba6bc53d00625212a0f22d55ffee7c1fc",
+  "sha256": "79FA87E90F04081343B8C8DEBECB80A9A6842B76A7AA537DC9FDF651EA698FF4",
+  "license": "CC BY-NC 4.0",
+  "pilot": {
+    "sample_index": 0,
+    "sample_id": "conv-26",
+    "max_questions": 20,
+    "top_k": 5,
+    "retrieval_baselines": ["direct_chunk", "task_chunk_waterfall"]
+  }
+}
