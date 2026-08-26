@@ -49,7 +49,7 @@ class MemRecallStorePortTests(unittest.TestCase):
     def test_recall_store_port_matches_consumed_store_operations(self) -> None:
         MemRecallStore = _recall_store_port()
         expected = {
-            "ann_search_chunks_in_tasks",
+            "exact_search_chunks_in_tasks",
             "ann_search_orphan_chunks",
             "ann_search_tasks",
             "fts_search_chunks_in_tasks",

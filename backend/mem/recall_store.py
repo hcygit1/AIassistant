@@ -52,16 +52,16 @@ class MemRecallStore(Protocol):
         self,
         query: str,
         task_ids: list[str],
-        limit: int = 10,
+        limit: int | None = 10,
         owner: str | None = None,
     ) -> list[SearchHit]:
         ...
 
-    def ann_search_chunks_in_tasks(
+    def exact_search_chunks_in_tasks(
         self,
         query_vec: list[float],
         task_ids: list[str],
-        top_k: int = 10,
+        top_k: int | None = 10,
         owner: str | None = None,
     ) -> list[SearchHit]:
         ...

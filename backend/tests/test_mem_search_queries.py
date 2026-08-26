@@ -272,6 +272,61 @@ class MemorySearchQueryTests(unittest.TestCase):
         self.assertEqual(metadata["created_at"], 100)
         self.assertEqual(len(metadata["content_excerpt"]), 300)
 
+    def test_exact_dense_search_ranks_only_chunks_in_selected_tasks(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                textwrap.dedent(
+                    """
+                    import json
+                    import tempfile
+                    from pathlib import Path
+                    from mem.models import Chunk
+                    from mem.store import MemStore
+
+                    with tempfile.TemporaryDirectory() as root:
+                        store = MemStore(str(Path(root) / "mem.db"), dimensions=3)
+                        selected = (
+                            ("selected-best", [0.8, 0.2, 0.0]),
+                            ("selected-second", [0.6, 0.4, 0.0]),
+                        )
+                        distractors = [
+                            (f"other-{index}", [1.0, index / 1000, 0.0])
+                            for index in range(20)
+                        ]
+                        for index, (chunk_id, vector) in enumerate((*selected, *distractors)):
+                            task_id = "selected-task" if chunk_id.startswith("selected") else "other-task"
+                            store.insert_chunk(Chunk(
+                                id=chunk_id, session_key="session", turn_id=chunk_id,
+                                seq=index, role="user", content=chunk_id,
+                                task_id=task_id, owner="owner-a",
+                                created_at=index, updated_at=index,
+                            ))
+                            store.upsert_chunk_embedding(chunk_id, vector)
+
+                        hits = store.exact_search_chunks_in_tasks(
+                            [1.0, 0.0, 0.0], ["selected-task"],
+                            top_k=None, owner="owner-a",
+                        )
+                        print(json.dumps([hit.chunk_id for hit in hits]))
+                        store.close()
+                    """
+                ),
+            ],
+            cwd=BACKEND_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout.splitlines()[-1]),
+            ["selected-best", "selected-second"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

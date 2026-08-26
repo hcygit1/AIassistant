@@ -15,6 +15,7 @@ Skill 技能由 skills_scanner 静态扫描注入系统 Prompt，不经过此模
 from __future__ import annotations
 
 import logging
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from typing import Any
 
 from mem.embedder import MemEmbedder
 from mem.recall_store import MemRecallStore
+from mem.reranker import MemReranker
 
 logger = logging.getLogger(__name__)
 
@@ -56,35 +58,26 @@ class TaskGroup:
 class RecallResult:
     task_groups: list[TaskGroup] = field(default_factory=list)
     orphan_hits: list[RecallHit] = field(default_factory=list)
+    ranked_hits: list[RecallHit] = field(default_factory=list)
+    retrieved_task_ids: list[str] = field(default_factory=list)
+    orphan_search_triggered: bool = False
+    expanded_task_count: int = 0
+    candidate_chunk_count: int = 0
     total_candidates: int = 0
     note: str = ""
 
     @property
     def hits(self) -> list[RecallHit]:
-        """Flat list for backward compatibility."""
-        result: list[RecallHit] = []
-        for g in self.task_groups:
-            result.append(RecallHit(
-                chunk_id=f"task:{g.task_id}",
-                score=g.task_score,
-                summary=g.title,
-                content_excerpt=g.summary[:600],
-                role="task",
-                task_id=g.task_id,
-                created_at=0,
-            ))
-            result.extend(g.chunks)
-        result.extend(self.orphan_hits)
-        return result
+        """Final globally ranked chunks; Task metadata does not consume slots."""
+        return list(self.ranked_hits)
 
     @property
     def has_content(self) -> bool:
-        return bool(self.task_groups or self.orphan_hits)
+        return bool(self.ranked_hits)
 
     @property
     def max_score(self) -> float:
-        scores: list[float] = [g.task_score for g in self.task_groups]
-        scores.extend(h.score for h in self.orphan_hits)
+        scores = [hit.score for hit in self.ranked_hits]
         return max(scores) if scores else 0.0
 
 
@@ -118,6 +111,50 @@ def apply_recency_decay(
         adjusted = score * (alpha + (1 - alpha) * decay)
         result.append((cid, adjusted))
     return result
+
+
+def _rank_chunk_candidates(
+    candidates: list[RecallHit],
+) -> list[RecallHit]:
+    """Deduplicate chunks without using their parent Task scores."""
+    ranked_by_id: dict[str, RecallHit] = {}
+    for hit in candidates:
+        candidate = RecallHit(
+            chunk_id=hit.chunk_id,
+            score=hit.score,
+            summary=hit.summary,
+            content_excerpt=hit.content_excerpt,
+            role=hit.role,
+            session_key=hit.session_key,
+            task_id=hit.task_id,
+            created_at=hit.created_at,
+        )
+        previous = ranked_by_id.get(hit.chunk_id)
+        if previous is None or candidate.score > previous.score:
+            ranked_by_id[hit.chunk_id] = candidate
+    return sorted(
+        ranked_by_id.values(),
+        key=lambda hit: (-hit.score, -hit.created_at, hit.chunk_id),
+    )
+
+
+def _trim_ranked_hits(
+    ranked_hits: list[RecallHit],
+    *,
+    max_results: int,
+    budget_chars: int,
+) -> list[RecallHit]:
+    selected: list[RecallHit] = []
+    chars_used = 0
+    for hit in ranked_hits:
+        if len(selected) >= max_results:
+            break
+        hit_chars = len(hit.summary) + len(hit.content_excerpt)
+        if selected and chars_used + hit_chars > budget_chars:
+            break
+        selected.append(hit)
+        chars_used += hit_chars
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -156,17 +193,25 @@ class MemRecall:
         recall = cfg.get("recall", {})
         self.max_task_results: int = recall.get("max_task_results", 5)
         self.min_task_hits: int = recall.get("min_task_hits", 3)
-        self.chunks_per_task: int = recall.get("chunks_per_task", 3)
+        self.chunks_per_task: int = recall.get("chunks_per_task", 5)
         self.max_orphan_chunks: int = recall.get("max_orphan_chunks", 5)
+        self.final_chunk_top_k: int = recall.get("final_chunk_top_k", 5)
         from runtime.context_budget import resolve_budget
         self.budget_chars: int = recall.get(
             "budget_chars",
             resolve_budget(agent_id).memory_injection_chars,
         )
-        self.min_task_score: float = recall.get("min_task_score", 0.3)
+        self.min_task_score: float = recall.get("min_task_score", 0.015)
         self.rrf_k: int = recall.get("rrf_k", 60)
         self.recency_half_life_days: float = recall.get("recency_half_life_days", 14)
         self.min_inject_score: float = recall.get("min_inject_score", 0.015)
+        self.rerank_enabled: bool = bool(recall.get("rerank_enabled", False))
+        self.rerank_model: str = recall.get("rerank_model", "BAAI/bge-reranker-v2-m3")
+        self.rerank_device: str = recall.get("rerank_device", "cpu")
+        self.reranker = (
+            MemReranker(self.rerank_model, device=self.rerank_device)
+            if self.rerank_enabled else None
+        )
 
     # ------------------------------------------------------------------
     # Main search (waterfall)
@@ -201,78 +246,88 @@ class MemRecall:
             orphan_hits = await self._search_orphan_chunks(query, sub_queries, session_id, query_vectors, owner)
             logger.debug("Recall: %d orphan chunk hits", len(orphan_hits))
 
-        # ③ 对命中的 Tasks 搜下属 Chunks → 组装 TaskGroup
+        # ③ Expand every matched Task independently.
         task_ids = [tid for tid, _, _ in task_hits]
         chunk_map = await self._search_chunks_for_tasks(task_ids, query, sub_queries, query_vectors, owner)
 
-        task_groups: list[TaskGroup] = []
-        chars_used = 0
-        for tid, score, task_obj in task_hits:
-            entry_chars = len(task_obj.summary or "")
-            if chars_used + entry_chars > self.budget_chars and task_groups:
-                break
+        # ④ Merge Task chunks and orphan chunks. Task scores are not reused.
+        candidates = [
+            hit
+            for task_id in task_ids
+            for hit in chunk_map.get(task_id, [])
+        ]
+        candidates.extend(orphan_hits)
+        ranked_candidates = _rank_chunk_candidates(candidates)
+        ranked_candidates = [
+            hit for hit in ranked_candidates if hit.score >= self.min_inject_score
+        ]
 
-            date_str = _format_date(task_obj.started_at)
-            group = TaskGroup(
+        if self.reranker and ranked_candidates:
+            rerank_inputs = [
+                (hit.chunk_id, "\n".join(p for p in (hit.summary, hit.content_excerpt) if p))
+                for hit in ranked_candidates
+            ]
+            scores = await asyncio.to_thread(self.reranker.score, query, rerank_inputs)
+            reranked: list[RecallHit] = []
+            for hit, score in zip(ranked_candidates, scores):
+                reranked.append(RecallHit(
+                    chunk_id=hit.chunk_id, score=score, summary=hit.summary,
+                    content_excerpt=hit.content_excerpt, role=hit.role,
+                    session_key=hit.session_key, task_id=hit.task_id,
+                    created_at=hit.created_at,
+                ))
+            ranked_candidates = sorted(
+                reranked, key=lambda hit: (-hit.score, -hit.created_at, hit.chunk_id)
+            )
+
+        final_limit = self.final_chunk_top_k
+        if max_results is not None:
+            final_limit = min(final_limit, max_results)
+        ranked_hits = _trim_ranked_hits(
+            ranked_candidates,
+            max_results=max(0, final_limit),
+            budget_chars=self.budget_chars,
+        )
+
+        # ⑤ Restore grouping metadata without changing global chunk order.
+        selected_by_task: dict[str, list[RecallHit]] = {}
+        selected_orphans: list[RecallHit] = []
+        for hit in ranked_hits:
+            if hit.task_id:
+                selected_by_task.setdefault(hit.task_id, []).append(hit)
+            else:
+                selected_orphans.append(hit)
+
+        task_groups: list[TaskGroup] = []
+        for tid, score, task_obj in task_hits:
+            selected = selected_by_task.get(tid)
+            if not selected:
+                continue
+            task_groups.append(TaskGroup(
                 task_id=tid,
                 title=task_obj.title or "",
                 summary=(task_obj.summary or "")[:600],
-                session_date=date_str,
+                session_date=_format_date(task_obj.started_at),
                 task_score=round(score, 3),
-                chunks=chunk_map.get(tid, []),
-            )
-            task_groups.append(group)
-            chars_used += entry_chars + sum(
-                len(c.content_excerpt) for c in group.chunks
-            )
+                chunks=selected,
+            ))
 
-        # ④ 过滤低分结果
-        min_s = self.min_inject_score
-        orphan_hits = [h for h in orphan_hits if h.score >= min_s]
-        for g in task_groups:
-            g.chunks = [c for c in g.chunks if c.score >= min_s]
-
-        # ④-b orphan chunk 纳入总预算
-        budget_remaining = max(0, self.budget_chars - chars_used)
-        trimmed_orphans: list[RecallHit] = []
-        orphan_chars = 0
-        for h in orphan_hits:
-            h_chars = len(h.content_excerpt) + len(h.summary)
-            if orphan_chars + h_chars > budget_remaining and trimmed_orphans:
-                break
-            trimmed_orphans.append(h)
-            orphan_chars += h_chars
-        orphan_hits = trimmed_orphans
-
-        # ⑤ max_results 截断
-        if max_results is not None:
-            total_hits = 0
-            trimmed_groups: list[TaskGroup] = []
-            for g in task_groups:
-                group_count = 1 + len(g.chunks)
-                if total_hits + group_count > max_results:
-                    remaining = max_results - total_hits
-                    if remaining > 1:
-                        g.chunks = g.chunks[:remaining - 1]
-                        trimmed_groups.append(g)
-                    break
-                trimmed_groups.append(g)
-                total_hits += group_count
-            task_groups = trimmed_groups
-
-            remaining = max(0, max_results - total_hits)
-            orphan_hits = orphan_hits[:remaining]
-
-        total = len(task_hits) + len(orphan_hits)
+        total = len(ranked_candidates)
         note_parts = []
         if task_groups:
             note_parts.append(f"tasks:{len(task_groups)}")
-        if orphan_hits:
-            note_parts.append(f"orphans:{len(orphan_hits)}")
+        if selected_orphans:
+            note_parts.append(f"orphans:{len(selected_orphans)}")
+        note_parts.append(f"chunks:{len(ranked_hits)}")
 
         return RecallResult(
             task_groups=task_groups,
-            orphan_hits=orphan_hits,
+            orphan_hits=selected_orphans,
+            ranked_hits=ranked_hits,
+            retrieved_task_ids=task_ids,
+            orphan_search_triggered=len(task_hits) < self.min_task_hits,
+            expanded_task_count=len(task_hits),
+            candidate_chunk_count=len(ranked_candidates),
             total_candidates=total,
             note=",".join(note_parts) or "empty",
         )
@@ -399,11 +454,13 @@ class MemRecall:
         if not task_ids:
             return {}
 
-        pool_size = len(task_ids) * self.chunks_per_task * 3
         qv = query_vectors or {}
-
-        fts_hits = self.store.fts_search_chunks_in_tasks(query, task_ids, limit=pool_size, owner=owner)
-        fts_ranked = [(h.chunk_id, h.score) for h in fts_hits]
+        # Task IDs only define the search scope. All scoped chunks share one
+        # FTS/ANN ranking, so rank positions are comparable across Tasks.
+        fts_hits = self.store.fts_search_chunks_in_tasks(
+            query, task_ids, limit=None, owner=owner,
+        )
+        fts_ranked = [(hit.chunk_id, hit.score) for hit in fts_hits]
 
         vec_scores: dict[str, float] = {}
         for sub_q in sub_queries:
@@ -411,46 +468,38 @@ class MemRecall:
             if not q_vec:
                 continue
             try:
-                ann_hits = self.store.ann_search_chunks_in_tasks(q_vec, task_ids, top_k=pool_size, owner=owner)
-                for h in ann_hits:
-                    vec_scores[h.chunk_id] = max(vec_scores.get(h.chunk_id, 0.0), h.score)
+                ann_hits = self.store.exact_search_chunks_in_tasks(
+                    q_vec, task_ids, top_k=None, owner=owner,
+                )
+                for hit in ann_hits:
+                    vec_scores[hit.chunk_id] = max(
+                        vec_scores.get(hit.chunk_id, 0.0), hit.score
+                    )
             except Exception:
                 logger.warning("Task-chunk vector search failed for: %s", sub_q)
 
-        vec_ranked = sorted(vec_scores.items(), key=lambda x: -x[1])
+        vec_ranked = sorted(vec_scores.items(), key=lambda item: -item[1])
         rrf_scores = rrf_fuse([fts_ranked, vec_ranked], k=self.rrf_k)
-
-        fts_lookup = {h.chunk_id: h for h in fts_hits}
-
-        # group by task_id
-        task_chunks: dict[str, list[tuple[str, float]]] = {tid: [] for tid in task_ids}
-        for cid, score in sorted(rrf_scores.items(), key=lambda x: -x[1]):
-            hit = fts_lookup.get(cid)
-            tid = hit.task_id if hit else None
-            if not tid:
-                chunk = self.store.get_chunk(cid)
-                tid = chunk.task_id if chunk else None
-            if tid and tid in task_chunks:
-                task_chunks[tid].append((cid, score))
+        candidate_limit = len(task_ids) * self.chunks_per_task
+        entries = sorted(rrf_scores.items(), key=lambda item: -item[1])[
+            :candidate_limit
+        ]
 
         result: dict[str, list[RecallHit]] = {}
-        for tid, entries in task_chunks.items():
-            hits: list[RecallHit] = []
-            for cid, score in entries[:self.chunks_per_task]:
-                chunk = self.store.get_chunk(cid)
-                if chunk:
-                    hits.append(RecallHit(
-                        chunk_id=cid,
-                        score=round(score, 3),
-                        summary=chunk.summary or "",
-                        content_excerpt=chunk.content[:200],
-                        role=chunk.role,
-                        session_key=chunk.session_key,
-                        task_id=tid,
-                        created_at=chunk.created_at,
-                    ))
-            if hits:
-                result[tid] = hits
+        for cid, score in entries:
+            chunk = self.store.get_chunk(cid)
+            if not chunk or chunk.task_id not in task_ids:
+                continue
+            result.setdefault(chunk.task_id, []).append(RecallHit(
+                chunk_id=cid,
+                score=score,
+                summary=chunk.summary or "",
+                content_excerpt=chunk.content[:300],
+                role=chunk.role,
+                session_key=chunk.session_key,
+                task_id=chunk.task_id,
+                created_at=chunk.created_at,
+            ))
         return result
 
     # ------------------------------------------------------------------

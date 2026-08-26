@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class MemSearchInput(BaseModel):
     query: str = Field(description="搜索查询（自然语言）")
-    max_results: int = Field(default=8, description="最多返回结果数（默认 8）")
+    max_results: int = Field(default=5, description="最多返回结果数（默认 5）")
 
 
 class MemSearchTool(BaseTool):
@@ -41,10 +41,10 @@ class MemSearchTool(BaseTool):
     agent_id: str = ""
     _get_memory_recall: Any = None
 
-    def _run(self, query: str, max_results: int = 8) -> str:
+    def _run(self, query: str, max_results: int = 5) -> str:
         raise NotImplementedError("Use _arun for async execution")
 
-    async def _arun(self, query: str, max_results: int = 8) -> str:
+    async def _arun(self, query: str, max_results: int = 5) -> str:
         try:
             get_memory_recall = self._get_memory_recall
             if get_memory_recall is None:

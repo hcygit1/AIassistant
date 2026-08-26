@@ -357,11 +357,54 @@ class MemorySearchQueries:
                 break
         return hits
 
+    def exact_search_chunks_in_tasks(
+        self,
+        query_vec: list[float],
+        task_ids: list[str],
+        top_k: int | None = 10,
+        owner: str | None = None,
+    ) -> list[SearchHit]:
+        """Exact cosine ranking after restricting rows to selected Tasks."""
+        if not task_ids or (top_k is not None and top_k <= 0):
+            return []
+        blob = serialize_float32(query_vec)
+        placeholders = ",".join("?" for _ in task_ids)
+        sql = f"""SELECT v.chunk_id,
+                         vec_distance_cosine(v.embedding, ?) AS distance,
+                         c.summary, c.content, c.role, c.session_key,
+                         c.task_id, c.created_at
+                  FROM vec_chunks v
+                  JOIN chunks c ON c.id = v.chunk_id
+                  WHERE c.dedup_status = 'active'
+                    AND c.task_id IN ({placeholders})"""
+        params: list[Any] = [blob, *task_ids]
+        if owner:
+            sql += " AND c.owner = ?"
+            params.append(owner)
+        sql += " ORDER BY distance ASC"
+        if top_k is not None:
+            sql += " LIMIT ?"
+            params.append(top_k)
+        rows = self._connection.execute(sql, params).fetchall()
+        return [
+            SearchHit(
+                chunk_id=row["chunk_id"],
+                score=1.0 - float(row["distance"] or 0.0),
+                summary=row["summary"] or "",
+                content_excerpt=(row["content"][:300] if row["content"] else ""),
+                role=row["role"] or "",
+                session_key=row["session_key"] or "",
+                task_id=row["task_id"],
+                created_at=row["created_at"] or 0,
+            )
+            for row in rows
+        ]
+
     def fts_search_chunks_in_tasks(
         self,
         query: str,
         task_ids: list[str],
-        limit: int = 10,
+        limit: int | None = 10,
         owner: str | None = None,
     ) -> list[SearchHit]:
         if not task_ids:
@@ -383,8 +426,10 @@ class MemorySearchQueries:
             if owner:
                 sql += " AND c.owner = ?"
                 params.append(owner)
-            sql += " ORDER BY rank LIMIT ?"
-            params.append(limit * 2)
+            sql += " ORDER BY rank"
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(limit * 2)
             rows = self._connection.execute(sql, params).fetchall()
             if not rows:
                 return []
@@ -402,7 +447,7 @@ class MemorySearchQueries:
                     task_id=row["task_id"],
                     created_at=row["created_at"] or 0,
                 )
-                for row in rows[:limit]
+                for row in (rows if limit is None else rows[:limit])
             ]
         except sqlite3.OperationalError:
             logger.warning("FTS chunks_in_tasks query failed for: %s", sanitized)

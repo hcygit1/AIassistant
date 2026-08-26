@@ -426,11 +426,25 @@ class MemStore:
             owner=owner,
         )
 
+    def exact_search_chunks_in_tasks(
+        self,
+        query_vec: list[float],
+        task_ids: list[str],
+        top_k: int | None = 10,
+        owner: str | None = None,
+    ) -> list[SearchHit]:
+        return self._search_queries.exact_search_chunks_in_tasks(
+            query_vec,
+            task_ids,
+            top_k=top_k,
+            owner=owner,
+        )
+
     def fts_search_chunks_in_tasks(
         self,
         query: str,
         task_ids: list[str],
-        limit: int = 10,
+        limit: int | None = 10,
         owner: str | None = None,
     ) -> list[SearchHit]:
         return self._search_queries.fts_search_chunks_in_tasks(
