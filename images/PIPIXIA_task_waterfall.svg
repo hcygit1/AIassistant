@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="680" viewBox="0 0 1280 680" role="img" aria-label="PIPIXIA Task-first waterfall">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#667085"/></marker></defs>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#1F2937}.t{font-size:26px;font-weight:700}.s{font-size:13px;fill:#667085}.h{font-size:16px;font-weight:700}.b{font-size:13px;fill:#475467}.box{fill:#fff;stroke:#98A2B3;stroke-width:1.5}.lane{fill:#F8FAFC;stroke:#D0D5DD;stroke-width:1.2}.edge{stroke:#667085;stroke-width:1.8;fill:none;marker-end:url(#a)}.decision{fill:#FFF8E7;stroke:#D9A441;stroke-width:1.5}</style>
+<rect width="1280" height="680" fill="#fff"/><text x="640" y="42" text-anchor="middle" class="t">Task-first Memory Waterfall</text><text x="640" y="67" text-anchor="middle" class="s">Two-stage retrieval: locate tasks, then rank the evidence they contain</text>
+<rect x="40" y="100" width="1200" height="145" rx="4" class="lane"/><text x="60" y="128" class="h">Stage 1 · Locate</text>
+<rect x="80" y="155" width="210" height="65" class="box"/><text x="185" y="183" text-anchor="middle" class="h">Current Query</text><text x="185" y="203" text-anchor="middle" class="b">question + expansions</text>
+<rect x="370" y="155" width="250" height="65" class="box"/><text x="495" y="183" text-anchor="middle" class="h">Task Retrieval</text><text x="495" y="203" text-anchor="middle" class="b">FTS5 + sqlite-vec + RRF</text>
+<polygon points="760,150 850,187 760,224 670,187" class="decision"/><text x="760" y="183" text-anchor="middle" class="h">Task hit?</text>
+<rect x="930" y="155" width="240" height="65" class="box"/><text x="1050" y="183" text-anchor="middle" class="h">Task IDs</text><text x="1050" y="203" text-anchor="middle" class="b">ranked parent tasks</text>
+<path d="M298 187H362M628 187H662M858 187H922" class="edge"/>
+<rect x="40" y="295" width="1200" height="145" rx="4" class="lane"/><text x="60" y="323" class="h">Stage 2 · Expand and rank</text>
+<rect x="90" y="350" width="250" height="65" class="box"/><text x="215" y="378" text-anchor="middle" class="h">Expand Chunks</text><text x="215" y="398" text-anchor="middle" class="b">all matching Task evidence</text>
+<rect x="420" y="350" width="250" height="65" class="box"/><text x="545" y="378" text-anchor="middle" class="h">Orphan Fallback</text><text x="545" y="398" text-anchor="middle" class="b">when Task retrieval is weak</text>
+<rect x="750" y="350" width="250" height="65" class="box"/><text x="875" y="378" text-anchor="middle" class="h">Merge and Rank</text><text x="875" y="398" text-anchor="middle" class="b">dedupe + global score</text>
+<rect x="1060" y="350" width="140" height="65" class="box"/><text x="1130" y="378" text-anchor="middle" class="h">Trim</text><text x="1130" y="398" text-anchor="middle" class="b">budget</text>
+<path d="M1050 228V275H215V342M760 232V275H545V342M348 382H742M678 382H742M1008 382H1052" class="edge"/>
+<rect x="300" y="505" width="680" height="70" class="box"/><text x="640" y="535" text-anchor="middle" class="h">Prompt Context</text><text x="640" y="557" text-anchor="middle" class="b">selected Chunks only · Task metadata does not consume final evidence slots</text><path d="M1130 423V470H640V497" class="edge"/>
+</svg>

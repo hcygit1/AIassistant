@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-label="PIPIXIA offline Skill evolution">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#667085"/></marker></defs>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#1F2937}.t{font-size:26px;font-weight:700}.s{font-size:13px;fill:#667085}.h{font-size:16px;font-weight:700}.b{font-size:13px;fill:#475467}.box{fill:#fff;stroke:#98A2B3;stroke-width:1.5}.lane{fill:#F8FAFC;stroke:#D0D5DD;stroke-width:1.2}.edge{stroke:#667085;stroke-width:1.8;fill:none;marker-end:url(#a)}.reject{fill:#FFF5F5;stroke:#D92D20;stroke-width:1.5}.gate{fill:#FFF8E7;stroke:#D9A441;stroke-width:1.5}.note{fill:#F8FAFC;stroke:#D0D5DD;stroke-width:1.2}</style>
+<rect width="1280" height="760" fill="#fff"/><text x="640" y="42" text-anchor="middle" class="t">Offline Skill Evolution</text><text x="640" y="67" text-anchor="middle" class="s">Generate, evaluate, gate, and publish immutable Skill versions</text>
+<rect x="40" y="100" width="1200" height="155" rx="4" class="lane"/><text x="60" y="128" class="h">Inputs and candidate creation</text>
+<rect x="75" y="160" width="245" height="65" class="box"/><text x="197" y="188" text-anchor="middle" class="h">Fixed evals</text><text x="197" y="208" text-anchor="middle" class="b">validation / regression</text>
+<rect x="385" y="160" width="245" height="65" class="box"/><text x="507" y="188" text-anchor="middle" class="h">Generate candidate</text><text x="507" y="208" text-anchor="middle" class="b">offline runner only</text>
+<rect x="695" y="160" width="245" height="65" class="box"/><text x="817" y="188" text-anchor="middle" class="h">Candidate artifact</text><text x="817" y="208" text-anchor="middle" class="b">SKILL.md + metadata</text>
+<rect x="1005" y="160" width="170" height="65" class="box"/><text x="1090" y="188" text-anchor="middle" class="h">Static check</text><text x="1090" y="208" text-anchor="middle" class="b">format / safety</text>
+<path d="M328 192H377M638 192H687M948 192H997" class="edge"/>
+<rect x="40" y="305" width="1200" height="170" rx="4" class="lane"/><text x="60" y="333" class="h">Controlled evaluation</text>
+<rect x="80" y="365" width="230" height="70" class="box"/><text x="195" y="394" text-anchor="middle" class="h">without_skill</text><text x="195" y="415" text-anchor="middle" class="b">baseline</text>
+<rect x="385" y="365" width="230" height="70" class="box"/><text x="500" y="394" text-anchor="middle" class="h">active_skill</text><text x="500" y="415" text-anchor="middle" class="b">current production</text>
+<rect x="690" y="365" width="230" height="70" class="box"/><text x="805" y="394" text-anchor="middle" class="h">candidate_skill</text><text x="805" y="415" text-anchor="middle" class="b">proposed version</text>
+<rect x="995" y="365" width="180" height="70" class="box"/><text x="1085" y="394" text-anchor="middle" class="h">Verifier</text><text x="1085" y="415" text-anchor="middle" class="b">metrics / cost</text>
+<path d="M1090 233V285H195V357M195 443V465M500 443V465M805 443V465M195 465H950V400H987" class="edge"/>
+<rect x="380" y="530" width="260" height="70" class="gate"/><text x="510" y="559" text-anchor="middle" class="h">Release gate</text><text x="510" y="580" text-anchor="middle" class="b">effect / regression / cost</text>
+<rect x="720" y="530" width="260" height="70" class="box"/><text x="850" y="559" text-anchor="middle" class="h">Human review</text><text x="850" y="580" text-anchor="middle" class="b">approve or reject</text>
+<path d="M1085 443V495H510V522M648 565H712" class="edge"/>
+<rect x="85" y="650" width="300" height="55" class="reject"/><text x="235" y="683" text-anchor="middle" class="h">rejected → active unchanged</text>
+<rect x="895" y="650" width="300" height="55" class="box"/><text x="1045" y="683" text-anchor="middle" class="h">accepted → publish / rollback</text>
+<path d="M720 608V625H235V642M980 608V625H1045V642" class="edge"/>
+</svg>

@@ -1,73 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="720" viewBox="0 0 1180 720" role="img" aria-label="Memory Pipeline">
-  <defs>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#101828" flood-opacity="0.10"/>
-    </filter>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L8,3 z" fill="#B8C2D8"/>
-    </marker>
-    <linearGradient id="soft" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#EEF6FF"/>
-      <stop offset="1" stop-color="#FAF5FF"/>
-    </linearGradient>
-  </defs>
-  <style>
-    text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  </style>
-  <rect width="1180" height="720" fill="url(#soft)"/>
-  <circle cx="1090" cy="80" r="130" fill="#E9D5FF" opacity="0.35"/>
-  <circle cx="90" cy="660" r="120" fill="#BAE6FD" opacity="0.28"/>
-  <text x="590.0" y="48" text-anchor="middle" font-size="28" font-weight="800" fill="#172033">Memory Pipeline</text>
-  <text x="590.0" y="76" text-anchor="middle" font-size="14" font-weight="500" fill="#667085">Turn records become searchable task memory and reusable skills</text>
-<rect x="55" y="140" width="200" height="110" rx="18" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.3" filter="url(#shadow)"/>
-<rect x="55" y="140" width="200" height="7" rx="3.5" fill="#3B82F6"/>
-<circle cx="87" cy="178" r="18" fill="#3B82F6" opacity="0.13"/>
-<text x="87" y="184" text-anchor="middle" font-size="17" font-weight="800" fill="#3B82F6">1</text>
-<text x="117" y="180" text-anchor="start" font-size="17" font-weight="700" fill="#172033">Conversation Turn</text>
-<text x="155.0" y="210" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">user + assistant</text>
-<text x="155.0" y="228" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">tool call evidence</text><rect x="330" y="125" width="220" height="140" rx="18" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.3" filter="url(#shadow)"/>
-<rect x="330" y="125" width="220" height="7" rx="3.5" fill="#06B6D4"/>
-<circle cx="362" cy="163" r="18" fill="#06B6D4" opacity="0.13"/>
-<text x="362" y="169" text-anchor="middle" font-size="17" font-weight="800" fill="#06B6D4">2</text>
-<text x="392" y="165" text-anchor="start" font-size="17" font-weight="700" fill="#172033">MemWorker Queue</text>
-<text x="440.0" y="195" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">hash dedupe</text>
-<text x="440.0" y="213" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">LLM summary &lt;=120 chars</text>
-<text x="440.0" y="231" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">embedding</text><rect x="635" y="125" width="230" height="140" rx="18" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.3" filter="url(#shadow)"/>
-<rect x="635" y="125" width="230" height="7" rx="3.5" fill="#10B981"/>
-<circle cx="667" cy="163" r="18" fill="#10B981" opacity="0.13"/>
-<text x="667" y="169" text-anchor="middle" font-size="17" font-weight="800" fill="#10B981">3</text>
-<text x="697" y="165" text-anchor="start" font-size="17" font-weight="700" fill="#172033">MemStore SQLite</text>
-<text x="750.0" y="195" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">chunks</text>
-<text x="750.0" y="213" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">tasks</text>
-<text x="750.0" y="231" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">skills metadata</text><rect x="930" y="125" width="190" height="140" rx="18" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.3" filter="url(#shadow)"/>
-<rect x="930" y="125" width="190" height="7" rx="3.5" fill="#8B5CF6"/>
-<circle cx="962" cy="163" r="18" fill="#8B5CF6" opacity="0.13"/>
-<text x="962" y="169" text-anchor="middle" font-size="17" font-weight="800" fill="#8B5CF6">4</text>
-<text x="992" y="165" text-anchor="start" font-size="17" font-weight="700" fill="#172033">Indexes</text>
-<text x="1025.0" y="195" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">FTS5 keywords</text>
-<text x="1025.0" y="213" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">sqlite-vec ANN</text>
-<text x="1025.0" y="231" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">recency scoring</text><line x1="255" y1="195" x2="330" y2="195" stroke="#B8C2D8" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrow)"/><line x1="550" y1="195" x2="635" y2="195" stroke="#B8C2D8" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrow)"/><line x1="865" y1="195" x2="930" y2="195" stroke="#B8C2D8" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrow)"/><rect x="105" y="420" width="235" height="145" rx="18" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.3" filter="url(#shadow)"/>
-<rect x="105" y="420" width="235" height="7" rx="3.5" fill="#F59E0B"/>
-<circle cx="137" cy="458" r="18" fill="#F59E0B" opacity="0.13"/>
-<text x="137" y="464" text-anchor="middle" font-size="17" font-weight="800" fill="#F59E0B">R</text>
-<text x="167" y="460" text-anchor="start" font-size="17" font-weight="700" fill="#172033">Recall Search</text>
-<text x="222.5" y="490" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">Task-first waterfall</text>
-<text x="222.5" y="508" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">RRF fusion</text>
-<text x="222.5" y="526" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">budget-aware trim</text><rect x="470" y="420" width="235" height="145" rx="18" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.3" filter="url(#shadow)"/>
-<rect x="470" y="420" width="235" height="7" rx="3.5" fill="#3B82F6"/>
-<circle cx="502" cy="458" r="18" fill="#3B82F6" opacity="0.13"/>
-<text x="502" y="464" text-anchor="middle" font-size="17" font-weight="800" fill="#3B82F6">P</text>
-<text x="532" y="460" text-anchor="start" font-size="17" font-weight="700" fill="#172033">Prompt Context</text>
-<text x="587.5" y="490" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">session summary</text>
-<text x="587.5" y="508" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">selected memories</text>
-<text x="587.5" y="526" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">trusted boundaries</text><rect x="835" y="420" width="235" height="145" rx="18" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.3" filter="url(#shadow)"/>
-<rect x="835" y="420" width="235" height="7" rx="3.5" fill="#F43F5E"/>
-<circle cx="867" cy="458" r="18" fill="#F43F5E" opacity="0.13"/>
-<text x="867" y="464" text-anchor="middle" font-size="17" font-weight="800" fill="#F43F5E">S</text>
-<text x="897" y="460" text-anchor="start" font-size="17" font-weight="700" fill="#172033">Skill Evolution</text>
-<text x="952.5" y="490" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">task completion review</text>
-<text x="952.5" y="508" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">generate SKILL.md</text>
-<text x="952.5" y="526" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">skills snapshot injection</text><path d="M 1030 265 C 627.5 265, 627.5 420, 225 420" fill="none" stroke="#B8C2D8" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrow)"/><line x1="340" y1="492" x2="470" y2="492" stroke="#B8C2D8" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrow)"/><path d="M 588 420 C 669.0 420, 669.0 270, 750 270" fill="none" stroke="#B8C2D8" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrow)" stroke-dasharray="7 6"/><path d="M 750 265 C 850.0 265, 850.0 420, 950 420" fill="none" stroke="#B8C2D8" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrow)"/><line x1="835" y1="492" x2="705" y2="492" stroke="#B8C2D8" stroke-width="2.2" stroke-linecap="round" marker-end="url(#arrow)" stroke-dasharray="7 6"/><rect x="345" y="625" width="490" height="58" rx="18" fill="#FFFFFF" stroke="#D8DEE9" stroke-width="1.3" filter="url(#shadow)"/>
-<rect x="345" y="625" width="490" height="7" rx="3.5" fill="#475569"/>
-<text x="590.0" y="665" text-anchor="middle" font-size="17" font-weight="700" fill="#172033">Design rule</text>
-<text x="590.0" y="695" text-anchor="middle" font-size="13" font-weight="400" fill="#667085">Raw history stays local; recall injects only budgeted, relevant summaries and chunks.</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="680" viewBox="0 0 1180 680" role="img" aria-label="PIPIXIA memory pipeline">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#667085"/></marker></defs>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#1F2937}.t{font-size:26px;font-weight:700}.s{font-size:13px;fill:#667085}.h{font-size:16px;font-weight:700}.b{font-size:13px;fill:#475467}.box{fill:#fff;stroke:#98A2B3;stroke-width:1.5}.edge{stroke:#667085;stroke-width:1.8;fill:none;marker-end:url(#a)}.note{fill:#F8FAFC;stroke:#D0D5DD;stroke-width:1.2}</style>
+<rect width="1180" height="680" fill="#fff"/><text x="590" y="42" text-anchor="middle" class="t">Memory Pipeline</text><text x="590" y="67" text-anchor="middle" class="s">Conversation records become searchable evidence and reusable skills</text>
+<rect x="55" y="120" width="200" height="115" class="box"/><text x="155" y="153" text-anchor="middle" class="h">Conversation Turn</text><text x="155" y="181" text-anchor="middle" class="b">user / assistant / tools</text><text x="155" y="202" text-anchor="middle" class="b">task boundary</text>
+<rect x="310" y="120" width="220" height="115" class="box"/><text x="420" y="153" text-anchor="middle" class="h">MemWorker</text><text x="420" y="181" text-anchor="middle" class="b">summary + hash dedupe</text><text x="420" y="202" text-anchor="middle" class="b">embedding queue</text>
+<rect x="585" y="120" width="220" height="115" class="box"/><text x="695" y="153" text-anchor="middle" class="h">MemStore</text><text x="695" y="181" text-anchor="middle" class="b">tasks / chunks / metadata</text><text x="695" y="202" text-anchor="middle" class="b">SQLite persistence</text>
+<rect x="860" y="120" width="255" height="115" class="box"/><text x="987" y="153" text-anchor="middle" class="h">Indexes</text><text x="987" y="181" text-anchor="middle" class="b">FTS5 + sqlite-vec</text><text x="987" y="202" text-anchor="middle" class="b">keyword + semantic</text>
+<path d="M255 178H310M530 178H585M805 178H860" class="edge"/>
+<rect x="120" y="350" width="270" height="125" class="box"/><text x="255" y="383" text-anchor="middle" class="h">Task-first Recall</text><text x="255" y="411" text-anchor="middle" class="b">Task retrieval → Chunk expansion</text><text x="255" y="432" text-anchor="middle" class="b">orphan fallback / global ranking</text>
+<rect x="455" y="350" width="270" height="125" class="box"/><text x="590" y="383" text-anchor="middle" class="h">Context Assembly</text><text x="590" y="411" text-anchor="middle" class="b">budget-aware trim</text><text x="590" y="432" text-anchor="middle" class="b">selected evidence injection</text>
+<rect x="790" y="350" width="270" height="125" class="box"/><text x="925" y="383" text-anchor="middle" class="h">Offline Skill Evolution</text><text x="925" y="411" text-anchor="middle" class="b">candidate / evaluation / gate</text><text x="925" y="432" text-anchor="middle" class="b">active version only online</text>
+<path d="M987 235V300H255V350M390 412H455M725 412H790" class="edge"/>
+<rect x="255" y="555" width="670" height="55" class="note"/><text x="590" y="588" text-anchor="middle" class="h">Design rule: raw history stays local; prompts receive only relevant, budgeted evidence.</text><path d="M590 475V555" class="edge"/>
+</svg>
