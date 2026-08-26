@@ -31,6 +31,9 @@ tiktoken>=0.8,<1.0
 html2text>=2024.2,<2025.0
 httpx>=0.28,<1.0
 pyyaml>=6.0,<7.0
+json-repair>=0.39,<1.0
+mcp>=1.0,<2.0
+tzdata>=2024.1
 
 # --- Memory System (sqlite-vec ANN) ---
 sqlite-vec>=0.1.7,<1.0

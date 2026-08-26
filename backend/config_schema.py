@@ -255,10 +255,19 @@ class WebToolsConfig(BaseModel):
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
+class KnowledgeToolsConfig(BaseModel):
+    projectPath: str = ""
+    pythonPath: str = ""
+    configPath: str = ""
+    collectionName: str = "pipixia_{agent_id}"
+    timeoutSeconds: int = Field(default=120, ge=1, le=600)
+
+
 class ToolsConfig(BaseModel):
     fs: FsToolsConfig = Field(default_factory=FsToolsConfig)
     exec: ExecToolsConfig = Field(default_factory=ExecToolsConfig)
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
+    knowledge: KnowledgeToolsConfig = Field(default_factory=KnowledgeToolsConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -429,12 +438,13 @@ class MemLLMConfig(BaseModel):
 class MemRecallConfig(BaseModel):
     max_task_results: int = 5
     min_task_hits: int = 3
-    chunks_per_task: int = 3
+    chunks_per_task: int = 5
     max_orphan_chunks: int = 5
+    final_chunk_top_k: int = 5
     max_skill_results: int = 0
     budget_chars: int = 20000
     skill_budget_chars: int = 2000
-    min_task_score: float = 0.3
+    min_task_score: float = 0.015
     rrf_k: int = 60
     recency_half_life_days: float = 14
     min_inject_score: float = 0.015
@@ -450,7 +460,8 @@ class MemTaskConfig(BaseModel):
 
 class MemSkillEvolutionConfig(BaseModel):
     enabled: bool = True
-    auto_evaluate: bool = True
+    # Online tasks must not generate or modify skills. Offline runners opt in.
+    auto_evaluate: bool = False
     min_chunks_for_eval: int = 6
     min_confidence: float = 0.7
     auto_install: bool = False

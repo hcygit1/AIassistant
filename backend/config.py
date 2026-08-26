@@ -124,6 +124,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "baseUrl": "",
             },
         },
+        "knowledge": {
+            "projectPath": "",
+            "pythonPath": "",
+            "configPath": "",
+            "collectionName": "pipixia_{agent_id}",
+            "timeoutSeconds": 120,
+        },
     },
     "chat": {
         "timeoutSeconds": 120,  # 0 = 无超时
@@ -223,12 +230,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "recall": {
             "max_task_results": 5,
             "min_task_hits": 3,
-            "chunks_per_task": 3,
+            "chunks_per_task": 5,
             "max_orphan_chunks": 5,
+            "final_chunk_top_k": 5,
             "max_skill_results": 0,
             "budget_chars": 20000,
             "skill_budget_chars": 2000,
-            "min_task_score": 0.3,
+            "min_task_score": 0.015,
             "rrf_k": 60,
             "recency_half_life_days": 14,
             "min_inject_score": 0.015,
@@ -241,7 +249,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
         "skill_evolution": {
             "enabled": True,
-            "auto_evaluate": True,
+            "auto_evaluate": False,
             "min_chunks_for_eval": 6,
             "min_confidence": 0.7,
             "auto_install": False,

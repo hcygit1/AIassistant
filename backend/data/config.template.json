@@ -92,6 +92,13 @@
         "apiKey": "",
         "baseUrl": ""
       }
+    },
+    "knowledge": {
+      "projectPath": "",
+      "pythonPath": "",
+      "configPath": "",
+      "collectionName": "pipixia_{agent_id}",
+      "timeoutSeconds": 120
     }
   },
   "chat": {
@@ -195,13 +202,17 @@
     "recall": {
       "max_task_results": 5,
       "min_task_hits": 3,
-      "chunks_per_task": 3,
+      "chunks_per_task": 5,
       "max_orphan_chunks": 5,
+      "final_chunk_top_k": 5,
       "max_skill_results": 0,
       "budget_chars": 20000,
       "skill_budget_chars": 2000,
-      "min_task_score": 0.3,
+      "min_task_score": 0.015,
       "rrf_k": 60,
+      "rerank_enabled": false,
+      "rerank_model": "BAAI/bge-reranker-v2-m3",
+      "rerank_device": "cpu",
       "recency_half_life_days": 14,
       "min_inject_score": 0.015
     },
@@ -213,7 +224,7 @@
     },
     "skill_evolution": {
       "enabled": true,
-      "auto_evaluate": true,
+      "auto_evaluate": false,
       "min_chunks_for_eval": 6,
       "min_confidence": 0.7,
       "auto_install": false
