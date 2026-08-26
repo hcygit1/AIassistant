@@ -154,7 +154,10 @@ class HeartbeatRunner:
                     task.cancel()
 
     async def _heartbeat_loop(self, agent_id: str) -> None:
-        last_run_at = 0.0
+        # A restart must not trigger an immediate catch-up heartbeat.  The
+        # timer is in-memory, so the first run should be scheduled one full
+        # interval after this process starts.
+        last_run_at = time.time()
         while self._running:
             hb = get_heartbeat_config(agent_id)
             interval = hb.get("interval_seconds")

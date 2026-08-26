@@ -442,12 +442,12 @@ class _FakeRecallStore:
     def fts_search_chunks_in_tasks(self, query: str, task_ids: list[str], limit: int = 10, owner: str | None = None):
         return [SimpleNamespace(chunk_id="chunk-1", score=1.0, task_id="task-1")]
 
-    def ann_search_chunks_in_tasks(self, query_vec: list[float], task_ids: list[str], top_k: int = 10, owner: str | None = None):
+    def exact_search_chunks_in_tasks(self, query_vec: list[float], task_ids: list[str], top_k: int = 10, owner: str | None = None):
         return []
 
 
 class RecallBudgetTests(unittest.IsolatedAsyncioTestCase):
-    async def test_recall_trims_orphans_to_budget_after_task_groups(self) -> None:
+    async def test_recall_applies_budget_after_global_chunk_ranking(self) -> None:
         recall = MemRecall(
             store=_FakeRecallStore(),
             embedder=_FakeRecallEmbedder(),
@@ -470,8 +470,9 @@ class RecallBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.task_groups), 1)
         self.assertEqual(result.task_groups[0].task_id, "task-1")
         self.assertEqual(len(result.task_groups[0].chunks), 1)
-        self.assertEqual(len(result.orphan_hits), 1)
-        self.assertEqual(result.orphan_hits[0].chunk_id, "orphan-1")
+        self.assertEqual([hit.chunk_id for hit in result.ranked_hits], ["chunk-1"])
+        self.assertTrue(result.orphan_search_triggered)
+        self.assertGreater(result.candidate_chunk_count, len(result.ranked_hits))
 
 
 class ToolPersistenceTests(unittest.TestCase):

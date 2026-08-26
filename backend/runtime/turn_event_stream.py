@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any, AsyncGenerator, Callable
 
 from infra.event_bus import Events
@@ -166,19 +167,38 @@ class TurnEventStreamProcessor:
 
         if chunk and hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
             usage = chunk.usage_metadata
-            input_details = (
-                getattr(usage, "input_token_details", None) or {}
-            )
+            input_details = self._usage_value(usage, "input_token_details") or {}
             self._run_tracker.record_tokens(
                 self._turn.run_id,
-                input_tokens=getattr(usage, "input_tokens", 0),
-                output_tokens=getattr(usage, "output_tokens", 0),
+                input_tokens=self._usage_field(usage, "input_tokens", "prompt_tokens"),
+                output_tokens=self._usage_field(usage, "output_tokens", "completion_tokens"),
                 cache_read=(
-                    input_details.get("cache_read", 0)
-                    if hasattr(usage, "input_token_details")
-                    else 0
+                    self._usage_field(input_details, "cache_read", "cache_read_tokens")
                 ),
             )
+
+    @staticmethod
+    def _usage_value(usage: Any, *names: str) -> Any:
+        if isinstance(usage, Mapping):
+            for name in names:
+                value = usage.get(name)
+                if value is not None:
+                    return value
+            return None
+        for name in names:
+            value = getattr(usage, name, None)
+            if value is not None:
+                return value
+        return None
+
+    @classmethod
+    def _usage_field(cls, usage: Any, *names: str) -> int:
+        """Read numeric provider usage metadata from a dict or object."""
+        value = cls._usage_value(usage, *names)
+        try:
+            return int(value) if value is not None else 0
+        except (TypeError, ValueError):
+            return 0
 
     async def _handle_tool_start(
         self,

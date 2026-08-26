@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 HEARTBEAT_TOKEN = "HEARTBEAT_OK"
@@ -95,7 +95,9 @@ def is_within_active_hours(
     try:
         tz = ZoneInfo(user_timezone)
     except Exception:
-        tz = ZoneInfo("UTC")
+        # Windows may not have an IANA timezone database available yet.
+        # This fallback must not depend on that same database.
+        tz = timezone.utc
     dt = now or datetime.now(tz)
     try:
         sh, sm = map(int, str(start_s).split(":")[:2])

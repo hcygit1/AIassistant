@@ -92,6 +92,52 @@ class TurnEventStreamProcessorTests(unittest.IsolatedAsyncioTestCase):
             cache_read=0,
         )
 
+    async def test_dict_usage_metadata_records_tokens(self) -> None:
+        class _Agent:
+            async def astream_events(self, _payload, version="v2", config=None):
+                yield {
+                    "event": "on_chat_model_stream",
+                    "run_id": "model-run",
+                    "data": {
+                        "chunk": SimpleNamespace(
+                            content="answer",
+                            usage_metadata={
+                                "input_tokens": 11,
+                                "output_tokens": 7,
+                                "input_token_details": {"cache_read": 2},
+                            },
+                        )
+                    },
+                }
+
+        request = TurnExecutionRequest(
+            agent_id="main", session_id="s1", state=SimpleNamespace(),
+            provider="fake", model="model", message="question",
+            persist_input_role="user", system_prompt="system", tools=[], history=[],
+            recursion_limit=10, prompt_tokens=0, summary_tokens=0,
+            history_tokens=0, active_tokens=1000,
+        )
+        tracker = SimpleNamespace(
+            record_tokens=Mock(), record_tool_start=Mock(), record_tool_end=Mock(),
+        )
+        processor = TurnEventStreamProcessor(
+            agent=_Agent(), request=request, messages=[],
+            turn=SimpleNamespace(run_id="turn-1"),
+            turn_start_event={"type": "lifecycle", "event": "turn_start"},
+            run_tracker=tracker, audit_logger=SimpleNamespace(),
+            get_lifecycle_hooks=lambda: None, emit_event=Mock(),
+            loop_detector=SimpleNamespace(record=Mock(return_value=None)),
+            new_tool_call_id=lambda: "tc-fixed",
+            infer_tool_result_status=lambda _output: ("success", None),
+            loop_warning_is_breaker=lambda _warning: False,
+        )
+
+        [event async for event in processor.stream()]
+
+        tracker.record_tokens.assert_called_once_with(
+            "turn-1", input_tokens=11, output_tokens=7, cache_read=2,
+        )
+
     async def test_translates_native_model_and_tool_events_in_order(self) -> None:
         class _Agent:
             async def astream_events(

@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -14,9 +15,54 @@ if str(BACKEND_DIR) not in sys.path:
 
 from system_messages.heartbeat import HeartbeatRunner
 from system_messages.heartbeat_run_lifecycle import HeartbeatRunLifecycle
+from system_messages.heartbeat_utils import is_within_active_hours
+
+
+class HeartbeatUtilsTests(unittest.TestCase):
+    def test_missing_timezone_database_falls_back_without_crashing(self) -> None:
+        with patch(
+            "system_messages.heartbeat_utils.ZoneInfo",
+            side_effect=RuntimeError("timezone database unavailable"),
+        ):
+            result = is_within_active_hours(
+                {"start": "08:00", "end": "24:00"},
+                user_timezone="UTC",
+                now=datetime(2026, 1, 1, 9, 0),
+            )
+
+        self.assertTrue(result)
 
 
 class HeartbeatRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_restart_waits_full_interval_before_first_heartbeat(self) -> None:
+        runner = HeartbeatRunner()
+        runner._running = True
+        heartbeat = AsyncMock()
+        sleep_calls = 0
+
+        async def fake_sleep(_seconds: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                runner._running = False
+
+        with (
+            patch(
+                "system_messages.heartbeat.get_heartbeat_config",
+                return_value={"enabled": True, "interval_seconds": 60},
+            ),
+            patch(
+                "system_messages.heartbeat.time.time",
+                return_value=100.0,
+            ),
+            patch("system_messages.heartbeat.asyncio.sleep", new=fake_sleep),
+            patch.object(runner, "_run_heartbeat", heartbeat),
+        ):
+            await runner._heartbeat_loop("main")
+
+        heartbeat.assert_not_awaited()
+        self.assertEqual(sleep_calls, 2)
+
     async def test_lifecycle_handles_ack_and_timeout_outcomes(self) -> None:
         rollback = Mock()
         events = []
