@@ -8,6 +8,7 @@ import { useSubagentContext } from "@/lib/subagentContext";
 import { useUi } from "@/lib/uiContext";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
+import ApprovalModal from "@/components/layout/ApprovalModal";
 import RetrievalCard from "./RetrievalCard";
 import { Activity } from "lucide-react";
 import PIPIXIAMark from "@/components/icons/PipixiaMark";
@@ -65,6 +66,7 @@ export default function ChatPanel() {
             )}
           </div>
         </div>
+        <ApprovalModal />
         <ChatInput />
       </div>
     );
@@ -127,6 +129,7 @@ export default function ChatPanel() {
         </div>
       </div>
 
+      <ApprovalModal />
       <ChatInput />
     </div>
   );

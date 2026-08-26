@@ -87,12 +87,23 @@ export default function ApprovalModal() {
 
   return (
     <div
-      className="fixed inset-0 z-[300] flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.45)" }}
+      className="flex-shrink-0 px-4 py-3"
+      style={{
+        background: "var(--bg-elevated)",
+        borderTop: "1px solid var(--border)",
+        boxShadow: "0 -8px 24px rgba(0,0,0,0.12)",
+        zIndex: 30,
+      }}
+      role="alertdialog"
+      aria-label={t.approvalTitle}
     >
       <div
-        className="glass-card max-w-lg w-[90%] p-5 shadow-xl"
-        style={{ border: `1.5px solid ${cfg.border}`, background: cfg.bg }}
+        className="mx-auto max-w-[860px] rounded-xl p-4"
+        style={{
+          border: `1.5px solid ${cfg.border}`,
+          background: "var(--bg)",
+          boxShadow: "var(--shadow-sm)",
+        }}
       >
         <div className="flex items-center gap-2 mb-3">
           <div
@@ -126,7 +137,7 @@ export default function ApprovalModal() {
             background: "var(--bg-inset)",
             border: "1px solid var(--border)",
             color: "var(--text)",
-            maxHeight: 160,
+            maxHeight: 120,
           }}
         >
           {pendingApproval.input_preview || "—"}

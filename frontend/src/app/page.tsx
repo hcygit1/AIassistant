@@ -10,7 +10,6 @@ import Navbar from "@/components/layout/Navbar";
 import ChatPanel from "@/components/chat/ChatPanel";
 import InspectorPanel from "@/components/editor/InspectorPanel";
 import ConfigModal from "@/components/layout/ConfigModal";
-import ApprovalModal from "@/components/layout/ApprovalModal";
 import MemoryModal from "@/components/memory/MemoryModal";
 import ResizeHandle from "@/components/layout/ResizeHandle";
 import WorkspaceRail from "@/components/layout/WorkspaceRail";
@@ -56,7 +55,6 @@ export default function HomePage() {
     <div className="h-screen flex flex-col overflow-hidden" style={{ background: "var(--bg)" }}>
       <Navbar />
       <ConfigModal />
-      <ApprovalModal />
       <MemoryModal />
 
       {/* Toast：左侧弹出，与聊天框保持间距 */}

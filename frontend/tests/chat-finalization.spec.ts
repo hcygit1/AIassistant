@@ -110,7 +110,7 @@ test("only reloads an interrupted non-terminal turn and never dequeues recovery"
     dequeueMessage,
   });
 
-  expect(reloads).toBe(1);
+  expect(reloads).toBe(2);
   expect(dequeues).toBe(0);
 });
 
