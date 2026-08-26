@@ -59,6 +59,7 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "enabled": True,
             "storage": {"db_path": "/tmp/pipixia-memory/memory.db"},
             "embedding": {"dimensions": 8},
+            "skill_evolution": {"enabled": True, "auto_evaluate": True},
         }
 
         with (
@@ -106,6 +107,28 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
             True,
             owner="main",
         )
+
+    def test_initialize_agent_does_not_enable_online_skill_evolution_by_default(self) -> None:
+        runtime = MemoryRuntime()
+        mem_config = {
+            "enabled": True,
+            "storage": {"db_path": "/tmp/pipixia-memory/memory.db"},
+            "embedding": {"dimensions": 8},
+        }
+        task_processor = SimpleNamespace(on_chunks_ingested=AsyncMock())
+        with (
+            patch("runtime.memory_runtime.resolve_mem_config", return_value=mem_config),
+            patch("mem.store.MemStore", return_value=object()),
+            patch("mem.embedder.MemEmbedder.from_config", return_value=object()),
+            patch("mem.skill_evolver.MemSkillEvolver.from_config") as evolver_factory,
+            patch("mem.task_processor.MemTaskProcessor.from_config", return_value=task_processor) as processor_factory,
+            patch("mem.worker.MemWorker.from_config", return_value=object()),
+            patch("mem.recall.MemRecall.from_config", return_value=object()),
+        ):
+            runtime.initialize_agent("main")
+
+        evolver_factory.assert_not_called()
+        self.assertIsNone(processor_factory.call_args.kwargs["on_task_completed"])
 
     def test_initialize_failure_closes_temporary_store_without_publishing(
         self,

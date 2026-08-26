@@ -106,6 +106,23 @@ class SkillEvaluationLlmCall(Protocol):
 JsonParser = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 
+def _field(parsed: dict[str, Any], *names: str, default: Any = None) -> Any:
+    for name in names:
+        if name in parsed:
+            return parsed[name]
+    return default
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def _as_float(value: Any) -> float:
+    return float(value)
+
+
 async def evaluate_skill_creation(
     task: Task,
     *,
@@ -117,14 +134,14 @@ async def evaluate_skill_creation(
         .replace("{TITLE}", task.title or "")
         .replace("{SUMMARY}", (task.summary or "")[:3000])
     )
-    raw = await llm_call(prompt, max_tokens=512, temperature=0)
+    raw = await llm_call(prompt, max_tokens=1024, temperature=0)
     parsed = parse_json(raw, {})
     return CreateEvalResult(
-        should_generate=bool(parsed.get("shouldGenerate", False)),
+        should_generate=_as_bool(_field(parsed, "shouldGenerate", "should_generate", default=False)),
         reason=str(parsed.get("reason", "")),
-        suggested_name=str(parsed.get("suggestedName", "")),
-        suggested_tags=parsed.get("suggestedTags"),
-        confidence=float(parsed.get("confidence", 0)),
+        suggested_name=str(_field(parsed, "suggestedName", "suggested_name", default="")),
+        suggested_tags=_field(parsed, "suggestedTags", "suggested_tags"),
+        confidence=_as_float(parsed.get("confidence", 0)),
     )
 
 
@@ -143,13 +160,13 @@ async def evaluate_skill_upgrade(
         .replace("{TITLE}", task.title or "")
         .replace("{SUMMARY}", (task.summary or "")[:3000])
     )
-    raw = await llm_call(prompt, max_tokens=512, temperature=0)
+    raw = await llm_call(prompt, max_tokens=1024, temperature=0)
     parsed = parse_json(raw, {})
     return UpgradeEvalResult(
-        should_upgrade=bool(parsed.get("shouldUpgrade", False)),
-        upgrade_type=str(parsed.get("upgradeType", "refine")),
+        should_upgrade=_as_bool(_field(parsed, "shouldUpgrade", "should_upgrade", default=False)),
+        upgrade_type=str(_field(parsed, "upgradeType", "upgrade_type", default="refine")),
         dimensions=parsed.get("dimensions"),
         reason=str(parsed.get("reason", "")),
-        merge_strategy=str(parsed.get("mergeStrategy", "")),
-        confidence=float(parsed.get("confidence", 0)),
+        merge_strategy=str(_field(parsed, "mergeStrategy", "merge_strategy", default="")),
+        confidence=_as_float(parsed.get("confidence", 0)),
     )

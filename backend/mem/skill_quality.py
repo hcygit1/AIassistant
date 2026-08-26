@@ -61,7 +61,7 @@ async def score_skill_quality(
         CONTENT=content[:2500],
     )
     try:
-        raw = await llm_call(prompt, max_tokens=10, temperature=0)
+        raw = await llm_call(prompt, max_tokens=512, temperature=0)
         parsed = parse_json(raw, {})
         score = parsed.get("score")
         if isinstance(score, (int, float)):

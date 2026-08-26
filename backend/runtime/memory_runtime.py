@@ -63,24 +63,27 @@ class MemoryRuntime:
 
             embedder = MemEmbedder.from_config(mem_cfg.get("embedding", {}))
 
-            skill_store_dir = str(
-                Path(mem_cfg["storage"]["db_path"]).parent / "skills-store"
-            )
-            skill_evolver = MemSkillEvolver.from_config(
-                mem_cfg,
-                store=store,
-                embedder=embedder,
-                skill_store_dir=skill_store_dir,
-            )
+            skill_cfg = mem_cfg.get("skill_evolution", {})
+            on_task_completed = None
+            if skill_cfg.get("enabled", True) and skill_cfg.get("auto_evaluate", False):
+                skill_store_dir = str(
+                    Path(mem_cfg["storage"]["db_path"]).parent / "skills-store"
+                )
+                skill_evolver = MemSkillEvolver.from_config(
+                    mem_cfg,
+                    store=store,
+                    embedder=embedder,
+                    skill_store_dir=skill_store_dir,
+                )
 
-            async def _on_task_completed(task: Any) -> None:
-                await skill_evolver.on_task_completed(task)
+                async def on_task_completed(task: Any) -> None:
+                    await skill_evolver.on_task_completed(task)
 
             task_processor = MemTaskProcessor.from_config(
                 mem_cfg,
                 store=store,
                 embedder=embedder,
-                on_task_completed=_on_task_completed,
+                on_task_completed=on_task_completed,
             )
 
             async def _on_chunks_ingested(

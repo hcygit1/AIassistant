@@ -46,6 +46,7 @@ from mem.skill_generation import (
 from mem.skill_persistence import persist_new_skill
 from mem.skill_quality import score_skill_quality
 from mem.skill_relation import find_related_skill, judge_related_skill
+from mem.skill_version_store import SkillVersionStore
 from mem.skill_upgrade import (
     SKILL_UPGRADE_PROMPT,
     execute_skill_upgrade,
@@ -87,6 +88,7 @@ class MemSkillEvolver:
         self._lock = asyncio.Lock()
         self._queue: list[Task] = []
         self._processing = False
+        self.last_llm_response = ""
 
     # ------------------------------------------------------------------
     # Public entry — called by MemTaskProcessor
@@ -303,6 +305,41 @@ class MemSkillEvolver:
 
         return skill
 
+    async def _generate_candidate(
+        self, task: Task, chunks: list[Chunk], eval_result: CreateEvalResult,
+        *, source: str = "offline-distill",
+    ) -> Skill | None:
+        """Generate an offline candidate without publishing or indexing it."""
+        original_goal = self._extract_original_goal(chunks)
+        evidence = self._build_skill_evidence(chunks)
+        prompt = build_skill_generation_prompt(
+            task, eval_result, original_goal=original_goal, evidence=evidence,
+            prompt_template=SKILL_GENERATE_PROMPT,
+        )
+        try:
+            content = await generate_skill_content(prompt, llm_call=self._llm_call)
+        except Exception as error:
+            logger.error("Candidate Skill generation failed: %s", error)
+            return None
+        if not content or len(content.strip()) < 50:
+            return None
+        name = eval_result.suggested_name or f"skill-{uuid.uuid4().hex[:8]}"
+        description = _extract_description(content) or (task.summary or "")[:200]
+        quality_score = await self._score_quality(content, task)
+        store = SkillVersionStore(
+            evolution_root=Path(self.skill_store_dir).parent / "skill_evolution",
+            active_root=Path(self.skill_store_dir),
+        )
+        candidate = store.create_candidate(
+            skill_id=name, content=content, source=source,
+            reason=eval_result.reason or "offline candidate",
+        )
+        return build_new_skill(
+            skill_id=str(uuid.uuid4()), name=name, description=description,
+            skill_dir=str(store.candidate_dir(name, candidate.version)), task=task,
+            quality_score=quality_score, skill_factory=Skill,
+        )
+
     @staticmethod
     def _extract_original_goal(chunks: list[Chunk]) -> str:
         return extract_original_goal(chunks)
@@ -367,12 +404,16 @@ class MemSkillEvolver:
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if "dashscope.aliyuncs.com" in self.llm_base_url or self.llm_model.lower().startswith("glm-"):
+            body["enable_thinking"] = False
         async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(endpoint, json=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()
         choices = data.get("choices", [])
-        return choices[0].get("message", {}).get("content", "").strip() if choices else ""
+        content = choices[0].get("message", {}).get("content", "") if choices else ""
+        self.last_llm_response = str(content or "").strip()
+        return self.last_llm_response
 
     # ------------------------------------------------------------------
     # Factory
@@ -409,10 +450,26 @@ class MemSkillEvolver:
 # ---------------------------------------------------------------------------
 
 def _parse_json(raw: str, fallback: dict[str, Any]) -> dict[str, Any]:
-    m = re.search(r"\{[\s\S]*\}", raw)
-    if not m:
+    text = (raw or "").strip()
+    if not text:
         return fallback
-    try:
-        return json.loads(m.group(0))
-    except (json.JSONDecodeError, ValueError):
-        return fallback
+
+    candidates = re.findall(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
+    first_brace = text.find("{")
+    if first_brace >= 0:
+        candidates.append(text[first_brace:])
+    candidates.append(text)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            try:
+                from json_repair import loads as repair_json
+
+                parsed = repair_json(candidate)
+            except (ImportError, ValueError, TypeError):
+                continue
+        if isinstance(parsed, dict):
+            return parsed
+    return fallback

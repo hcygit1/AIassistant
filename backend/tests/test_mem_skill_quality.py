@@ -61,7 +61,7 @@ class SkillQualityTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(score, 5.0)
-        self.assertEqual(calls[0][1:], (10, 0))
+        self.assertEqual(calls[0][1:], (512, 0))
         self.assertEqual(len(calls[0][0]), 1297)
         self.assertEqual(
             hashlib.sha256(calls[0][0].encode()).hexdigest(),
@@ -238,7 +238,7 @@ class SkillQualityTests(unittest.IsolatedAsyncioTestCase):
         evolver = CustomEvolver('{"score": 7.5}')
 
         self.assertEqual(await evolver._score_quality("content", task), 7.5)
-        self.assertEqual(evolver.calls, [(10, 0)])
+        self.assertEqual(evolver.calls, [(512, 0)])
 
         cancelled = CustomEvolver(asyncio.CancelledError())
         with self.assertRaises(asyncio.CancelledError):

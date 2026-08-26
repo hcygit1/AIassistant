@@ -132,7 +132,7 @@ class SkillEvaluationTests(unittest.IsolatedAsyncioTestCase):
             .replace("{TITLE}", "repair database")
             .replace("{SUMMARY}", "s" * 3000)
         )
-        self.assertEqual(calls, [(expected_prompt, 512, 0)])
+        self.assertEqual(calls, [(expected_prompt, 1024, 0)])
         self.assertEqual(
             result,
             CreateEvalResult(
@@ -210,7 +210,7 @@ class SkillEvaluationTests(unittest.IsolatedAsyncioTestCase):
             .replace("{TITLE}", "extend database repair")
             .replace("{SUMMARY}", "t" * 3000)
         )
-        self.assertEqual(calls, [(expected_prompt, 512, 0)])
+        self.assertEqual(calls, [(expected_prompt, 1024, 0)])
         self.assertEqual(
             result,
             UpgradeEvalResult(
@@ -230,6 +230,58 @@ class SkillEvaluationTests(unittest.IsolatedAsyncioTestCase):
             parse_json=lambda _raw, _fallback: {},
         )
         self.assertEqual(default_result, UpgradeEvalResult())
+
+    async def test_create_evaluation_accepts_snake_case_and_string_boolean(self) -> None:
+        (
+            _create_prompt,
+            _upgrade_prompt,
+            CreateEvalResult,
+            _UpgradeEvalResult,
+            evaluate_skill_creation,
+            _evaluate_skill_upgrade,
+        ) = _evaluation_symbols()
+        task = Task(
+            id="task-snake-case",
+            session_key="session-1",
+            title="organize files",
+            summary="A reusable file organization workflow.",
+        )
+
+        async def llm_call(*_args: Any, **_kwargs: Any) -> str:
+            return "raw"
+
+        result = await evaluate_skill_creation(
+            task,
+            llm_call=llm_call,
+            parse_json=lambda _raw, _fallback: {
+                "should_generate": "true",
+                "suggested_name": "organize-files",
+                "suggested_tags": ["files"],
+                "reason": "reusable workflow",
+                "confidence": "0.9",
+            },
+        )
+
+        self.assertEqual(
+            result,
+            CreateEvalResult(
+                should_generate=True,
+                suggested_name="organize-files",
+                suggested_tags=["files"],
+                reason="reusable workflow",
+                confidence=0.9,
+            ),
+        )
+
+    def test_skill_evolver_json_parser_accepts_fenced_and_repairable_json(self) -> None:
+        from mem.skill_evolver import _parse_json
+
+        fenced = "```json\n{'shouldGenerate': true, 'confidence': 0.9,}\n```"
+        parsed = _parse_json(fenced, {})
+
+        self.assertEqual(parsed["shouldGenerate"], True)
+        self.assertEqual(parsed["confidence"], 0.9)
+        self.assertEqual(_parse_json("not-json", {"fallback": True}), {"fallback": True})
 
     async def test_compatibility_facade_uses_overridable_llm_and_error_fallbacks(
         self,
@@ -282,7 +334,7 @@ class SkillEvaluationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(create_result.confidence, 0.8)
         self.assertTrue(upgrade_result.should_upgrade)
         self.assertEqual(upgrade_result.confidence, 0.9)
-        self.assertEqual(evolver.calls, [(512, 0), (512, 0)])
+        self.assertEqual(evolver.calls, [(1024, 0), (1024, 0)])
 
         failing = CustomEvolver(
             [RuntimeError("create failed"), RuntimeError("upgrade failed")]
