@@ -101,6 +101,34 @@ class SkillLearnBenchAdapterTests(unittest.TestCase):
 
         self.assertEqual(report["systems"][0]["total_tokens"], 15)
 
+    def test_report_counts_results_without_passed_as_external_failures(self) -> None:
+        from evaluation.skilllearnbench_runner import summarize_trials
+
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            results = (
+                {"passed": True, "token_usage": {"total_tokens": 10}},
+                {"passed": False, "token_usage": {"total_tokens": 20}},
+                {"status": "error", "error": "model request timed out"},
+            )
+            for index, result in enumerate(results):
+                trial = base / "candidate" / f"trial-{index}"
+                trial.mkdir(parents=True)
+                (trial / "result.json").write_text(json.dumps({
+                    "skill_config": "candidate",
+                    **result,
+                }), encoding="utf-8")
+
+            report = summarize_trials(base)
+
+        system = report["systems"][0]
+        self.assertEqual(system["total_cases"], 3)
+        self.assertEqual(system["evaluated_cases"], 2)
+        self.assertEqual(system["passed"], 1)
+        self.assertEqual(system["failed"], 1)
+        self.assertEqual(system["external_failures"], 1)
+        self.assertEqual(system["pass_rate"], 0.5)
+
     def test_bailian_agent_config_embeds_runtime(self) -> None:
         from evaluation.skilllearnbench_runner import _bailian_agent_config
 

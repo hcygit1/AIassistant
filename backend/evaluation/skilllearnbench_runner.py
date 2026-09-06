@@ -393,13 +393,12 @@ def summarize_trials(trials_dir: Path) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for path in trials_dir.rglob("result.json"):
         result = json.loads(path.read_text(encoding="utf-8"))
-        if "passed" not in result:
-            continue
         config = _normalize_variant_name(result.get("skill_config"))
         groups.setdefault(config, []).append(result)
     systems = []
     for config, rows in sorted(groups.items()):
-        passed = sum(1 for row in rows if row.get("passed") is True)
+        evaluated_rows = [row for row in rows if isinstance(row.get("passed"), bool)]
+        passed = sum(1 for row in evaluated_rows if row["passed"] is True)
         token_total = 0
         for row in rows:
             usage = row.get("token_usage") or {}
@@ -411,8 +410,11 @@ def summarize_trials(trials_dir: Path) -> dict[str, Any]:
         systems.append({
             "system": config,
             "total_cases": len(rows),
+            "evaluated_cases": len(evaluated_rows),
             "passed": passed,
-            "pass_rate": passed / len(rows),
+            "failed": len(evaluated_rows) - passed,
+            "external_failures": len(rows) - len(evaluated_rows),
+            "pass_rate": passed / len(evaluated_rows) if evaluated_rows else 0.0,
             "total_tokens": token_total,
             "avg_tokens": token_total / len(rows),
         })

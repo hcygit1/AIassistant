@@ -20,6 +20,37 @@ class SkillEvolutionRunnerTests(unittest.TestCase):
             result = gate_report(path, static_check_passed=True, regression_candidate_passed=True)
             self.assertEqual(result["status"], "accepted")
 
+    def test_summarized_external_failure_blocks_release(self) -> None:
+        from evaluation.skilllearnbench_runner import summarize_trials
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            rows = (
+                ("no_skill", {"passed": False}),
+                ("candidate", {"passed": True}),
+                ("candidate", {"status": "error", "error": "request timed out"}),
+            )
+            for index, (skill_config, values) in enumerate(rows):
+                trial = root / skill_config / f"trial-{index}"
+                trial.mkdir(parents=True)
+                (trial / "result.json").write_text(json.dumps({
+                    "skill_config": skill_config,
+                    **values,
+                }), encoding="utf-8")
+
+            report_path = root / "report.json"
+            report_path.write_text(
+                json.dumps(summarize_trials(root)),
+                encoding="utf-8",
+            )
+            result = gate_report(
+                report_path,
+                static_check_passed=True,
+                regression_candidate_passed=True,
+            )
+
+        self.assertEqual(result["status"], "external_failure")
+
 
 if __name__ == "__main__":
     unittest.main()
