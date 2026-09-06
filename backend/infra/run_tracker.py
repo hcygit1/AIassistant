@@ -63,11 +63,20 @@ class TurnRecord:
 
 
 class RunTracker:
-    """追踪所有进行中和已完成的 Turn"""
+    """追踪活动 Turn，并保留有限的本地短期历史。"""
 
-    def __init__(self):
+    def __init__(self, max_history: int = 200):
         self._active: dict[str, TurnRecord] = {}
         self._history: list[TurnRecord] = []
+        self._max_history = max(0, max_history)
+
+    def _remember(self, record: TurnRecord) -> None:
+        """Keep only a short local cache; Langfuse is the long-term source."""
+        if self._max_history == 0:
+            return
+        self._history.append(record)
+        if len(self._history) > self._max_history:
+            del self._history[: len(self._history) - self._max_history]
 
     def start_turn(self, agent_id: str, session_id: str) -> TurnRecord:
         record = TurnRecord(agent_id=agent_id, session_id=session_id)
@@ -141,7 +150,7 @@ class RunTracker:
             return None
         record.ended_at = time.time()
         record.phase = "completed"
-        self._history.append(record)
+        self._remember(record)
         return record
 
     def error_turn(self, run_id: str, error: str) -> TurnRecord | None:
@@ -151,7 +160,7 @@ class RunTracker:
         record.ended_at = time.time()
         record.phase = "error"
         record.error = error
-        self._history.append(record)
+        self._remember(record)
         return record
 
     def get_active(self, run_id: str) -> TurnRecord | None:
