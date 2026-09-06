@@ -97,17 +97,31 @@ class TurnEventStreamProcessor:
         return contains_untrusted_marker(content)
 
     async def _stream_model_events(self) -> AsyncGenerator[dict[str, Any], None]:
+        from runtime.langfuse_integration import (
+            build_langfuse_config,
+            flush_langfuse_config,
+        )
+
+        langfuse_config = build_langfuse_config(
+            request=self._request,
+            run_id=self._turn.run_id,
+        )
         iterator = self._agent.astream_events(
             {"messages": self._messages},
             version="v2",
-            config={"recursion_limit": self._request.recursion_limit},
+            config={
+                "recursion_limit": self._request.recursion_limit,
+                **langfuse_config,
+            },
         ).__aiter__()
         while True:
             try:
                 yield await anext(iterator)
             except StopAsyncIteration:
+                flush_langfuse_config(langfuse_config)
                 return
             except Exception as error:
+                flush_langfuse_config(langfuse_config)
                 raise ModelCandidateError(str(error)) from error
 
     async def stream(self) -> AsyncGenerator[dict[str, Any], None]:
