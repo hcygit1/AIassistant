@@ -15,6 +15,7 @@ build/
 backend/.venv/
 venv/
 env/
+.env
 **/__pycache__/
 *.pyo
 evals
